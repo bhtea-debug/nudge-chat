@@ -128,13 +128,13 @@ export async function POST(req: NextRequest) {
         args: [nanoid(), id, mentionedUserId],
       });
 
-      // Notify mentioned user
-      await pusherServer.trigger(`private-user-${mentionedUserId}`, 'mention', {
+      // Notify mentioned user (non-blocking)
+      pusherServer.trigger(`private-user-${mentionedUserId}`, 'mention', {
         messageId: id,
         channelId,
         mentionedBy: user.name,
         content: content.substring(0, 100),
-      });
+      }).catch(e => console.error('Pusher mention notification failed:', e));
     }
 
     const message = {
@@ -151,14 +151,22 @@ export async function POST(req: NextRequest) {
       reply_count: 0,
     };
 
-    // Broadcast via Pusher
-    await pusherServer.trigger(`presence-channel-${channelId}`, 'new-message', message);
+    // Broadcast via Pusher (non-blocking — don't let broadcast failure prevent response)
+    try {
+      await pusherServer.trigger(`presence-channel-${channelId}`, 'new-message', message);
+    } catch (e) {
+      console.error('Pusher broadcast failed (message was saved):', e);
+    }
 
     // Update last_read_at for sender
-    await db.execute({
-      sql: 'UPDATE chat_members SET last_read_at = CURRENT_TIMESTAMP WHERE channel_id = ? AND user_id = ?',
-      args: [channelId, user.id],
-    });
+    try {
+      await db.execute({
+        sql: 'UPDATE chat_members SET last_read_at = CURRENT_TIMESTAMP WHERE channel_id = ? AND user_id = ?',
+        args: [channelId, user.id],
+      });
+    } catch (e) {
+      console.error('Failed to update last_read_at:', e);
+    }
 
     return NextResponse.json({ message }, { status: 201 });
   } catch (error: any) {
@@ -190,11 +198,11 @@ export async function PATCH(req: NextRequest) {
     });
 
     const channelId = msg.rows[0].channel_id;
-    await pusherServer.trigger(`presence-channel-${channelId}`, 'message-updated', {
+    pusherServer.trigger(`presence-channel-${channelId}`, 'message-updated', {
       messageId,
       content,
       edited_at: new Date().toISOString(),
-    });
+    }).catch(e => console.error('Pusher edit broadcast failed:', e));
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {
@@ -228,7 +236,8 @@ export async function DELETE(req: NextRequest) {
     });
 
     const channelId = msg.rows[0].channel_id;
-    await pusherServer.trigger(`presence-channel-${channelId}`, 'message-deleted', { messageId });
+    pusherServer.trigger(`presence-channel-${channelId}`, 'message-deleted', { messageId })
+      .catch(e => console.error('Pusher delete broadcast failed:', e));
 
     return NextResponse.json({ ok: true });
   } catch (error: any) {

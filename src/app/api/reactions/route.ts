@@ -37,9 +37,9 @@ export async function POST(req: NextRequest) {
         args: [messageId, user.id, emoji],
       });
 
-      await pusherServer.trigger(`presence-channel-${channelId}`, 'reaction-removed', {
+      pusherServer.trigger(`presence-channel-${channelId}`, 'reaction-removed', {
         messageId, userId: user.id, emoji,
-      });
+      }).catch(e => console.error('Pusher reaction-removed broadcast failed:', e));
 
       return NextResponse.json({ action: 'removed' });
     } else {
@@ -49,9 +49,9 @@ export async function POST(req: NextRequest) {
         args: [nanoid(), messageId, user.id, emoji],
       });
 
-      await pusherServer.trigger(`presence-channel-${channelId}`, 'reaction-added', {
+      pusherServer.trigger(`presence-channel-${channelId}`, 'reaction-added', {
         messageId, userId: user.id, userName: user.name, emoji,
-      });
+      }).catch(e => console.error('Pusher reaction-added broadcast failed:', e));
 
       return NextResponse.json({ action: 'added' }, { status: 201 });
     }
