@@ -20,9 +20,9 @@ interface ChannelListProps {
 
 const filters = [
   { key: 'all' as const, label: 'Wszystkie' },
-  { key: 'unread' as const, label: 'Nieprzeczytane' },
+  { key: 'unread' as const, label: 'Nieprz.' },
   { key: 'group' as const, label: 'Kanały' },
-  { key: 'dm' as const, label: 'DM' },
+  { key: 'dm' as const, label: 'Prywatne' },
 ];
 
 export default function ChannelList({
@@ -84,12 +84,12 @@ export default function ChannelList({
         </div>
 
         {/* Filter tabs */}
-        <div className="flex gap-1">
+        <div className="flex gap-1 overflow-x-auto">
           {filters.map((f) => (
             <button
               key={f.key}
               onClick={() => onFilterChange(f.key)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors shrink-0 whitespace-nowrap ${
                 filter === f.key
                   ? 'bg-indigo-50 text-indigo-600'
                   : 'text-slate-500 hover:bg-slate-50'
