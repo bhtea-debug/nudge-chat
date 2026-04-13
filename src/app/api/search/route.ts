@@ -10,11 +10,11 @@ export async function GET(req: NextRequest) {
     const channelId = searchParams.get('channelId');
     const type = searchParams.get('type') || 'all'; // all | messages | channels | people
 
-    if (!q || q.length < 2) {
+    if (type !== 'people' && (!q || q.length < 2)) {
       return NextResponse.json({ results: [] });
     }
 
-    const searchTerm = `%${q}%`;
+    const searchTerm = q ? `%${q}%` : '%';
     const results: any = { messages: [], channels: [], people: [] };
 
     if (type === 'all' || type === 'messages') {
