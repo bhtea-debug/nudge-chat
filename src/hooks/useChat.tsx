@@ -124,6 +124,14 @@ export function useChat(channelId: string | null) {
         body: JSON.stringify({ channelId, content: content.trim(), replyTo }),
       });
       if (!res.ok) throw new Error('Failed to send message');
+      const data = await res.json();
+      // Add message to local state immediately (optimistic update)
+      if (data.message) {
+        setMessages(prev => {
+          if (prev.some(m => m.id === data.message.id)) return prev;
+          return [...prev, data.message];
+        });
+      }
     } catch (e) {
       console.error('Failed to send message:', e);
     } finally {
