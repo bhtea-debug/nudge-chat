@@ -12,6 +12,7 @@ export default function NewChannelModal({ onClose, onCreated }: NewChannelModalP
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [type, setType] = useState<'group' | 'dm'>('group');
@@ -30,6 +31,7 @@ export default function NewChannelModal({ onClose, onCreated }: NewChannelModalP
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
       const res = await fetch('/api/channels', {
         method: 'POST',
@@ -38,7 +40,12 @@ export default function NewChannelModal({ onClose, onCreated }: NewChannelModalP
       });
       if (res.ok) {
         onCreated();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || 'Nie udało się utworzyć konwersacji');
       }
+    } catch {
+      setError('Błąd połączenia z serwerem');
     } finally {
       setLoading(false);
     }
@@ -63,6 +70,12 @@ export default function NewChannelModal({ onClose, onCreated }: NewChannelModalP
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-4">
+          {error && (
+            <div className="px-4 py-2.5 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600">
+              {error}
+            </div>
+          )}
+
           {/* Type selector */}
           <div className="flex gap-2">
             <button type="button" onClick={() => setType('group')}
