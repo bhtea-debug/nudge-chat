@@ -12,9 +12,9 @@ export function getDb(): Client {
   return _db;
 }
 
-// Proxy for backward compat
-export const db = new Proxy({} as Client, {
-  get(_, prop) {
-    return (getDb() as any)[prop];
-  },
-});
+// Re-export as db for convenience — calls getDb() on each use
+export const db = {
+  execute: (...args: Parameters<Client['execute']>) => getDb().execute(...args),
+  batch: (...args: Parameters<Client['batch']>) => getDb().batch(...args),
+  close: () => getDb().close(),
+};
