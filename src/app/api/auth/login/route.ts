@@ -8,8 +8,8 @@ export async function POST(req: NextRequest) {
     const { username, password } = await req.json();
 
     const result = await db.execute({
-      sql: 'SELECT id, username, email, password_hash, role FROM users WHERE username = ?',
-      args: [username],
+      sql: 'SELECT id, email, username, password_hash, role FROM users WHERE email = ? OR username = ?',
+      args: [username, username],
     });
 
     if (result.rows.length === 0) {
@@ -31,9 +31,8 @@ export async function POST(req: NextRequest) {
     const response = NextResponse.json({
       user: {
         id: user.id,
-        username: user.username,
         name: user.username,
-        email: user.email,
+        email: user.email || user.username,
         role: user.role,
       }
     });

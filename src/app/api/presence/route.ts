@@ -41,7 +41,7 @@ export async function GET() {
     await requireUser();
 
     const result = await db.execute({
-      sql: `SELECT s.*, u.username as name, u.email, NULL as avatar_url
+      sql: `SELECT s.*, u.username as name, u.email
             FROM chat_user_status s
             JOIN users u ON u.id = s.user_id
             WHERE s.status != 'offline'

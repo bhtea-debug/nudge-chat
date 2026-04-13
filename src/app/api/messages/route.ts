@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
     }
 
     let sql = `
-      SELECT m.*, u.username as user_name, u.email as user_email, NULL as user_avatar
+      SELECT m.*, u.username as user_name, u.email as user_email
       FROM chat_messages m
       JOIN users u ON u.id = m.user_id
       WHERE m.channel_id = ? AND m.deleted_at IS NULL
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
 
       return {
         ...row,
-        user: { id: row.user_id, name: row.user_name, email: row.user_email, avatar_url: row.user_avatar },
+        user: { id: row.user_id, name: row.user_name, email: row.user_email, avatar_url: undefined },
         reactions: reactions.rows,
         files: files.rows,
         reply_count: replyCount.rows[0]?.count || 0,

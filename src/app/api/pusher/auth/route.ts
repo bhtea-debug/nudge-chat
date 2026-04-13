@@ -24,7 +24,6 @@ export async function POST(req: NextRequest) {
         user_info: {
           name: user.name,
           email: user.email,
-          avatar_url: user.avatar_url,
         },
       };
       const auth = pusherServer.authorizeChannel(socketId, channel, presenceData);

@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     if (type === 'all' || type === 'messages') {
       let msgSql = `
         SELECT m.id, m.content, m.created_at, m.channel_id,
-               u.username as user_name, NULL as user_avatar,
+               u.username as user_name,
                c.name as channel_name
         FROM chat_messages m
         JOIN users u ON u.id = m.user_id
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
 
     if ((type === 'all' || type === 'people') && !channelId) {
       const pplResult = await db.execute({
-        sql: `SELECT id, username as name, email, NULL as avatar_url FROM users WHERE username LIKE ? OR email LIKE ? LIMIT 10`,
+        sql: `SELECT id, username as name, email FROM users WHERE username LIKE ? OR email LIKE ? LIMIT 10`,
         args: [searchTerm, searchTerm],
       });
       results.people = pplResult.rows;
