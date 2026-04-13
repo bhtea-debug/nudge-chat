@@ -5,7 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,7 +17,7 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      await login(username, password);
       router.push('/');
     } catch (err: any) {
       setError(err.message || 'Nieprawidłowe dane logowania');
@@ -50,15 +50,15 @@ export default function LoginPage() {
             )}
 
             <div>
-              <label htmlFor="email" className="block text-sm font-medium text-slate-700 mb-1.5">
-                Email
+              <label htmlFor="username" className="block text-sm font-medium text-slate-700 mb-1.5">
+                Nazwa użytkownika
               </label>
               <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="twoj@email.com"
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="twoja_nazwa"
                 required
                 className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
               />

@@ -30,7 +30,7 @@ export async function getCurrentUser(): Promise<User | null> {
   if (!payload) return null;
 
   const result = await db.execute({
-    sql: 'SELECT id, email, name, avatar_url FROM users WHERE id = ?',
+    sql: 'SELECT id, username, email, role FROM users WHERE id = ?',
     args: [payload.userId],
   });
 
@@ -38,9 +38,8 @@ export async function getCurrentUser(): Promise<User | null> {
   const row = result.rows[0];
   return {
     id: row.id as string,
-    email: row.email as string,
-    name: row.name as string,
-    avatar_url: row.avatar_url as string | undefined,
+    name: row.username as string,
+    email: (row.email as string) || '',
   };
 }
 

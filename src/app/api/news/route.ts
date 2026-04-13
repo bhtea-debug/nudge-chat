@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
     const offset = (page - 1) * limit;
 
     const result = await db.execute({
-      sql: `SELECT n.*, u.name as author_name, u.avatar_url as author_avatar,
+      sql: `SELECT n.*, u.username as author_name, NULL as author_avatar,
             EXISTS(SELECT 1 FROM news_likes WHERE news_id = n.id AND user_id = ?) as liked_by_me
             FROM company_news n
             JOIN users u ON u.id = n.author_id

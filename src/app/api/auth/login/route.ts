@@ -5,11 +5,11 @@ import bcrypt from 'bcryptjs';
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password } = await req.json();
+    const { username, password } = await req.json();
 
     const result = await db.execute({
-      sql: 'SELECT id, email, name, password_hash, avatar_url FROM users WHERE email = ?',
-      args: [email],
+      sql: 'SELECT id, username, email, password_hash, role FROM users WHERE username = ?',
+      args: [username],
     });
 
     if (result.rows.length === 0) {
@@ -31,9 +31,10 @@ export async function POST(req: NextRequest) {
     const response = NextResponse.json({
       user: {
         id: user.id,
+        username: user.username,
+        name: user.username,
         email: user.email,
-        name: user.name,
-        avatar_url: user.avatar_url,
+        role: user.role,
       }
     });
 

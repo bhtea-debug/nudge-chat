@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
 
       if (row.type === 'dm') {
         const otherUser = await db.execute({
-          sql: `SELECT u.id, u.email, u.name, u.avatar_url
+          sql: `SELECT u.id, u.email, u.username, NULL as avatar_url
                 FROM chat_members cm
                 JOIN users u ON u.id = cm.user_id
                 WHERE cm.channel_id = ? AND cm.user_id != ?`,

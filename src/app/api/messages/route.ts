@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
     }
 
     let sql = `
-      SELECT m.*, u.name as user_name, u.email as user_email, u.avatar_url as user_avatar
+      SELECT m.*, u.username as user_name, u.email as user_email, NULL as user_avatar
       FROM chat_messages m
       JOIN users u ON u.id = m.user_id
       WHERE m.channel_id = ? AND m.deleted_at IS NULL
@@ -55,7 +55,7 @@ export async function GET(req: NextRequest) {
     const messages = await Promise.all(result.rows.map(async (row) => {
       const [reactions, files, replyCount] = await Promise.all([
         db.execute({
-          sql: `SELECT r.*, u.name as user_name FROM chat_reactions r JOIN users u ON u.id = r.user_id WHERE r.message_id = ?`,
+          sql: `SELECT r.*, u.username as user_name FROM chat_reactions r JOIN users u ON u.id = r.user_id WHERE r.message_id = ?`,
           args: [row.id],
         }),
         db.execute({
@@ -145,7 +145,7 @@ export async function POST(req: NextRequest) {
       type: type || 'text',
       reply_to: replyTo || null,
       created_at: new Date().toISOString(),
-      user: { id: user.id, name: user.name, email: user.email, avatar_url: user.avatar_url },
+      user: { id: user.id, name: user.name, email: user.email, avatar_url: null },
       reactions: [],
       files: [],
       reply_count: 0,
