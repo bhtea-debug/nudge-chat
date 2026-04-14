@@ -113,14 +113,22 @@ self.addEventListener('notificationclick', (event) => {
 
   if (event.action === 'close') return;
 
-  const url = event.notification.data?.url || '/chat';
+  const data = event.notification.data || {};
+  const url = data.url || '/chat';
+
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      for (const client of clients) {
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // Focus existing window if open
+      for (const client of clientList) {
         if (client.url.includes('/chat') && 'focus' in client) {
-          return client.focus();
+          client.focus();
+          if (data.url) {
+            client.navigate(data.url);
+          }
+          return;
         }
       }
+      // Open new window
       return self.clients.openWindow(url);
     })
   );

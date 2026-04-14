@@ -158,6 +158,52 @@ export async function POST(req: NextRequest) {
       console.error('Pusher broadcast failed (message was saved):', e);
     }
 
+    // Notify all channel members (except sender) for push notifications
+    try {
+      const members = await db.execute({
+        sql: 'SELECT user_id FROM chat_members WHERE channel_id = ? AND user_id != ?',
+        args: [channelId, user.id],
+      });
+
+      // Get channel info for notification
+      const channelInfo = await db.execute({
+        sql: 'SELECT name, type, slug FROM chat_channels WHERE id = ?',
+        args: [channelId],
+      });
+      const ch = channelInfo.rows[0];
+
+      for (const member of members.rows) {
+        await pusherServer.trigger(`private-user-${member.user_id}`, 'new-message-notification', {
+          channelId,
+          channelName: ch?.slug || ch?.name || '',
+          channelType: ch?.type || 'group',
+          senderName: user.name,
+          senderId: user.id,
+          content: content.substring(0, 100),
+          messageId: id,
+        }).catch(e => console.error('Pusher notification failed:', e));
+      }
+
+      // If this is a reply, notify the original message author
+      if (replyTo) {
+        const originalMsg = await db.execute({
+          sql: 'SELECT user_id FROM chat_messages WHERE id = ? AND user_id != ?',
+          args: [replyTo, user.id],
+        });
+        if (originalMsg.rows.length > 0) {
+          await pusherServer.trigger(`private-user-${originalMsg.rows[0].user_id}`, 'thread-reply', {
+            channelId,
+            channelName: ch?.slug || ch?.name || '',
+            senderName: user.name,
+            content: content.substring(0, 100),
+            parentMessageId: replyTo,
+          }).catch(e => console.error('Pusher thread-reply notification failed:', e));
+        }
+      }
+    } catch (e) {
+      console.error('Error sending notifications:', e);
+    }
+
     // Update last_read_at for sender
     try {
       await db.execute({

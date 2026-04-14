@@ -3,15 +3,18 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { usePWA } from '@/hooks/usePWA';
+import { useNotifications } from '@/hooks/useNotifications';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
 import ChannelList from '@/components/ChannelList';
 import MobileTabBar from '@/components/MobileTabBar';
+import NotificationPrompt from '@/components/NotificationPrompt';
 import type { Channel } from '@/types';
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const { isOnline } = usePWA();
+  const { setActiveChannel } = useNotifications();
   const router = useRouter();
   const pathname = usePathname();
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -32,6 +35,16 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
       router.push('/login');
     }
   }, [user, loading, router]);
+
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(console.error);
+    }
+  }, []);
+
+  useEffect(() => {
+    setActiveChannel(activeChannelId);
+  }, [activeChannelId, setActiveChannel]);
 
   useEffect(() => {
     fetchChannels();
@@ -162,6 +175,9 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
           userName={user.name}
         />
       </div>
+
+      {/* Notification prompt */}
+      <NotificationPrompt />
     </div>
   );
 }
