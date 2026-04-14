@@ -96,7 +96,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   const isSubPage = pathname.startsWith('/chat/contacts') || pathname.startsWith('/chat/news');
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-white overflow-hidden">
+    <div className="h-[100dvh] flex flex-col bg-white overflow-hidden safe-top">
       {/* Offline banner */}
       {!isOnline && (
         <div className="bg-amber-500 text-white text-xs font-medium text-center py-1.5 px-4 shrink-0">
