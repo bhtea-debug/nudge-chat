@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
     const args: any[] = [user.id, user.id];
 
     if (filter === 'unread') {
-      sql += ` HAVING unread_count > 0`;
+      sql += ` AND (SELECT COUNT(*) FROM chat_messages WHERE channel_id = c.id AND deleted_at IS NULL AND created_at > COALESCE(m.last_read_at, '1970-01-01')) > 0`;
     } else if (filter === 'dm') {
       sql += ` AND c.type = 'dm'`;
     } else if (filter === 'group') {

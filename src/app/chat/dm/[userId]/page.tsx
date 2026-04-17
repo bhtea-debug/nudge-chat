@@ -39,6 +39,19 @@ export default function DMPage() {
         body: JSON.stringify({ type: 'dm', name: 'DM', members: [targetUserId] }),
       });
       if (createRes.ok) {
+        // Re-fetch channels to get full data with other_user populated
+        const refetchRes = await fetch('/api/channels?filter=dm');
+        if (refetchRes.ok) {
+          const refetchData = await refetchRes.json();
+          const created = refetchData.channels.find((c: Channel) =>
+            c.type === 'dm' && c.other_user?.id === targetUserId
+          );
+          if (created) {
+            setChannel(created);
+            return;
+          }
+        }
+        // Fallback to basic data from creation response
         const data = await createRes.json();
         setChannel(data.channel);
       }

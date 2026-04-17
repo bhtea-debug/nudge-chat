@@ -6,6 +6,9 @@ import type { Channel } from 'pusher-js';
 
 let pusherInstance: PusherClient | null = null;
 
+// Reference counting for channel subscriptions to avoid duplicate subscribe/unsubscribe
+const channelRefCounts = new Map<string, number>();
+
 function getPusher(): PusherClient {
   if (!pusherInstance) {
     pusherInstance = new PusherClient(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
@@ -16,18 +19,35 @@ function getPusher(): PusherClient {
   return pusherInstance;
 }
 
+function subscribeChannel(channelName: string): Channel {
+  const pusher = getPusher();
+  const count = channelRefCounts.get(channelName) || 0;
+  channelRefCounts.set(channelName, count + 1);
+  // Pusher.subscribe is idempotent — returns existing channel if already subscribed
+  return pusher.subscribe(channelName);
+}
+
+function unsubscribeChannel(channelName: string) {
+  const count = channelRefCounts.get(channelName) || 0;
+  if (count <= 1) {
+    channelRefCounts.delete(channelName);
+    getPusher().unsubscribe(channelName);
+  } else {
+    channelRefCounts.set(channelName, count - 1);
+  }
+}
+
 export function usePusherChannel(channelName: string | null) {
   const channelRef = useRef<Channel | null>(null);
 
   useEffect(() => {
     if (!channelName) return;
 
-    const pusher = getPusher();
-    const channel = pusher.subscribe(channelName);
+    const channel = subscribeChannel(channelName);
     channelRef.current = channel;
 
     return () => {
-      pusher.unsubscribe(channelName);
+      unsubscribeChannel(channelName);
       channelRef.current = null;
     };
   }, [channelName]);
@@ -53,14 +73,14 @@ export function usePusherEvent(
   useEffect(() => {
     if (!channelName) return;
 
-    const pusher = getPusher();
-    const channel = pusher.subscribe(channelName);
+    const channel = subscribeChannel(channelName);
 
     const handler = (data: any) => callbackRef.current(data);
     channel.bind(event, handler);
 
     return () => {
       channel.unbind(event, handler);
+      unsubscribeChannel(channelName);
     };
   }, [channelName, event]);
 }
@@ -72,8 +92,7 @@ export function usePresenceChannel(channelName: string | null) {
   useEffect(() => {
     if (!channelName) return;
 
-    const pusher = getPusher();
-    const channel = pusher.subscribe(channelName);
+    const channel = subscribeChannel(channelName);
     channelRef.current = channel;
 
     channel.bind('pusher:subscription_succeeded', (data: any) => {
@@ -91,7 +110,7 @@ export function usePresenceChannel(channelName: string | null) {
     });
 
     return () => {
-      pusher.unsubscribe(channelName);
+      unsubscribeChannel(channelName);
     };
   }, [channelName]);
 

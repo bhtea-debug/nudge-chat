@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
     const offset = (page - 1) * limit;
 
     const result = await db.execute({
-      sql: `SELECT n.*, u.username as author_name, NULL as author_avatar,
+      sql: `SELECT n.*, u.username as author_name, u.email as author_email,
             EXISTS(SELECT 1 FROM news_likes WHERE news_id = n.id AND user_id = ?) as liked_by_me
             FROM company_news n
             JOIN users u ON u.id = n.author_id
@@ -21,7 +21,17 @@ export async function GET(req: NextRequest) {
       args: [user.id, limit, offset],
     });
 
-    return NextResponse.json({ news: result.rows });
+    const news = result.rows.map(row => ({
+      ...row,
+      author: {
+        id: row.author_id,
+        name: row.author_name,
+        email: row.author_email,
+      },
+      liked_by_me: Boolean(row.liked_by_me),
+    }));
+
+    return NextResponse.json({ news });
   } catch (error: any) {
     if (error.message === 'Unauthorized') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

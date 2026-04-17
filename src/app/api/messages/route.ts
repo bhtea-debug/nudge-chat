@@ -51,9 +51,9 @@ export async function GET(req: NextRequest) {
 
     const result = await db.execute({ sql, args });
 
-    // Get reactions and files for each message
+    // Get reactions, files, and reply data for each message
     const messages = await Promise.all(result.rows.map(async (row) => {
-      const [reactions, files, replyCount] = await Promise.all([
+      const queries: Promise<any>[] = [
         db.execute({
           sql: `SELECT r.*, u.username as user_name FROM chat_reactions r JOIN users u ON u.id = r.user_id WHERE r.message_id = ?`,
           args: [row.id],
@@ -66,7 +66,32 @@ export async function GET(req: NextRequest) {
           sql: 'SELECT COUNT(*) as count FROM chat_messages WHERE reply_to = ? AND deleted_at IS NULL',
           args: [row.id],
         }),
-      ]);
+      ];
+
+      // Fetch parent message if this is a reply
+      if (row.reply_to) {
+        queries.push(
+          db.execute({
+            sql: `SELECT m.*, u.username as user_name, u.email as user_email
+                  FROM chat_messages m JOIN users u ON u.id = m.user_id
+                  WHERE m.id = ?`,
+            args: [row.reply_to],
+          })
+        );
+      }
+
+      const [reactions, files, replyCount, replyMsg] = await Promise.all(queries);
+
+      let reply_message = undefined;
+      if (row.reply_to && replyMsg?.rows?.length > 0) {
+        const rm = replyMsg.rows[0];
+        reply_message = {
+          id: rm.id,
+          content: rm.content,
+          user: { id: rm.user_id, name: rm.user_name, email: rm.user_email },
+          created_at: rm.created_at,
+        };
+      }
 
       return {
         ...row,
@@ -74,6 +99,7 @@ export async function GET(req: NextRequest) {
         reactions: reactions.rows,
         files: files.rows,
         reply_count: replyCount.rows[0]?.count || 0,
+        reply_message,
       };
     }));
 
