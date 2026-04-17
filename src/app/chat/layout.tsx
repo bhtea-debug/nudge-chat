@@ -23,6 +23,15 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   const [showMobileChat, setShowMobileChat] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Auto-detect if we're in a channel/DM view on initial load (e.g. page refresh)
+  // so mobile shows the message area instead of the channel list
+  useEffect(() => {
+    const inChannel = pathname !== '/chat' && !pathname.startsWith('/chat/contacts') && !pathname.startsWith('/chat/news');
+    if (inChannel) {
+      setShowMobileChat(true);
+    }
+  }, [pathname]);
+
   // Detect which mobile tab is active
   const mobileTab = pathname.startsWith('/chat/contacts')
     ? 'contacts'
@@ -84,7 +93,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
-          <span className="text-slate-500 font-medium">Ładowanie...</span>
+          <span className="text-slate-500 font-medium">\u0141adowanie...</span>
         </div>
       </div>
     );
@@ -92,7 +101,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
 
   if (!user) return null;
 
-  // Contacts or News page — render full-width on mobile, no sidebar needed
+  // Contacts or News page \u2014 render full-width on mobile, no sidebar needed
   const isSubPage = pathname.startsWith('/chat/contacts') || pathname.startsWith('/chat/news');
 
   return (
@@ -100,7 +109,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
       {/* Offline banner */}
       {!isOnline && (
         <div className="bg-amber-500 text-white text-xs font-medium text-center py-1.5 px-4 shrink-0">
-          Brak połączenia z internetem — tryb offline
+          Brak po\u0142\u0105czenia z internetem \u2014 tryb offline
         </div>
       )}
 
@@ -110,7 +119,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
           <Sidebar user={user} onLogout={logout} />
         </div>
 
-        {/* Contacts/News pages — full width */}
+        {/* Contacts/News pages \u2014 full width */}
         {isSubPage ? (
           <div className="flex-1 flex flex-col min-w-0">
             {children}
@@ -132,7 +141,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
               />
             </div>
 
-            {/* Okno wiadomości */}
+            {/* Okno wiadomo\u015bci */}
             <div className={`flex-1 flex flex-col min-w-0 ${!showMobileChat ? 'hidden md:flex' : 'flex'}`}>
               {pathname === '/chat' ? (
                 <div className="flex-1 flex items-center justify-center bg-slate-50">
@@ -143,7 +152,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
                       </svg>
                     </div>
                     <h2 className="text-xl font-semibold text-slate-700">Nudge Chat</h2>
-                    <p className="text-slate-400 mt-1">Wybierz konwersację z listy po lewej</p>
+                    <p className="text-slate-400 mt-1">Wybierz konwersacj\u0119 z listy po lewej</p>
                   </div>
                 </div>
               ) : (
@@ -156,7 +165,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
                     </svg>
-                    Wróć
+                    Wr\u00f3\u0107
                   </button>
                   {children}
                 </>
