@@ -17,13 +17,17 @@ export async function POST(req: NextRequest) {
     }
 
     const user = result.rows[0];
-    const passwordHash = user.password_hash as string;
+    const passwordHash = user.password_hash as string | null;
 
-    if (passwordHash) {
-      const valid = await bcrypt.compare(password, passwordHash);
-      if (!valid) {
-        return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
-      }
+    // Reject accounts with no password set — falling through let anyone in
+    // who knew the username for any user the shared Nudge table imported
+    // without a credential.
+    if (!passwordHash) {
+      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    }
+    const valid = await bcrypt.compare(password, passwordHash);
+    if (!valid) {
+      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
     }
 
     const token = await createToken(user.id as string);
