@@ -144,6 +144,16 @@ export async function POST(req: NextRequest) {
       args: [id, channelId, user.id, content, type || 'text', replyTo || null],
     });
 
+    // Read back DB-formatted created_at so POST and GET return matching string format.
+    // Without this, POST returned ISO ("...T...Z") while GET returned SQLite format
+    // ("YYYY-MM-DD HH:MM:SS") — string-sorted, ISO > DB-format made optimistic messages
+    // jump out of order, and load-more `before` comparisons returned wrong slices.
+    const inserted = await db.execute({
+      sql: 'SELECT created_at FROM chat_messages WHERE id = ?',
+      args: [id],
+    });
+    const createdAt = (inserted.rows[0]?.created_at as string) || new Date().toISOString();
+
     // Extract @mentions
     const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
     let match;
@@ -170,7 +180,7 @@ export async function POST(req: NextRequest) {
       content,
       type: type || 'text',
       reply_to: replyTo || null,
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
       user: { id: user.id, name: user.name, email: user.email, avatar_url: null },
       reactions: [],
       files: [],

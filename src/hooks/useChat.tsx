@@ -9,9 +9,14 @@ export function useChat(channelId: string | null) {
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [sending, setSending] = useState(false);
+  // Tracks the channel the in-flight fetch was started for. If channelId changes
+  // mid-fetch, we discard the stale result so we don't render the wrong channel.
+  const activeChannelRef = useRef<string | null>(channelId);
+  activeChannelRef.current = channelId;
 
   const fetchMessages = useCallback(async (before?: string) => {
     if (!channelId) return;
+    const fetchChannelId = channelId;
     setLoading(true);
     try {
       const params = new URLSearchParams({ channelId });
@@ -21,16 +26,30 @@ export function useChat(channelId: string | null) {
       if (!res.ok) throw new Error('Failed to fetch messages');
 
       const data = await res.json();
+      // Stale result — user switched channels while we were fetching. Drop it.
+      if (activeChannelRef.current !== fetchChannelId) return;
+
+      // Merge instead of replace: a Pusher `new-message` event may have landed
+      // between setMessages([]) and the fetch returning. Plain replace would drop it.
       if (before) {
-        setMessages(prev => [...data.messages, ...prev]);
+        setMessages(prev => {
+          const have = new Set(prev.map(m => m.id));
+          const older = data.messages.filter((m: Message) => !have.has(m.id));
+          return [...older, ...prev];
+        });
       } else {
-        setMessages(data.messages);
+        setMessages(prev => {
+          const fetchedIds = new Set(data.messages.map((m: Message) => m.id));
+          // Keep anything Pusher delivered that the fetch didn't include (newer than the page).
+          const liveExtras = prev.filter(m => !fetchedIds.has(m.id));
+          return [...data.messages, ...liveExtras];
+        });
       }
       setHasMore(data.messages.length >= 50);
     } catch (e) {
       console.error('Failed to fetch messages:', e);
     } finally {
-      setLoading(false);
+      if (activeChannelRef.current === fetchChannelId) setLoading(false);
     }
   }, [channelId]);
 
@@ -123,17 +142,17 @@ export function useChat(channelId: string | null) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channelId, content: content.trim(), replyTo }),
       });
-      if (!res.ok) throw new Error('Failed to send message');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to send message (HTTP ${res.status})`);
+      }
       const data = await res.json();
-      // Add message to local state immediately (optimistic update)
       if (data.message) {
         setMessages(prev => {
           if (prev.some(m => m.id === data.message.id)) return prev;
           return [...prev, data.message];
         });
       }
-    } catch (e) {
-      console.error('Failed to send message:', e);
     } finally {
       setSending(false);
     }

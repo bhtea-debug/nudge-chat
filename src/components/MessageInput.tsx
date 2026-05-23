@@ -3,7 +3,7 @@
 import { useState, useRef, KeyboardEvent } from 'react';
 
 interface MessageInputProps {
-  onSend: (content: string, replyTo?: string) => void;
+  onSend: (content: string, replyTo?: string) => Promise<void> | void;
   sending: boolean;
   channelId: string;
   replyTo?: { id: string; content: string; userName: string } | null;
@@ -13,6 +13,7 @@ interface MessageInputProps {
 export default function MessageInput({ onSend, sending, channelId, replyTo, onCancelReply }: MessageInputProps) {
   const [content, setContent] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -23,15 +24,20 @@ export default function MessageInput({ onSend, sending, channelId, replyTo, onCa
     }
   }
 
-  function handleSend() {
+  async function handleSend() {
     if (!content.trim() || sending) return;
-    onSend(content, replyTo?.id);
+    const toSend = content;
+    const replyId = replyTo?.id;
     setContent('');
+    setSendError(null);
     onCancelReply?.();
-
-    // Reset textarea height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    try {
+      await onSend(toSend, replyId);
+    } catch (e: any) {
+      // Restore the unsent text so the user can retry — silent failure was the prior bug.
+      setContent(toSend);
+      setSendError(e?.message || 'Nie udało się wysłać wiadomości');
     }
   }
 
@@ -75,7 +81,16 @@ export default function MessageInput({ onSend, sending, channelId, replyTo, onCa
 
   return (
     <div className="border-t border-slate-200 bg-white px-4 py-3">
-      {/* Reply indicator */}
+      {sendError && (
+        <div className="flex items-center justify-between bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl px-3 py-2 mb-2">
+          <span className="truncate">⚠ {sendError}</span>
+          <button onClick={() => setSendError(null)} className="ml-2 shrink-0 text-red-500 hover:text-red-700">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
       {replyTo && (
         <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2 mb-2">
           <div className="flex items-center gap-2 min-w-0">
