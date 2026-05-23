@@ -133,6 +133,30 @@ export function useChat(channelId: string | null) {
     }
   );
 
+  usePusherEvent(
+    channelId ? `presence-channel-${channelId}` : null,
+    'poll-vote',
+    (data: { pollId: string; votes: any[] }) => {
+      setMessages(prev =>
+        prev.map(m => (m.poll && m.poll.id === data.pollId
+          ? { ...m, poll: { ...m.poll, votes: data.votes } }
+          : m)),
+      );
+    },
+  );
+
+  usePusherEvent(
+    channelId ? `presence-channel-${channelId}` : null,
+    'pinned-changed',
+    (data: { messageId: string }) => {
+      // We don't know whether it was pinned or unpinned without re-fetching;
+      // optimistically toggle and let the next pinned-fetch reconcile.
+      setMessages(prev =>
+        prev.map(m => (m.id === data.messageId ? { ...m, is_pinned: !m.is_pinned } : m)),
+      );
+    },
+  );
+
   const sendMessage = useCallback(async (content: string, replyTo?: string) => {
     if (!channelId || !content.trim()) return;
     setSending(true);

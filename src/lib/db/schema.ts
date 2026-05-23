@@ -59,11 +59,12 @@ CREATE TABLE IF NOT EXISTS chat_files (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Wzmianki (@mentions)
+-- Wzmianki (@mentions) — read_at NULL oznacza nieprzeczytaną wzmiankę
 CREATE TABLE IF NOT EXISTS chat_mentions (
   id TEXT PRIMARY KEY,
   message_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
+  read_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(message_id, user_id)
 );
@@ -151,6 +152,78 @@ CREATE TABLE IF NOT EXISTS news_likes (
   UNIQUE(news_id, user_id)
 );
 
+-- Zapisane wiadomości (bookmarks per user)
+CREATE TABLE IF NOT EXISTS chat_saved_messages (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  note TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, message_id)
+);
+
+-- Przypięte wiadomości w kanale
+CREATE TABLE IF NOT EXISTS chat_pinned_messages (
+  id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  pinned_by TEXT NOT NULL,
+  pinned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(channel_id, message_id)
+);
+
+-- Ankiety (Poll messages — powiązane z message przez message_id)
+CREATE TABLE IF NOT EXISTS chat_polls (
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL UNIQUE,
+  channel_id TEXT NOT NULL,
+  question TEXT NOT NULL,
+  options TEXT NOT NULL,           -- JSON array of strings
+  multiple_choice INTEGER DEFAULT 0,
+  closes_at DATETIME,
+  created_by TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS chat_poll_votes (
+  id TEXT PRIMARY KEY,
+  poll_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  option_idx INTEGER NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(poll_id, user_id, option_idx)
+);
+
+-- Przypomnienia (single-shot, Vercel Cron sweeps and fires)
+CREATE TABLE IF NOT EXISTS chat_reminders (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  remind_at DATETIME NOT NULL,
+  text TEXT NOT NULL,
+  channel_id TEXT,
+  message_id TEXT,
+  delivered_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Kategorie/foldery w sidebarze (per user)
+CREATE TABLE IF NOT EXISTS chat_channel_categories (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  position INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Przypisanie kanału do kategorii (per user)
+CREATE TABLE IF NOT EXISTS chat_channel_category_map (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  category_id TEXT NOT NULL,
+  UNIQUE(user_id, channel_id)
+);
+
 -- Indeksy
 CREATE INDEX IF NOT EXISTS idx_chat_messages_channel ON chat_messages(channel_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_reply ON chat_messages(reply_to);
@@ -162,4 +235,16 @@ CREATE INDEX IF NOT EXISTS idx_chat_mentions_user ON chat_mentions(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_read_receipts_message ON chat_read_receipts(message_id);
 CREATE INDEX IF NOT EXISTS idx_news_comments_news ON news_comments(news_id);
 CREATE INDEX IF NOT EXISTS idx_news_likes_news ON news_likes(news_id);
+CREATE INDEX IF NOT EXISTS idx_chat_saved_user ON chat_saved_messages(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_pinned_channel ON chat_pinned_messages(channel_id);
+CREATE INDEX IF NOT EXISTS idx_chat_polls_channel ON chat_polls(channel_id);
+CREATE INDEX IF NOT EXISTS idx_chat_poll_votes_poll ON chat_poll_votes(poll_id);
+CREATE INDEX IF NOT EXISTS idx_chat_reminders_pending ON chat_reminders(remind_at) WHERE delivered_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_mentions_unread ON chat_mentions(user_id) WHERE read_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_category_map_user ON chat_channel_category_map(user_id);
+
+-- Migrations for existing deployments. SQLite has no "ADD COLUMN IF NOT EXISTS",
+-- so migrate.ts swallows the "duplicate column" error on re-runs.
+ALTER TABLE chat_mentions ADD COLUMN read_at DATETIME;
 `;
+

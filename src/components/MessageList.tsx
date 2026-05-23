@@ -17,6 +17,10 @@ interface MessageListProps {
   onThreadOpen: (message: Message) => void;
   onEdit?: (messageId: string, newContent: string) => Promise<void>;
   onDelete?: (messageId: string) => Promise<void>;
+  onPinToggle?: (messageId: string, pinned: boolean) => Promise<void>;
+  onSaveToggle?: (messageId: string, saved: boolean) => Promise<void>;
+  onRemindMe?: (message: Message) => void;
+  onForward?: (message: Message) => void;
   emptyState?: { title: string; subtitle?: string };
 }
 
@@ -37,6 +41,10 @@ export default function MessageList({
   onThreadOpen,
   onEdit,
   onDelete,
+  onPinToggle,
+  onSaveToggle,
+  onRemindMe,
+  onForward,
   emptyState,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -133,6 +141,10 @@ export default function MessageList({
               onThreadOpen={() => onThreadOpen(message)}
               onEdit={onEdit}
               onDelete={onDelete}
+              onPinToggle={onPinToggle}
+              onSaveToggle={onSaveToggle}
+              onRemindMe={onRemindMe}
+              onForward={onForward}
               currentUserId={currentUserId}
             />
           </div>

@@ -5,6 +5,7 @@ import { format } from 'date-fns';
 import type { Message, Reaction } from '@/types';
 import { parseDbDate } from '@/lib/datetime';
 import MessageContent from './MessageContent';
+import PollCard from './PollCard';
 
 interface MessageBubbleProps {
   message: Message;
@@ -14,6 +15,10 @@ interface MessageBubbleProps {
   onThreadOpen: () => void;
   onEdit?: (messageId: string, newContent: string) => Promise<void>;
   onDelete?: (messageId: string) => Promise<void>;
+  onPinToggle?: (messageId: string, pinned: boolean) => Promise<void>;
+  onSaveToggle?: (messageId: string, saved: boolean) => Promise<void>;
+  onRemindMe?: (message: Message) => void;
+  onForward?: (message: Message) => void;
   currentUserId: string;
 }
 
@@ -27,6 +32,10 @@ export default function MessageBubble({
   onThreadOpen,
   onEdit,
   onDelete,
+  onPinToggle,
+  onSaveToggle,
+  onRemindMe,
+  onForward,
   currentUserId,
 }: MessageBubbleProps) {
   const [showActions, setShowActions] = useState(false);
@@ -145,6 +154,14 @@ export default function MessageBubble({
                 </div>
               )}
 
+              {message.is_pinned && !editing && (
+                <div className={`flex items-center gap-1 text-[10px] font-medium mb-1 ${isOwn ? 'text-white/70' : 'text-amber-600 dark:text-amber-300'}`}>
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M5 9V2a1 1 0 011-1h8a1 1 0 011 1v7l1.447 2.894A1 1 0 0114.553 13H12v5a1 1 0 11-2 0v-5H7.447a1 1 0 01-.894-1.106L5 9z" />
+                  </svg>
+                  Przypięte
+                </div>
+              )}
               {editing ? (
                 <div>
                   <textarea
@@ -186,6 +203,8 @@ export default function MessageBubble({
                   </div>
                   {editError && <p className={`text-[11px] mt-1 ${isOwn ? 'text-white/90' : 'text-red-500'}`}>{editError}</p>}
                 </div>
+              ) : message.type === 'poll' && message.poll ? (
+                <PollCard poll={message.poll} currentUserId={currentUserId} isOwn={isOwn} />
               ) : (
                 <>
                   <MessageContent content={message.content} isOwn={isOwn} />
@@ -245,39 +264,78 @@ export default function MessageBubble({
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
                   </svg>
                 </button>
-                {isOwn && (onEdit || onDelete) && (
-                  <div className="relative">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setShowOverflow(s => !s); }}
-                      className="w-7 h-7 rounded-md hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                      title="Więcej"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 11.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 17a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
-                      </svg>
-                    </button>
-                    {showOverflow && (
-                      <div className={`absolute top-full mt-1 ${isOwn ? 'right-0' : 'left-0'} w-32 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl py-1 z-20`}>
-                        {onEdit && (
+                <div className="relative">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShowOverflow(s => !s); }}
+                    className="w-7 h-7 rounded-md hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                    title="Więcej"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M10 6a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 11.5a1.5 1.5 0 110-3 1.5 1.5 0 010 3zM10 17a1.5 1.5 0 110-3 1.5 1.5 0 010 3z" />
+                    </svg>
+                  </button>
+                  {showOverflow && (
+                    <div className={`absolute top-full mt-1 ${isOwn ? 'right-0' : 'left-0'} w-44 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl py-1 z-20`}>
+                      {onSaveToggle && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowOverflow(false); void onSaveToggle(message.id, !message.is_saved); }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
+                        >
+                          <span>{message.is_saved ? '✓' : '🔖'}</span>
+                          {message.is_saved ? 'Usuń z zapisanych' : 'Zapisz'}
+                        </button>
+                      )}
+                      {onPinToggle && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowOverflow(false); void onPinToggle(message.id, !message.is_pinned); }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
+                        >
+                          <span>📌</span>
+                          {message.is_pinned ? 'Odepnij' : 'Przypnij w kanale'}
+                        </button>
+                      )}
+                      {onRemindMe && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowOverflow(false); onRemindMe(message); }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
+                        >
+                          <span>⏰</span>
+                          Przypomnij mi
+                        </button>
+                      )}
+                      {onForward && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowOverflow(false); onForward(message); }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
+                        >
+                          <span>↗️</span>
+                          Prześlij dalej
+                        </button>
+                      )}
+                      {isOwn && onEdit && (
+                        <>
+                          <hr className="my-1 border-slate-100 dark:border-slate-700" />
                           <button
                             onClick={(e) => { e.stopPropagation(); setShowOverflow(false); setEditing(true); }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
+                            className="w-full text-left px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center gap-2"
                           >
+                            <span>✏️</span>
                             Edytuj
                           </button>
-                        )}
-                        {onDelete && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setShowOverflow(false); void handleDelete(); }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
-                          >
-                            Usuń
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                        </>
+                      )}
+                      {isOwn && onDelete && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowOverflow(false); void handleDelete(); }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 flex items-center gap-2"
+                        >
+                          <span>🗑</span>
+                          Usuń
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

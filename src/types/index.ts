@@ -41,7 +41,7 @@ export interface Message {
   channel_id: string;
   user_id: string;
   content: string;
-  type: 'text' | 'voice' | 'file' | 'system';
+  type: 'text' | 'voice' | 'file' | 'system' | 'poll';
   reply_to?: string;
   edited_at?: string;
   deleted_at?: string;
@@ -53,6 +53,9 @@ export interface Message {
   reply_message?: Message;
   reply_count?: number;
   read_by?: string[];
+  poll?: Poll;
+  is_pinned?: boolean;
+  is_saved?: boolean;
 }
 
 export interface Reaction {
@@ -126,4 +129,63 @@ export interface Contact {
   avatar_url?: string;
   created_at: string;
   status?: UserStatus;
+}
+
+export interface SavedMessage {
+  id: string;
+  user_id: string;
+  message_id: string;
+  note?: string;
+  created_at: string;
+  message?: Message & { channel?: Pick<Channel, 'id' | 'name' | 'slug' | 'type'> & { other_user_id?: string } };
+}
+
+export interface PinnedMessage {
+  id: string;
+  channel_id: string;
+  message_id: string;
+  pinned_by: string;
+  pinned_at: string;
+  message?: Message;
+}
+
+export interface MentionInboxItem {
+  id: string;
+  message_id: string;
+  user_id: string;
+  read_at?: string | null;
+  created_at: string;
+  message?: Message & { channel?: Pick<Channel, 'id' | 'name' | 'slug' | 'type'> & { other_user_id?: string } };
+}
+
+export interface Poll {
+  id: string;
+  message_id: string;
+  channel_id: string;
+  question: string;
+  options: string[];
+  multiple_choice: boolean;
+  closes_at?: string | null;
+  created_by: string;
+  created_at: string;
+  votes?: { option_idx: number; user_id: string; user_name?: string }[];
+}
+
+export interface Reminder {
+  id: string;
+  user_id: string;
+  remind_at: string;
+  text: string;
+  channel_id?: string | null;
+  message_id?: string | null;
+  delivered_at?: string | null;
+  created_at: string;
+}
+
+export interface ChannelCategory {
+  id: string;
+  user_id: string;
+  name: string;
+  position: number;
+  created_at: string;
 }

@@ -51,6 +51,36 @@ export async function GET(req: NextRequest) {
 
     const result = await db.execute({ sql, args });
 
+    // Bulk-fetch polls and pinned flags so per-message subqueries stay lightweight.
+    const messageIds = result.rows.map(r => r.id as string);
+    let pollsByMessage = new Map<string, any>();
+    let pinnedSet = new Set<string>();
+    let savedSet = new Set<string>();
+    if (messageIds.length > 0) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      const [pollsRes, pinnedRes, savedRes] = await Promise.all([
+        db.execute({
+          sql: `SELECT p.id, p.message_id, p.channel_id, p.question, p.options, p.multiple_choice,
+                       p.closes_at, p.created_by, p.created_at
+                FROM chat_polls p WHERE p.message_id IN (${placeholders})`,
+          args: messageIds,
+        }),
+        db.execute({
+          sql: `SELECT message_id FROM chat_pinned_messages WHERE message_id IN (${placeholders})`,
+          args: messageIds,
+        }),
+        db.execute({
+          sql: `SELECT message_id FROM chat_saved_messages WHERE user_id = ? AND message_id IN (${placeholders})`,
+          args: [user.id, ...messageIds],
+        }),
+      ]);
+      for (const p of pollsRes.rows) {
+        pollsByMessage.set(p.message_id as string, p);
+      }
+      for (const pr of pinnedRes.rows) pinnedSet.add(pr.message_id as string);
+      for (const sr of savedRes.rows) savedSet.add(sr.message_id as string);
+    }
+
     // Get reactions, files, and reply data for each message
     const messages = await Promise.all(result.rows.map(async (row) => {
       const queries: Promise<any>[] = [
@@ -93,6 +123,31 @@ export async function GET(req: NextRequest) {
         };
       }
 
+      let poll: any = undefined;
+      const pollRow = pollsByMessage.get(row.id as string);
+      if (pollRow) {
+        const votes = await db.execute({
+          sql: `SELECT v.user_id, v.option_idx, u.username as user_name
+                FROM chat_poll_votes v JOIN users u ON u.id = v.user_id
+                WHERE v.poll_id = ?`,
+          args: [pollRow.id],
+        });
+        poll = {
+          id: pollRow.id,
+          message_id: pollRow.message_id,
+          channel_id: pollRow.channel_id,
+          question: pollRow.question,
+          options: JSON.parse(String(pollRow.options || '[]')),
+          multiple_choice: Boolean(pollRow.multiple_choice),
+          closes_at: pollRow.closes_at,
+          created_by: pollRow.created_by,
+          created_at: pollRow.created_at,
+          votes: votes.rows.map(v => ({
+            user_id: v.user_id, user_name: v.user_name, option_idx: Number(v.option_idx),
+          })),
+        };
+      }
+
       return {
         ...row,
         user: { id: row.user_id, name: row.user_name, email: row.user_email, avatar_url: undefined },
@@ -100,6 +155,9 @@ export async function GET(req: NextRequest) {
         files: files.rows,
         reply_count: replyCount.rows[0]?.count || 0,
         reply_message,
+        poll,
+        is_pinned: pinnedSet.has(row.id as string),
+        is_saved: savedSet.has(row.id as string),
       };
     }));
 

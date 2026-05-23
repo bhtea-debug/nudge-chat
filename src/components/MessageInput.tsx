@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, KeyboardEvent, ChangeEvent } 
 import dynamic from 'next/dynamic';
 import { init as emojiInit, SearchIndex } from 'emoji-mart';
 import emojiData from '@emoji-mart/data';
+import { parseSlash, SLASH_HELP } from '@/lib/slash';
 
 const EmojiPicker = dynamic(() => import('@emoji-mart/react'), { ssr: false });
 
@@ -233,6 +234,57 @@ export default function MessageInput({ onSend, sending, channelId, replyTo, onCa
     setEmoji(null);
     onCancelReply?.();
     resetHeight();
+
+    // Slash commands intercept the send.
+    const intent = parseSlash(toSend.trim());
+    if (intent) {
+      try {
+        if (intent.kind === 'unknown') {
+          throw new Error(intent.hint);
+        }
+        if (intent.kind === 'poll') {
+          const res = await fetch('/api/polls', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channelId,
+              question: intent.question,
+              options: intent.options,
+              multipleChoice: intent.multiple,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Nie udało się stworzyć ankiety');
+          }
+          return;
+        }
+        if (intent.kind === 'remind') {
+          const res = await fetch('/api/reminders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              remindAt: intent.remindAt.toISOString(),
+              text: intent.text,
+              channelId,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Nie udało się ustawić przypomnienia');
+          }
+          return;
+        }
+        // intent.kind === 'message' — transformed content (e.g. /me, /shrug)
+        await onSend(intent.content, replyId);
+        return;
+      } catch (e: any) {
+        setContent(toSend);
+        setSendError(e?.message || 'Nie udało się wykonać polecenia');
+        return;
+      }
+    }
+
     try {
       await onSend(toSend, replyId);
     } catch (e: any) {
@@ -368,6 +420,25 @@ export default function MessageInput({ onSend, sending, channelId, replyTo, onCa
               <div className="min-w-0">
                 <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{u.name}</p>
                 {u.email && <p className="text-xs text-slate-400 truncate">{u.email}</p>}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* slash command help — only when input starts with `/` and no space yet */}
+      {!mention && !emoji && content.startsWith('/') && !content.includes(' ') && (
+        <div className="absolute bottom-full mb-1 left-4 right-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden z-20">
+          {SLASH_HELP.filter(s => s.command.startsWith(content.toLowerCase())).slice(0, 6).map(s => (
+            <button
+              key={s.command}
+              onClick={() => { setContent(s.syntax.replace(/^\/[a-z]+/, s.command) + ' '); requestAnimationFrame(() => textareaRef.current?.focus()); }}
+              className="w-full flex items-start gap-3 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50"
+            >
+              <code className="font-mono text-xs font-semibold text-indigo-600 dark:text-indigo-300 mt-0.5 shrink-0">{s.command}</code>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-slate-700 dark:text-slate-200">{s.description}</p>
+                <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate">{s.example}</p>
               </div>
             </button>
           ))}

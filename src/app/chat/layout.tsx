@@ -5,18 +5,23 @@ import { useAuth } from '@/hooks/useAuth';
 import { usePWA } from '@/hooks/usePWA';
 import { useNotifications } from '@/hooks/useNotifications';
 import { PresenceProvider } from '@/hooks/usePresence';
+import { MentionsProvider } from '@/hooks/useMentions';
+import { usePusherEvent } from '@/hooks/usePusher';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
 import ChannelList from '@/components/ChannelList';
 import MobileTabBar from '@/components/MobileTabBar';
 import NotificationPrompt from '@/components/NotificationPrompt';
 import QuickSwitcher from '@/components/QuickSwitcher';
+import ShortcutsOverlay from '@/components/ShortcutsOverlay';
 import type { Channel } from '@/types';
+
+const SUB_PAGES = ['/chat/contacts', '/chat/news', '/chat/saved', '/chat/mentions', '/chat/settings'];
 
 function ChatShell({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const { isOnline } = usePWA();
-  const { setActiveChannel } = useNotifications();
+  const { setActiveChannel, showNotification } = useNotifications();
   const router = useRouter();
   const pathname = usePathname();
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -25,9 +30,10 @@ function ChatShell({ children }: { children: React.ReactNode }) {
   const [showMobileChat, setShowMobileChat] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   useEffect(() => {
-    const inChannel = pathname !== '/chat' && !pathname.startsWith('/chat/contacts') && !pathname.startsWith('/chat/news');
+    const inChannel = pathname !== '/chat' && !SUB_PAGES.some(p => pathname.startsWith(p));
     if (inChannel) setShowMobileChat(true);
   }, [pathname]);
 
@@ -74,11 +80,33 @@ function ChatShell({ children }: { children: React.ReactNode }) {
       if (meta && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setQuickSwitcherOpen(true);
+        return;
+      }
+      // `?` (Shift+/) — open shortcuts overlay, but don't trap while typing.
+      if (e.key === '?' && !meta) {
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+        e.preventDefault();
+        setShortcutsOpen(true);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
+
+  // Reminder push — fired by Vercel Cron via Pusher.
+  usePusherEvent(
+    user ? `private-user-${user.id}` : null,
+    'reminder',
+    (data: { text: string; channelId?: string; messageId?: string }) => {
+      showNotification('⏰ Przypomnienie', {
+        body: data.text,
+        url: data.channelId ? `/chat/${data.channelId}` : '/chat',
+        tag: `reminder-${data.messageId || Date.now()}`,
+      });
+    },
+  );
 
   function handleChannelSelect(channel: Channel) {
     setActiveChannelId(channel.id);
@@ -108,7 +136,7 @@ function ChatShell({ children }: { children: React.ReactNode }) {
 
   if (!user) return null;
 
-  const isSubPage = pathname.startsWith('/chat/contacts') || pathname.startsWith('/chat/news');
+  const isSubPage = SUB_PAGES.some(p => pathname.startsWith(p));
 
   return (
     <div className="h-[100dvh] flex flex-col bg-white dark:bg-slate-950 overflow-hidden safe-top">
@@ -155,7 +183,9 @@ function ChatShell({ children }: { children: React.ReactNode }) {
                     <p className="text-slate-400 dark:text-slate-500 mt-1 text-sm">
                       Kliknij kanał z listy, lub naciśnij{' '}
                       <kbd className="font-mono text-[11px] px-1.5 py-0.5 border border-slate-200 dark:border-slate-700 rounded">⌘K</kbd>{' '}
-                      aby szybko znaleźć osobę.
+                      aby szybko znaleźć osobę. Naciśnij{' '}
+                      <kbd className="font-mono text-[11px] px-1.5 py-0.5 border border-slate-200 dark:border-slate-700 rounded">?</kbd>{' '}
+                      aby zobaczyć skróty.
                     </p>
                   </div>
                 </div>
@@ -188,11 +218,8 @@ function ChatShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <NotificationPrompt />
-      <QuickSwitcher
-        channels={channels}
-        open={quickSwitcherOpen}
-        onClose={() => setQuickSwitcherOpen(false)}
-      />
+      <QuickSwitcher channels={channels} open={quickSwitcherOpen} onClose={() => setQuickSwitcherOpen(false)} />
+      <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }
@@ -200,7 +227,9 @@ function ChatShell({ children }: { children: React.ReactNode }) {
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   return (
     <PresenceProvider>
-      <ChatShell>{children}</ChatShell>
+      <MentionsProvider>
+        <ChatShell>{children}</ChatShell>
+      </MentionsProvider>
     </PresenceProvider>
   );
 }
