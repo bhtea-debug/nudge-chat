@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
 import type { Message } from '@/types';
+import { parseDbDate } from '@/lib/datetime';
+import { usePusherEvent } from '@/hooks/usePusher';
 import MessageBubble from './MessageBubble';
 
 interface ThreadPanelProps {
@@ -17,38 +19,69 @@ export default function ThreadPanel({ message, channelId, currentUserId, onClose
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchReplies();
-    const interval = setInterval(fetchReplies, 5000);
-    return () => clearInterval(interval);
-  }, [message.id]);
-
-  async function fetchReplies() {
-    try {
-      const res = await fetch(`/api/messages?channelId=${channelId}&replyTo=${message.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setReplies(data.messages);
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/messages?channelId=${channelId}&replyTo=${message.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) setReplies(data.messages);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    } finally {
-      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [message.id, channelId]);
+
+  // Real-time reply delivery — previously polled every 5s, which hammered Turso
+  // and gave 0-5s lag. Server already broadcasts `new-message` on the channel.
+  usePusherEvent(
+    `presence-channel-${channelId}`,
+    'new-message',
+    (incoming: Message) => {
+      if (incoming.reply_to !== message.id) return;
+      setReplies(prev => (prev.some(r => r.id === incoming.id) ? prev : [...prev, incoming]));
     }
-  }
+  );
+
+  usePusherEvent(
+    `presence-channel-${channelId}`,
+    'message-deleted',
+    (data: { messageId: string }) => {
+      setReplies(prev => prev.filter(r => r.id !== data.messageId));
+    }
+  );
 
   async function sendReply() {
     if (!content.trim() || sending) return;
+    const toSend = content.trim();
+    setContent('');
+    setSendError(null);
     setSending(true);
     try {
-      await fetch('/api/messages', {
+      const res = await fetch('/api/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channelId, content: content.trim(), replyTo: message.id }),
+        body: JSON.stringify({ channelId, content: toSend, replyTo: message.id }),
       });
-      setContent('');
-      await fetchReplies();
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Wysyłka nieudana (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      // Optimistic insert — Pusher echo will be deduped by id.
+      if (data.message) {
+        setReplies(prev => (prev.some(r => r.id === data.message.id) ? prev : [...prev, data.message]));
+      }
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } catch (e: any) {
+      setContent(toSend);
+      setSendError(e?.message || 'Nie udało się wysłać odpowiedzi');
     } finally {
       setSending(false);
     }
@@ -73,7 +106,7 @@ export default function ThreadPanel({ message, channelId, currentUserId, onClose
             {message.user?.name?.charAt(0).toUpperCase() || '?'}
           </div>
           <span className="text-xs font-semibold text-slate-700">{message.user?.name}</span>
-          <span className="text-[10px] text-slate-400">{format(new Date(message.created_at), 'HH:mm')}</span>
+          <span className="text-[10px] text-slate-400">{format(parseDbDate(message.created_at), 'HH:mm')}</span>
         </div>
         <p className="text-sm text-slate-700 whitespace-pre-wrap">{message.content}</p>
       </div>
@@ -98,7 +131,7 @@ export default function ThreadPanel({ message, channelId, currentUserId, onClose
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-semibold text-slate-700">{reply.user?.name}</span>
-                  <span className="text-[10px] text-slate-400">{format(new Date(reply.created_at), 'HH:mm')}</span>
+                  <span className="text-[10px] text-slate-400">{format(parseDbDate(reply.created_at), 'HH:mm')}</span>
                 </div>
                 <p className="text-sm text-slate-700 whitespace-pre-wrap mt-0.5">{reply.content}</p>
               </div>
@@ -110,6 +143,16 @@ export default function ThreadPanel({ message, channelId, currentUserId, onClose
 
       {/* Reply input */}
       <div className="border-t border-slate-200 p-3">
+        {sendError && (
+          <div className="flex items-center justify-between bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg px-2.5 py-1.5 mb-2">
+            <span className="truncate">⚠ {sendError}</span>
+            <button onClick={() => setSendError(null)} className="ml-2 shrink-0 text-red-500 hover:text-red-700">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             value={content}

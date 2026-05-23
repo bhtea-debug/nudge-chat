@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { format } from 'date-fns';
 import type { Message, Reaction } from '@/types';
+import { parseDbDate } from '@/lib/datetime';
 
 interface MessageBubbleProps {
   message: Message;
@@ -59,7 +60,7 @@ export default function MessageBubble({
                 <span className="text-xs font-semibold text-slate-700">{message.user?.name}</span>
               )}
               <span className="text-[10px] text-slate-400">
-                {format(new Date(message.created_at), 'HH:mm')}
+                {format(parseDbDate(message.created_at), 'HH:mm')}
               </span>
             </div>
           )}
@@ -203,7 +204,7 @@ export default function MessageBubble({
           {isOwn && isConsecutive && (
             <div className="flex justify-end mt-0.5">
               <span className="text-[10px] text-slate-400">
-                {format(new Date(message.created_at), 'HH:mm')}
+                {format(parseDbDate(message.created_at), 'HH:mm')}
               </span>
             </div>
           )}

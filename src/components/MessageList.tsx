@@ -4,6 +4,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { format, isToday, isYesterday } from 'date-fns';
 import { pl } from 'date-fns/locale';
 import type { Message } from '@/types';
+import { parseDbDate } from '@/lib/datetime';
 import MessageBubble from './MessageBubble';
 
 interface MessageListProps {
@@ -17,7 +18,7 @@ interface MessageListProps {
 }
 
 function formatDateDivider(dateStr: string): string {
-  const date = new Date(dateStr);
+  const date = parseDbDate(dateStr);
   if (isToday(date)) return 'Dzisiaj';
   if (isYesterday(date)) return 'Wczoraj';
   return format(date, 'd MMMM yyyy', { locale: pl });
@@ -86,13 +87,13 @@ export default function MessageList({
       )}
 
       {messages.map((message, index) => {
-        const messageDate = format(new Date(message.created_at), 'yyyy-MM-dd');
+        const messageDate = format(parseDbDate(message.created_at), 'yyyy-MM-dd');
         const showDateDivider = messageDate !== lastDate;
         lastDate = messageDate;
 
         const prevMessage = index > 0 ? messages[index - 1] : null;
         const isConsecutive = prevMessage?.user_id === message.user_id && !showDateDivider &&
-          (new Date(message.created_at).getTime() - new Date(prevMessage.created_at).getTime()) < 120000;
+          (parseDbDate(message.created_at).getTime() - parseDbDate(prevMessage.created_at).getTime()) < 120000;
 
         return (
           <div key={message.id}>

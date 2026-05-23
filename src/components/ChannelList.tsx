@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { pl } from 'date-fns/locale';
 import type { Channel, User } from '@/types';
+import { parseDbDate } from '@/lib/datetime';
 import NewChannelModal from './NewChannelModal';
 
 interface ChannelListProps {
@@ -147,7 +148,7 @@ export default function ChannelList({
                     </span>
                     <span className="text-[10px] text-slate-400 shrink-0 ml-2">
                       {channel.last_message_at
-                        ? formatDistanceToNow(new Date(channel.last_message_at as string), { addSuffix: false, locale: pl })
+                        ? formatDistanceToNow(parseDbDate(channel.last_message_at as string), { addSuffix: false, locale: pl })
                         : ''}
                     </span>
                   </div>
