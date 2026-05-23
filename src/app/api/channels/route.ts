@@ -70,8 +70,13 @@ export async function POST(req: NextRequest) {
     const user = await requireUser();
     const { name, description, type, members, icon } = await req.json();
 
+    if (type !== 'dm' && (!name || typeof name !== 'string' || !name.trim())) {
+      return NextResponse.json({ error: 'Name required for group channels' }, { status: 400 });
+    }
+
     const id = nanoid();
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const safeName = (typeof name === 'string' && name.trim()) ? name.trim() : 'DM';
+    const slug = safeName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || id;
 
     if (type === 'dm') {
       // Check if DM already exists between these users
@@ -96,7 +101,7 @@ export async function POST(req: NextRequest) {
     await db.execute({
       sql: `INSERT INTO chat_channels (id, name, slug, description, type, icon, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, name || 'DM', slug || id, description || null, type || 'group', icon || null, user.id],
+      args: [id, safeName, slug, description || null, type || 'group', icon || null, user.id],
     });
 
     // Add creator as admin
@@ -115,7 +120,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ channel: { id, name, slug, type } }, { status: 201 });
+    return NextResponse.json({ channel: { id, name: safeName, slug, type } }, { status: 201 });
   } catch (error: any) {
     if (error.message === 'Unauthorized') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
