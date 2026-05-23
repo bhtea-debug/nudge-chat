@@ -4,7 +4,7 @@
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900 antialiased;
+    @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
   }
 }
 
@@ -12,6 +12,9 @@
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: #cbd5e1 transparent;
+  }
+  .dark .scrollbar-thin {
+    scrollbar-color: #475569 transparent;
   }
   .scrollbar-thin::-webkit-scrollbar {
     width: 6px;
@@ -23,6 +26,18 @@
     background-color: #cbd5e1;
     border-radius: 3px;
   }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #475569;
+  }
+}
+
+/* Drag-and-drop overlay */
+@keyframes pulseDrop {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 1; }
+}
+.drop-overlay {
+  animation: pulseDrop 1.4s ease-in-out infinite;
 }
 
 /* Message bubble animations */

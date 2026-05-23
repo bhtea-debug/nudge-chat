@@ -19,6 +19,21 @@ function getPusher(): PusherClient {
   return pusherInstance;
 }
 
+// Fire-and-forget Pusher client event. Useful for ephemeral signals like
+// typing indicators that don't need to round-trip the server. Requires the
+// Pusher app to have client events enabled in the dashboard; the call is a
+// no-op if the channel isn't subscribed yet.
+export function triggerClientEvent(channelName: string, event: string, data: any): boolean {
+  if (!pusherInstance) return false;
+  const channel = pusherInstance.channel(channelName);
+  if (!channel || !(channel as any).subscribed) return false;
+  try {
+    return channel.trigger(`client-${event}`, data);
+  } catch {
+    return false;
+  }
+}
+
 function subscribeChannel(channelName: string): Channel {
   const pusher = getPusher();
   const count = channelRefCounts.get(channelName) || 0;

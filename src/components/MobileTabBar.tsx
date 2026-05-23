@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useTheme } from '@/hooks/useTheme';
 
 interface MobileTabBarProps {
   activeTab: 'chat' | 'contacts' | 'news';
@@ -12,6 +13,7 @@ interface MobileTabBarProps {
 
 export default function MobileTabBar({ activeTab, unreadCount, onLogout, userName }: MobileTabBarProps) {
   const router = useRouter();
+  const { resolved, toggle } = useTheme();
   const [showProfile, setShowProfile] = useState(false);
 
   const tabs = [
@@ -66,20 +68,26 @@ export default function MobileTabBar({ activeTab, unreadCount, onLogout, userNam
       {showProfile && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowProfile(false)} />
-          <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl p-6 safe-bottom animate-slide-up">
-            <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-6" />
+          <div className="absolute bottom-0 left-0 right-0 bg-white dark:bg-slate-900 rounded-t-2xl p-6 safe-bottom animate-slide-up">
+            <div className="w-10 h-1 bg-slate-200 dark:bg-slate-700 rounded-full mx-auto mb-6" />
             <div className="flex items-center gap-3 mb-6">
               <div className="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-white font-bold text-lg">
                 {userName?.charAt(0).toUpperCase() || '?'}
               </div>
               <div>
-                <p className="font-semibold text-slate-900">{userName}</p>
-                <p className="text-sm text-slate-400">Online</p>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">{userName}</p>
+                <p className="text-sm text-emerald-500">Online</p>
               </div>
             </div>
             <button
+              onClick={() => { toggle(); }}
+              className="w-full py-3 px-4 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-sm mb-2 flex items-center justify-center gap-2"
+            >
+              {resolved === 'dark' ? '☀️ Tryb jasny' : '🌙 Tryb ciemny'}
+            </button>
+            <button
               onClick={() => { setShowProfile(false); onLogout(); }}
-              className="w-full py-3 px-4 bg-red-50 text-red-600 font-medium rounded-xl hover:bg-red-100 transition-colors text-sm"
+              className="w-full py-3 px-4 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 font-medium rounded-xl hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors text-sm"
             >
               Wyloguj się
             </button>
@@ -88,7 +96,7 @@ export default function MobileTabBar({ activeTab, unreadCount, onLogout, userNam
       )}
 
       {/* Tab bar */}
-      <div className="bg-white border-t border-slate-200 safe-bottom">
+      <div className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 safe-bottom">
         <div className="flex items-center justify-around px-2 pt-1.5 pb-1">
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id;
@@ -97,7 +105,7 @@ export default function MobileTabBar({ activeTab, unreadCount, onLogout, userNam
                 key={tab.id}
                 onClick={() => router.push(tab.path)}
                 className={`flex flex-col items-center gap-0.5 px-4 py-1.5 rounded-xl transition-colors relative ${
-                  isActive ? 'text-indigo-600' : 'text-slate-400'
+                  isActive ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-400 dark:text-slate-500'
                 }`}
               >
                 <div className="relative">
@@ -116,7 +124,7 @@ export default function MobileTabBar({ activeTab, unreadCount, onLogout, userNam
           {/* Profile tab */}
           <button
             onClick={() => setShowProfile(true)}
-            className="flex flex-col items-center gap-0.5 px-4 py-1.5 text-slate-400"
+            className="flex flex-col items-center gap-0.5 px-4 py-1.5 text-slate-400 dark:text-slate-500"
           >
             <div className="w-6 h-6 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500 flex items-center justify-center text-white font-bold text-[10px]">
               {userName?.charAt(0).toUpperCase() || '?'}

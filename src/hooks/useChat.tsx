@@ -170,6 +170,36 @@ export function useChat(channelId: string | null) {
     }
   }, []);
 
+  const editMessage = useCallback(async (messageId: string, newContent: string) => {
+    if (!newContent.trim()) return;
+    // Optimistic update — Pusher echo (message-updated) is idempotent.
+    setMessages(prev =>
+      prev.map(m => (m.id === messageId ? { ...m, content: newContent, edited_at: new Date().toISOString() } : m)),
+    );
+    const res = await fetch('/api/messages', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageId, content: newContent.trim() }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Edycja nieudana (HTTP ${res.status})`);
+    }
+  }, []);
+
+  const deleteMessage = useCallback(async (messageId: string) => {
+    setMessages(prev => prev.filter(m => m.id !== messageId));
+    const res = await fetch(`/api/messages?messageId=${encodeURIComponent(messageId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      // Re-fetch on failure to recover the message we optimistically removed.
+      fetchMessages();
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `Usunięcie nieudane (HTTP ${res.status})`);
+    }
+  }, [fetchMessages]);
+
   const loadMore = useCallback(() => {
     if (messages.length > 0 && hasMore && !loading) {
       fetchMessages(messages[0].created_at);
@@ -183,6 +213,8 @@ export function useChat(channelId: string | null) {
     sending,
     sendMessage,
     toggleReaction,
+    editMessage,
+    deleteMessage,
     loadMore,
   };
 }
