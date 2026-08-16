@@ -52,6 +52,19 @@ const DEFAULT_CONNECTION_TIMEOUT_MS = 20_000;
 const DEFAULT_SOCKET_TIMEOUT_MS = 90_000;
 /** Blokada skrzynki nie może czekać w nieskończoność na zwolnienie. */
 const LOCK_ACQUIRE_TIMEOUT_MS = 30_000;
+/**
+ * Ile referencji wątku najwyżej sprawdzamy. Wątki przechodzące przez systemy
+ * zgłoszeniowe mają po kilkadziesiąt pozycji w References, a interesują nas
+ * najbliżsi przodkowie. Przekroczenie limitu jest RAPORTOWANE jako niepełność,
+ * nie przemilczane.
+ */
+const MAX_THREAD_LOOKUPS = 25;
+/** Ile Message-ID w jednym SEARCH ... OR. Chroni przed bardzo długim poleceniem. */
+const SEARCH_OR_CHUNK = 10;
+/** Odczekanie przed ponownym połączeniem — daje serwerowi zwolnić stary slot. */
+const RECONNECT_GRACE_MS = 1_500;
+/** Łącznie prób połączenia. Jedno ponowienie, nie pętla. */
+const CONNECT_ATTEMPTS = 2;
 
 /**
  * Adapter IMAP. Read-only na trzech poziomach:
@@ -127,6 +140,26 @@ export class ImapMailProvider implements MailProvider {
 
   private async connect(): Promise<ImapFlow> {
     if (this.client?.usable) return this.client;
+
+    // Jeśli poprzednie połączenie padło, serwer może jeszcze trzymać zajęty
+    // slot IMAP dla tego konta — a dostawcy limitują liczbę równoległych
+    // połączeń. Wtedy natychmiastowa próba ponowna kończy się CONNECT_TIMEOUT.
+    // Dlatego przy ponownym łączeniu domykamy stary uchwyt i dajemy chwilę.
+    if (this.client) {
+      const stale = this.client;
+      this.client = null;
+      try {
+        stale.close();
+      } catch {
+        // Uchwyt i tak jest nieużywalny; liczy się zwolnienie socketu.
+      }
+      await new Promise((r) => setTimeout(r, RECONNECT_GRACE_MS));
+    }
+
+    return this.openConnection();
+  }
+
+  private async openConnection(attempt = 1): Promise<ImapFlow> {
     const client = new ImapFlow({
       host: this.cfg.host,
       port: this.cfg.port,
@@ -159,15 +192,25 @@ export class ImapMailProvider implements MailProvider {
         .join(" | ");
 
       if (e?.authenticationFailed) {
+        // Złe hasło nie naprawi się przez ponowienie.
         throw new CapabilityError(
           "auth_failed",
           `serwer poczty odrzucił dane logowania dla ${this.cfg.host}:${this.cfg.port} — ${detail || "serwer nie podał powodu"}`,
           err,
         );
       }
+
+      // Timeout połączenia po stronie dostawcy bywa przejściowy: zajęty slot
+      // IMAP, chwilowy limit. Jedno ponowienie z odczekaniem, potem koniec —
+      // pętla ponowień na produkcji jest gorsza od uczciwego błędu.
+      if (attempt < CONNECT_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, RECONNECT_GRACE_MS * attempt));
+        return this.openConnection(attempt + 1);
+      }
+
       throw new CapabilityError(
         "upstream_unavailable",
-        `nie udało się nawiązać połączenia z ${this.cfg.host}:${this.cfg.port} — ${detail || "brak szczegółów od klienta IMAP"}`,
+        `nie udało się nawiązać połączenia z ${this.cfg.host}:${this.cfg.port} po ${attempt} próbach — ${detail || "brak szczegółów od klienta IMAP"}`,
         err,
       );
     }
@@ -264,16 +307,26 @@ export class ImapMailProvider implements MailProvider {
     if (!seed) return null;
 
     // 2. Zbierz Message-ID całego wątku z References + In-Reply-To.
-    const wantedIds = new Set(threadMemberIds(seed.message));
     const collected = new Map<string, ParsedRecord>([[seed.message.id, seed]]);
+    const wantedIds = threadMemberIds(seed.message).filter((id) => !collected.has(id));
 
-    // 3. Dociągnij pozostałe wiadomości wątku ze skonfigurowanych folderów.
-    for (const id of wantedIds) {
-      if (collected.has(id)) continue;
-      if (collected.size >= opts.maxMessages) break;
-      const found = await this.findByMessageId(client, id, opts.signal, problems);
-      if (found) collected.set(found.message.id, found);
+    // 3. Dociągnij pozostałe wiadomości wątku — JEDNYM zapytaniem na folder.
+    //
+    // Poprzednia wersja pytała osobno o każdą referencję w każdym folderze.
+    // Na prawdziwym wątku z 28 referencjami to było ~58 zapytań i tyle samo
+    // blokad skrzynki na JEDNO odtworzenie wątku — Zenbox rozłączył połączenie
+    // w trakcie. `maxMessages` ograniczał wynik, ale nie ilość PRACY.
+    //
+    // IMAP SEARCH ma kryterium OR, więc wszystkie Message-ID idą w jednym
+    // zapytaniu. Kolejność referencji jest od najstarszej do najnowszej, więc
+    // bierzemy OGON — najbliżsi przodkowie są tym, co w wątku istotne.
+    const lookupIds = wantedIds.slice(-MAX_THREAD_LOOKUPS);
+    if (lookupIds.length < wantedIds.length) {
+      problems.push(
+        `wątek wskazuje ${wantedIds.length} wiadomości; sprawdzono ${lookupIds.length} najbliższych`,
+      );
     }
+    await this.collectByMessageIds(client, lookupIds, collected, opts, problems);
 
     // 4. Dołóż odpowiedzi, które wskazują na ziarno (References go zawiera).
     for (const folder of await this.threadFolderList()) {
@@ -386,6 +439,76 @@ export class ImapMailProvider implements MailProvider {
       }
     }
     return out;
+  }
+
+  /**
+   * Dociąga wiele wiadomości po Message-ID jednym zapytaniem na folder.
+   *
+   * Kryterium `or` w IMAP SEARCH zamienia N zapytań na jedno. Chunkujemy je,
+   * bo polecenie SEARCH z kilkudziesięcioma nagłówkami robi się długie, a
+   * części serwerów nie da się zaufać przy bardzo długich poleceniach.
+   */
+  private async collectByMessageIds(
+    client: ImapFlow,
+    ids: readonly string[],
+    collected: Map<string, ParsedRecord>,
+    opts: GetThreadOptions,
+    problems: string[],
+  ): Promise<void> {
+    if (ids.length === 0) return;
+
+    for (const folder of await this.threadFolderList()) {
+      if (collected.size >= opts.maxMessages) return;
+
+      const missing = ids.filter((id) => !collected.has(id));
+      if (missing.length === 0) return;
+
+      let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
+      try {
+        lock = await client.getMailboxLock(folder, {
+          readOnly: true,
+          acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS,
+        });
+
+        const uids = new Set<number>();
+        for (let i = 0; i < missing.length; i += SEARCH_OR_CHUNK) {
+          const chunk = missing.slice(i, i + SEARCH_OR_CHUNK);
+          const criteria =
+            chunk.length === 1
+              ? { header: { "Message-ID": chunk[0]! } }
+              : { or: chunk.map((id) => ({ header: { "Message-ID": id } })) };
+          try {
+            for (const u of await this.searchUids(client, criteria, opts.signal)) uids.add(u);
+          } catch (err) {
+            problems.push(
+              `zbiorcze szukanie ${chunk.length} wiadomości w "${folder}" nie udało się: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+
+        if (uids.size > 0) {
+          const records = await this.fetchByUids(
+            client,
+            [...uids].sort((a, b) => a - b).slice(-opts.maxMessages),
+            folder,
+            opts.signal,
+            problems,
+          );
+          for (const rec of records) {
+            if (collected.size >= opts.maxMessages) break;
+            if (!collected.has(rec.message.id)) collected.set(rec.message.id, rec);
+          }
+        }
+      } catch (err) {
+        problems.push(
+          `folder "${folder}" niedostępny: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        lock?.release();
+      }
+    }
   }
 
   private async findByMessageId(
