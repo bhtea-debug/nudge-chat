@@ -155,3 +155,54 @@ describe("łatka TeaBrew — trasy HTTP", () => {
     }
   });
 });
+
+describe("MCP jest adapterem, nie drugim systemem", () => {
+  const MCP = stripComments(
+    readFileSync(new URL("../src/bin/mcp.ts", import.meta.url), "utf8"),
+  );
+
+  it("lista narzędzi pochodzi z rejestru, nie z ręcznej tablicy", () => {
+    expect(MCP.includes("app.registry")).toBe(true);
+    expect(MCP.includes("toMcpToolList")).toBe(true);
+    // Żadnej własnej definicji narzędzia ani schematu w adapterze.
+    expect(MCP.includes("inputSchema:")).toBe(false);
+    expect(MCP.includes("z.object")).toBe(false);
+  });
+
+  it("wywołania idą przez registry.invoke, nie do dostawców wprost", () => {
+    expect(MCP.includes("registry.invoke")).toBe(true);
+    for (const bypass of ["MailProvider", "ImapMailProvider", "TeabrewReader", "HttpTeabrewReader"]) {
+      expect(MCP.includes(bypass), `MCP omija rejestr przez ${bypass}`).toBe(false);
+    }
+  });
+
+  it("wystawia wyłącznie capability read — jawnie, w adapterze", () => {
+    // Nie wystarczy, że rejestr innych nie przyjmuje. Gdyby kiedyś przyjął,
+    // capability zapisująca nie może trafić do publicznego MCP automatycznie.
+    expect(MCP).toMatch(/effectClass === "read"/);
+  });
+
+  it("polityka obowiązuje i przy tools/list, i przy tools/call", () => {
+    const listIdx = MCP.indexOf('"tools/list"');
+    const callIdx = MCP.indexOf('"tools/call"');
+    expect(listIdx).toBeGreaterThan(-1);
+    expect(callIdx).toBeGreaterThan(-1);
+    // publishedTools() musi być użyte w obu gałęziach.
+    const afterCall = MCP.slice(callIdx);
+    expect(afterCall.includes("publishedTools()")).toBe(true);
+    expect(MCP.slice(listIdx, callIdx).includes("publishedTools()")).toBe(true);
+  });
+
+  it("nie woła modelu po naszej stronie", () => {
+    // Cały sens trybu MCP: modelem jest Claude po stronie klienta.
+    for (const own of ["app.models", "app.operator", "app.triage", "ModelLayer", "Anthropic"]) {
+      expect(MCP.includes(own), `MCP woła własny model przez ${own}`).toBe(false);
+    }
+  });
+
+  it("audyt i korelacja są zachowane", () => {
+    expect(MCP.includes("MemoryAuditSink")).toBe(true);
+    expect(MCP.includes("correlationId")).toBe(true);
+    expect(MCP.includes("scopes: AGENT_SCOPES")).toBe(true);
+  });
+});

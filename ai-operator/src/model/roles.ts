@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AppConfig } from "../config.js";
+import { CapabilityError } from "../capability/types.js";
 
 /**
  * Warstwa modeli oparta na ROLACH, nie na nazwach modeli.
@@ -32,6 +33,16 @@ export class ModelLayer {
   private readonly profiles: Record<ModelRole, RoleProfile>;
 
   constructor(cfg: AppConfig) {
+    // Sprawdzane tutaj, a nie przy wczytywaniu konfiguracji: klucz jest
+    // potrzebny wyłącznie wtedy, gdy MY wołamy model. W trybie MCP modelem jest
+    // Claude po stronie klienta, więc wymaganie klucza blokowałoby start bez powodu.
+    if (!cfg.anthropicApiKey) {
+      throw new CapabilityError(
+        "not_configured",
+        "brak ANTHROPIC_API_KEY — jest wymagany tylko dla `ask` i `triage`, " +
+          "które wołają model po naszej stronie. Tryb MCP go nie potrzebuje.",
+      );
+    }
     this.client = new Anthropic({ apiKey: cfg.anthropicApiKey });
     this.profiles = {
       fast: { model: cfg.models.fast, maxTokens: 2_048 },

@@ -17,6 +17,14 @@ export const AGENT_SCOPES: readonly Scope[] = ["mail:read", "erp:read"];
 export interface App {
   readonly config: AppConfig;
   readonly registry: CapabilityRegistry;
+  /**
+   * Warstwa modelu i agenci są LENIWE — powstają dopiero przy pierwszym użyciu.
+   *
+   * Dzięki temu tryb MCP, w którym modelem jest Claude po stronie klienta,
+   * nigdy ich nie tworzy i nie potrzebuje ANTHROPIC_API_KEY. To nie jest
+   * mikrooptymalizacja: bez tego `npm run mcp` nie wstawał bez klucza, mimo
+   * że nie miał go po co używać.
+   */
   readonly models: ModelLayer;
   readonly operator: InboxOperator;
   readonly triage: MailTriage;
@@ -62,20 +70,30 @@ export function createApp(config: AppConfig = loadConfig()): App {
     ...createTeabrewCapabilities(getTeabrew),
   ]);
 
-  const models = new ModelLayer(config);
-  const shared = {
+  let models: ModelLayer | null = null;
+  const getModels = (): ModelLayer => (models ??= new ModelLayer(config));
+  const shared = () => ({
     registry,
-    models,
+    models: getModels(),
     scopes: AGENT_SCOPES,
     auditFile: config.auditFile,
-  };
+  });
+
+  let operator: InboxOperator | null = null;
+  let triage: MailTriage | null = null;
 
   return {
     config,
     registry,
-    models,
-    operator: new InboxOperator(shared),
-    triage: new MailTriage(shared),
+    get models() {
+      return getModels();
+    },
+    get operator() {
+      return (operator ??= new InboxOperator(shared()));
+    },
+    get triage() {
+      return (triage ??= new MailTriage(shared()));
+    },
     async close() {
       await mailProvider?.close();
     },

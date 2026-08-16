@@ -113,12 +113,12 @@ to martwy kod.
 
 ### Testy
 
-56 testów, bez sieci i bez klucza API — model jest atrapą odgrywającą
+68 testów, bez sieci i bez klucza API — model jest atrapą odgrywającą
 zaplanowane kroki, dane pochodzą z fikstur. Pięć scenariuszy akceptacyjnych
 odpowiada pięciu wymaganiom: read-only, ścieżka od maila do danych, brak
 zmyślania, dostępność produktu z nazwy handlowej, użyteczność audytu bez
 wycieku treści. Do tego testy jednostkowe warstwy poczty i projekcji oraz
-12 testów bezpieczeństwa łatki ERP (patrz 8.3).
+12 testów bezpieczeństwa łatki ERP (patrz 8.3) i 6 testów integralności adaptera MCP.
 
 Osobno, bez modelu: `npm run check:mail` (11 sprawdzeń warstwy poczty) i
 `npm run verify:teabrew` (17 sprawdzeń wdrożonej łatki).
@@ -139,33 +139,32 @@ MCP jest **tylko adapterem** (`npm run mcp`, serwer stdio bez nowej zależności
 integracji. Nie definiuje żadnej capability i nic od niego nie zależy —
 skasowanie pliku nie psuje agenta.
 
-### Nie działa, dopóki nie dostanie danych wejściowych
+### Uruchomienie na żywo — ZAKOŃCZONE
 
-Dwie rzeczy są poza zasięgiem tego środowiska i **nie zostały udawane** —
-szczegóły i dowody w 8.9:
+Pełne wyniki i lista usterek znalezionych po drodze: **8.11**. Skrót:
+`verify:teabrew` 17/17 na produkcyjnych danych, `check:mail` 11/11 na prawdziwej
+skrzynce, `npm run triage` działa na prawdziwej poczcie z prawdziwym modelem.
 
-1. **Poczta.** Adapter IMAP jest napisany i przetestowany na fiksturach, ale
-   nigdy nie łączył się z prawdziwym serwerem: polityka sieciowa tego środowiska
-   nie przepuszcza `imap.zenbox.pl` (TCP timeout na 993 i 143).
-2. **TeaBrew v2.** Łatka jest założona i wypchnięta (PR #27), ale wdrożenie Convex
-   wymaga jawnej akcji człowieka, a samo wdrożenie jest niedostępne z tego
-   środowiska (proxy odrzuca CONNECT z 403).
+Uruchomienie odbywa się **na maszynie właściciela**, nie w środowisku
+agentowym — to drugie nie ma trasy sieciowej ani do serwera poczty, ani do
+wdrożenia Convex (dowody w 8.9), a sekrety mają zostać na komputerze właściciela.
 
-Dlatego wszystko jest zbudowane **do interfejsów**, z dostawcami na fiksturach.
-`MODE=fixture` przechodzi całą ścieżkę end-to-end od razu; `MODE=live` zmienia
-implementację dostawcy, nie narzędzia widziane przez AI.
+Wszystko jest przy tym zbudowane **do interfejsów**, z dostawcami na fiksturach.
+`MODE=fixture` przechodzi całą ścieżkę end-to-end bez żadnego sekretu;
+`MODE=live` zmienia implementację dostawcy, nie narzędzia widziane przez AI.
 
 **Co zostało sprawdzone, a co nie:**
 
 | element | stan |
 | --- | --- |
-| rejestr, projekcje, audyt, kontrola dowodów, pętla agenta, triage | przetestowane, 56 testów przechodzi |
+| rejestr, projekcje, audyt, kontrola dowodów, pętla agenta, triage | przetestowane, 68 testów przechodzi |
 | ścieżka poczta → AI → TeaBrew na fiksturach | działa end-to-end |
 | `npm run caps`, `npm run openapi` | uruchomione, dają 7 capability |
 | konfiguracja → warstwa modeli → API Anthropic | potwierdzone (żądanie dociera, przy błędnym kluczu wraca 401) |
-| odpowiedź prawdziwego modelu | **nie uruchomione — brak klucza API w tym środowisku** (samo `api.anthropic.com` jest osiągalne) |
-| adapter IMAP wobec prawdziwego serwera | **nie uruchomione — host poczty niedostępny z tego środowiska** |
-| pięć tras w TeaBrew v2 | **nie wdrożone — brak uprawnień do zapisu** |
+| odpowiedź prawdziwego modelu | **działa** — `triage` uruchomiony na prawdziwej skrzynce (8.11) |
+| adapter IMAP wobec prawdziwego serwera | **działa** — 11/11 na prawdziwej skrzynce (8.11) |
+| pięć tras w TeaBrew v2 | **wdrożone i potwierdzone** — 17/17 (8.10) |
+| tryb MCP (Claude jako model) | protokół przetestowany, 7 narzędzi z rejestru, bez klucza API |
 
 ---
 
@@ -728,3 +727,77 @@ Poprawione:
 
 Sprawdzone na wymuszonym `ECONNREFUSED`: raportuje kod błędu, komunikat
 źródłowy i właściwą listę podpowiedzi.
+
+### 8.11 Live Validation ZAKOŃCZONA — pełna ścieżka na prawdziwych danych
+
+Uruchomione na maszynie właściciela, na prawdziwej skrzynce i prawdziwym
+wdrożeniu TeaBrew. Poniżej wyłącznie to, co faktycznie przeszło.
+
+| element | wynik |
+| --- | --- |
+| `verify:teabrew` | **17/17** na produkcyjnych danych |
+| `check:mail` | **11/11** na prawdziwej skrzynce, okno 7 dni |
+| `npm run triage` | **działa** — klasyfikacja prawdziwej poczty z prawdziwym modelem |
+| stopka dowodowa | generowana z audytu, widoczna w odpowiedzi |
+| tryb MCP | protokół przetestowany, 7 narzędzi z rejestru, bez klucza API |
+
+Ostatnie sprawdzenia poczty przeszły po trzech poprawkach opisanych niżej.
+Warto zapisać, że **żadna z moich pierwszych trzech hipotez nie była trafna** —
+rozstrzygnęły dopiero dane z sondy wołającej prawdziwy adapter.
+
+#### Trzy usterki znalezione na prawdziwej skrzynce
+
+1. **Brak jakichkolwiek limitów czasu w adapterze IMAP.** `ImapFlow` przyjmuje
+   `connectionTimeout`, `greetingTimeout`, `socketTimeout`, a `getMailboxLock`
+   przyjmuje `acquireTimeout` — nie ustawiałem żadnego. `SEARCH BODY` na dużym
+   folderze bez indeksu pełnotekstowego skanuje treść każdej wiadomości, więc
+   narzędzie diagnostyczne wisiało bez komunikatu. Dołożone limity plus twardy
+   deadline na krok w `check:mail`. `search` nie odpala już `SEARCH BODY`, jeśli
+   nagłówki coś zwróciły — a `searchNote` mówi o tym wprost.
+
+2. **Autoreferencja w nagłówku `References`.** Automat OpenERP/Odoo wstawia
+   własny `Message-ID` do własnego `References`. Mój detektor uznał taką
+   wiadomość za odpowiedź, której rodzic leży w skrzynce, i poprawnie odtworzony
+   wątek jednoelementowy wyglądał jak usterka rekonstrukcji. Nowy helper
+   `parentRefsWithin` wyklucza samą siebie; `normalizeReferences` **zostaje bez
+   zmian**, bo jej zadaniem jest wiernie oddać nagłówek — interpretacja należy
+   do miejsca użycia.
+
+3. **Odtworzenie jednego wątku wysyłało ~58 zapytań.** 29 referencji × 2 foldery,
+   każde z osobną blokadą skrzynki. `maxMessages` ograniczał wynik, ale nie
+   ilość PRACY — i Zenbox rozłączył połączenie w trakcie przebiegu.
+   IMAP `SEARCH` ma kryterium `OR`, więc wszystkie `Message-ID` idą teraz jednym
+   zapytaniem na folder: z ~58 zapytań zostają 2. Referencje brane z ogona listy
+   (`References` jest od najstarszej, więc najbliżsi przodkowie są na końcu),
+   limit 25 z raportowaniem przekroczenia przez `incompleteNote`.
+
+#### Dwie poprawki w moim własnym narzędziu diagnostycznym
+
+- **`check:mail` mylił „brak danych" z „zepsute".** Pusty folder wysłanych w
+  oknie i wątek, którego rodzica nie ma w skrzynce, były raportowane jako
+  porażki. To ten sam błąd, którego uniknąłem przy sprawdzeniach 7, 9 i 10.
+  Narzędzie krzyczące na spokojnej skrzynce uczy ignorować czerwone krzyżyki.
+- **Sonda reimplementowała adapter i dlatego odpowiadała na inne pytanie** —
+  wybierała ziarno po UID rosnąco, a `check:mail` po dacie malejąco, więc
+  testowały dwa różne wątki. Sonda woła teraz prawdziwy adapter. Lekcja
+  ogólniejsza: narzędzie diagnostyczne, które reimplementuje diagnozowaną rzecz,
+  będzie się z nią rozjeżdżać.
+
+#### Obserwacja operacyjna, nie usterka
+
+Pierwszy `triage` na prawdziwej skrzynce zwrócił **2 wiadomości z ostatnich
+24 godzin, obie niebiznesowe** (automat rezerwacyjny i odpowiedź „wróciłem z
+urlopu"). Agent zaklasyfikował je poprawnie i uczciwie.
+
+Skrzynka ma jednak **21 folderów**, w tym `FAKTURY`, `ROSSMANN`, `NPD` oraz
+`INBOX.WHITE LABEL.*`. Jeśli reguły serwerowe przenoszą korespondencję z
+klientami do tych podfolderów, to agent czytający wyłącznie `INBOX` będzie
+odpowiadał prawdziwie, ale bezużytecznie — bo najciekawsze rzeczy będą poza
+jego zasięgiem.
+
+To **decyzja właściciela**, nie zmiana do wprowadzenia z automatu, i dotyczy
+konfiguracji (`MAIL_FOLDER`), nie kodu. Rozstrzygnąć ją powinien tydzień
+normalnego używania: jeśli odpowiedzi będą regularnie pomijać sprawy, o których
+właściciel wie, że przyszły — wtedy wiadomo, które foldery dołożyć i dlaczego.
+Zgadywanie tego teraz oznaczałoby rozszerzanie zasięgu agenta bez dowodu, że to
+potrzebne.

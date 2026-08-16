@@ -12,7 +12,7 @@ decyzję”, „co z zamówieniem 12345”, „czy mamy ten towar”, „jak wyg
 cd ai-operator
 npm install
 cp .env.example .env && chmod 600 .env      # wpisz tylko ANTHROPIC_API_KEY
-npm test                                     # 56 testów, bez sieci
+npm test                                     # 68 testów, bez sieci
 npm run check:mail                           # 11 sprawdzeń warstwy poczty, bez modelu
 npm run triage                               # przegląd poczty z fikstur
 npm run ask -- "Co z zamówieniem 12345? Klient potrzebuje dostawy do środy."
@@ -133,12 +133,45 @@ npm run ask -- --trace "Co z zamówieniem 12345?"   # ślad na stderr
 AUDIT_FILE=./.audit/calls.jsonl npm run triage      # trwały log JSONL
 ```
 
-## MCP — adapter, nie fundament
+## MCP — rozmowa z firmą wprost z Claude
 
-`npm run mcp` uruchamia serwer MCP po stdio, żeby te same siedem funkcji dało
-się podłączyć w Claude Desktop bez pisania drugiej integracji. Nie definiuje
-żadnej capability, nie dodaje zależności i **nic w systemie od niego nie zależy**
-— skasowanie `src/bin/mcp.ts` nie psuje agenta.
+Dwa niezależne tryby korzystania. **Nie mieszają się.**
+
+| tryb | ścieżka | do czego | klucz API |
+| --- | --- | --- | --- |
+| interaktywny | `Claude → MCP → capabilities → Poczta/TeaBrew` | codzienna rozmowa człowieka z firmą | **nie potrzebny** |
+| automatyczny | `inbox-operator → API modelu → capabilities` | crony, nocne analizy, procesy bez człowieka | wymagany |
+
+W trybie MCP modelem jest Claude po stronie klienta — nie wołamy modelu u siebie.
+Nie ma więc podwójnego wywołania, podwójnego kosztu ani dwóch agentów
+podejmujących decyzje jednocześnie. `npm run mcp` startuje **bez**
+`ANTHROPIC_API_KEY`; klucz jest potrzebny wyłącznie dla `ask` i `triage`.
+
+### Podłączenie do Claude Desktop
+
+Patrz `claude-desktop.example.json` — skopiuj wpis `bht-operator` do
+`~/Library/Application Support/Claude/claude_desktop_config.json`, podmieniając
+ścieżki na absolutne. Potem zrestartuj Claude Desktop.
+
+Sekrety zostają po stronie serwera. Claude Desktop nie widzi hasła IMAP ani
+tokenu TeaBrew — widzi siedem narzędzi read-only.
+
+### Dlaczego to jest adapter, nie drugi system
+
+- **Lista narzędzi pochodzi z rejestru**, nie z ręcznie utrzymywanego pliku.
+  Zmiana capability w rejestrze pojawia się w MCP automatycznie.
+- **Każde wywołanie idzie przez `registry.invoke`** — ten sam sprawdzian
+  zakresu, ta sama walidacja wejścia i wyjścia, ten sam audyt, to samo
+  wymuszenie read-only. MCP nie dotyka `MailProvider` ani klienta TeaBrew
+  bezpośrednio.
+- **Jedna korelacja na sesję MCP**, bo pytanie brzmi „co Claude sprawdził,
+  zanim odpowiedział", a to obejmuje całą rozmowę, nie jedno wywołanie.
+- **Jawna polityka wystawiania**: do MCP trafiają tylko capability
+  `effectClass: "read"` — sprawdzane w adapterze, i przy `tools/list`,
+  i przy `tools/call`. Gdyby rejestr kiedyś dopuścił capability zapisującą,
+  nie pojawi się publicznie przez samo dodanie do rejestru.
+- **Zero nowych zależności** — protokół to JSON-RPC po stdin/stdout.
+  Skasowanie `src/bin/mcp.ts` nie psuje agenta.
 
 ## Struktura
 
@@ -151,7 +184,7 @@ src/agent/         pętla agenta, triage, prompt, kontrola dowodów
 src/bin/           ask, triage, caps, openapi, mcp, check:mail, verify:teabrew
 teabrew-patch/     gotowe do założenia pliki dla teabrew-v2
 fixtures/          poczta (z folderem Sent) i dane ERP do testów i demo
-tests/             56 testów: scenariusze, jednostkowe, bezpieczeństwo łatki
+tests/             68 testów: scenariusze, jednostkowe, bezpieczeństwo łatki i MCP
 ```
 
 ## Zmiana dostawcy poczty

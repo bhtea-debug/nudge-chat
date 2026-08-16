@@ -1,0 +1,34 @@
+{
+  "_komentarz": [
+    "Konfiguracja serwera MCP dla Claude Desktop — Etap A (lokalnie, stdio).",
+    "",
+    "Skopiuj blok 'mcpServers' do swojego pliku konfiguracyjnego Claude Desktop:",
+    "  macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json",
+    "  Windows: %APPDATA%\\Claude\\claude_desktop_config.json",
+    "",
+    "Jeśli plik już istnieje i ma inne serwery — dopisz wpis 'bht-operator'",
+    "wewnątrz istniejącego 'mcpServers', nie nadpisuj całego pliku.",
+    "",
+    "PODMIEŃ /ABSOLUTNA/SCIEZKA/DO na rzeczywistą ścieżkę katalogu ai-operator.",
+    "Ścieżki muszą być absolutne: Claude Desktop uruchamia serwer z nieokreślonego",
+    "katalogu roboczego, więc ścieżki względne nie zadziałają.",
+    "",
+    "Sekrety zostają w .env po stronie serwera. Ten plik ich NIE zawiera i nie może.",
+    "Claude Desktop nie widzi ani hasła IMAP, ani tokenu TeaBrew — widzi wyłącznie",
+    "siedem narzędzi read-only.",
+    "",
+    "Tryb MCP nie potrzebuje ANTHROPIC_API_KEY: modelem jest Claude po stronie",
+    "klienta. Klucz jest potrzebny wyłącznie dla 'npm run ask' i 'npm run triage'."
+  ],
+  "mcpServers": {
+    "bht-operator": {
+      "command": "npx",
+      "args": [
+        "tsx",
+        "--env-file-if-exists=/ABSOLUTNA/SCIEZKA/DO/ai-operator/.env",
+        "/ABSOLUTNA/SCIEZKA/DO/ai-operator/src/bin/mcp.ts"
+      ],
+      "cwd": "/ABSOLUTNA/SCIEZKA/DO/ai-operator"
+    }
+  }
+}

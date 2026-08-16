@@ -16,6 +16,12 @@ export type Mode = "fixture" | "live";
 
 export interface AppConfig {
   readonly mode: Mode;
+  /**
+   * Pusty łańcuch, gdy klucza nie ma. NIE jest wymagany do uruchomienia:
+   * tryb MCP nie woła modelu wcale (modelem jest Claude po drugiej stronie),
+   * a `npm run caps` / `openapi` nie wołają niczego. Brak klucza zgłasza
+   * dopiero ModelLayer, w momencie realnej potrzeby.
+   */
   readonly anthropicApiKey: string;
   readonly models: { readonly fast: string; readonly reason: string };
   readonly auditFile: string | undefined;
@@ -60,7 +66,7 @@ export function loadConfig(): AppConfig {
 
   return {
     mode,
-    anthropicApiKey: req("ANTHROPIC_API_KEY"),
+    anthropicApiKey: opt("ANTHROPIC_API_KEY", ""),
     models: {
       // Role, nie nazwy modeli w miejscach wywołań. Podmiana modelu to zmiana
       // jednej zmiennej środowiskowej, nie przeszukiwanie kodu.
