@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import { loadConfig } from "../config.js";
+import { CapabilityError } from "../capability/types.js";
 import { ImapMailProvider } from "../mail/imap.js";
 import { FixtureMailProvider } from "../mail/fixture.js";
 import type { MailProvider } from "../mail/types.js";
@@ -136,7 +137,31 @@ async function main(): Promise<number> {
       );
       for (const w of plan.warnings) process.stdout.write(`      ⚠ ${w}\n`);
     } catch (err) {
-      record("1. Połączenie", false, msg(err));
+      const code = err instanceof CapabilityError ? err.code : "nieznany";
+      record("1. Połączenie", false, `[${code}] ${msg(err)}`);
+
+      // Podpowiedzi zależne od tego, CZY serwer odpowiedział. To jest cała
+      // różnica między „szukaj problemu w haśle" i „szukaj go w sieci".
+      process.stdout.write("\n  Co sprawdzić:\n");
+      if (code === "auth_failed") {
+        process.stdout.write(
+          "    - serwer odpowiedział i odrzucił logowanie, więc sieć i port są dobre,\n" +
+            "    - czy login to PEŁNY adres e-mail,\n" +
+            "    - czy hasło to hasło tej skrzynki (u części dostawców nie ma osobnych\n" +
+            "      haseł aplikacji — wtedy właściwe jest zwykłe hasło skrzynki),\n" +
+            "    - czy dostęp IMAP jest dla tego konta włączony w panelu dostawcy,\n" +
+            "    - czy hasło nie zostało wklejone ze spacją albo znakiem końca linii.\n",
+        );
+      } else {
+        process.stdout.write(
+          "    - serwer NIE odpowiedział, więc problem jest przed logowaniem,\n" +
+            "    - czy host i port są poprawne (993 = IMAP po SSL/TLS),\n" +
+            "    - czy sieć nie blokuje portu 993 (firma, VPN, hotspot),\n" +
+            "    - czy dostawca nie ogranicza dostępu IMAP do wybranych adresów IP,\n" +
+            "    - czy z tej maszyny da się w ogóle otworzyć połączenie:\n" +
+            `        nc -vz ${config.mail.kind === "imap" ? config.mail.host : "<host>"} ${config.mail.kind === "imap" ? config.mail.port : 993}\n`,
+        );
+      }
       process.stdout.write("\nBez połączenia dalsze sprawdzenia nie mają sensu.\n");
       return 1;
     }
@@ -304,8 +329,17 @@ async function main(): Promise<number> {
 }
 
 function msg(err: unknown): string {
-  // Komunikat błędu IMAP może zawierać nazwę konta — maskujemy adresy.
-  const raw = err instanceof Error ? err.message : String(err);
+  // Idziemy po łańcuchu `cause`: bez tego widać tylko nasz własny komunikat
+  // opakowujący, a nie to, co faktycznie powiedział serwer.
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur && depth < 4; depth += 1) {
+    const e = cur as { message?: string; cause?: unknown };
+    if (e.message && !parts.includes(e.message)) parts.push(e.message);
+    cur = e.cause;
+  }
+  const raw = parts.length > 0 ? parts.join("\n      ↳ ") : String(err);
+  // Komunikat IMAP może zawierać nazwę konta — maskujemy adresy.
   return raw.replace(/[\w.+-]+@[\w.-]+/g, (m) => maskAddress(m));
 }
 

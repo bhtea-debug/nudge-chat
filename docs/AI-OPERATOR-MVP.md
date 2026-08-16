@@ -652,3 +652,79 @@ rozszerzyć guardy `safe-build.mjs` na buildy preview, albo odciąć
 `CONVEX_DEPLOY_KEY` od środowiska preview na Vercelu. Nie robię tego tutaj —
 to zmiana w ścieżce wdrożeniowej produkcji, a zadanie brzmiało „nie obchodź
 istniejących zabezpieczeń deploymentu", nie „przepisz je".
+
+### 8.10 Pierwsze uruchomienie na prawdziwych danych — TeaBrew potwierdzony
+
+Uruchomione **na maszynie właściciela**, przez `ai-operator/scripts/live-setup.sh`.
+Poniżej wyłącznie to, co faktycznie przeszło. Bez numerów zamówień, kodów SKU
+i ilości — to repozytorium jest publiczne.
+
+#### `AI_OPERATOR_API_TOKEN` — ustawiony, potwierdzony z zewnątrz
+
+`/ai-operator/health` bez nagłówka autoryzacji zwraca **401**. Wcześniej zwracał
+500 z `AI_OPERATOR_API_TOKEN not configured`, co potwierdziło zarówno że trasy
+są wdrożone, jak i że fail-closed działa.
+
+Dwie pułapki, na które warto uważać przy powtarzaniu tej konfiguracji:
+
+- zmienną trzeba ustawić na **tym** wdrożeniu, którego używa live frontend
+  (w Convexie figuruje jako *Development*), a nie na produkcyjnym wdrożeniu
+  projektu. `AGENTS.md` w TeaBrew ostrzega o tym wprost;
+- zmienna może już istnieć z **pustą wartością** — dashboard odpowiada wtedy
+  „Environment variable name is not unique" na próbę dodania, a endpoint nadal
+  raportuje „not configured", bo kod traktuje pusty string jak brak. Trzeba
+  użyć **Edit**, nie *Add*.
+
+#### `verify:teabrew` — 17/17 przeszło na produkcyjnych danych
+
+Wszystkie cztery grupy, w tym testy pozytywne na realnych rekordach z wartościami
+odkrytymi z systemu:
+
+| grupa | wynik |
+| --- | --- |
+| bezpieczeństwo (5) | brak tokenu odrzucony na **każdej z pięciu tras**; zły token odrzucony; token w query stringu bezsilny; POST/PUT/PATCH/DELETE nieobsługiwane; brak nieudokumentowanych tras `/ai-operator/*` |
+| kontrakt (5) | kształt każdej odpowiedzi zgodny ze schematem zod; walidacja parametrów zwraca 400 |
+| brak danych (3) | nieistniejące zamówienie → `matchedBy: "none"` przy HTTP 200; nieistniejący kod → `unknownCodes`, nie stan zero; nieistniejący produkt → `totalCount: 0` |
+| prawdziwe dane (4) | realne zamówienie dopasowane po `externalOrderId` wraz z pozycjami i powiązanym zleceniem produkcyjnym; realny SKU znaleziony w katalogu; stan policzony z nazwą materiału; oba profile (`finished_goods`, `all_locations`) dają wynik |
+
+Trzy rzeczy, które te dane potwierdziły merytorycznie:
+
+1. **Poprawka `gramatura` była konieczna i poprawna.** Realny SKU zwrócił
+   gramaturę jako **liczbę**. Wersja czytająca ją jako tekst wywaliłaby kontrakt
+   na pierwszym wyszukaniu produktu.
+2. **Poprawka statusu ruchów produkcyjnych była konieczna.** Endpoint zwrócił
+   **dziewięć otwartych ruchów**. Wersja pytająca o nieistniejący status
+   `"running"` zwróciłaby zero i agent zaraportowałby „nic się nie produkuje"
+   przy dziewięciu ruchach w toku — cicho fałszywa odpowiedź, bez żadnego błędu.
+3. **`shipmentReservationUncovered` nie jest polem teoretycznym.** Dla realnego
+   SKU wyszło **niezerowe**: istnieją aktywne rezerwacje wysyłkowe wskazujące
+   partie wykluczone z profilu, które nie zabierają stanu z puli, ale nadal są
+   otwarte. Helper `salesAvailability` celowo tego nie naprawia ani nie zwalnia —
+   tylko pokazuje. Zgłoszone właścicielowi jako sygnał operacyjny; diagnoza
+   przyczyny jest poza zakresem tego zadania.
+
+#### `check:mail` — nie przeszedł, pierwszy krok
+
+Połączenie z `imap.zenbox.pl:993` nie zostało nawiązane. Przy tej okazji
+wyszła **wada mojego własnego narzędzia diagnostycznego**, naprawiona:
+
+`ImapFlow.connect()` obejmuje także logowanie, więc odrzucone hasło i
+nieosiągalny host wychodziły tym samym `catch` i dawały ten sam komunikat
+„nie udało się połączyć". Dla narzędzia, którego cała rola to diagnoza, to jest
+wada poważna: przy złym haśle wysyła człowieka szukać problemu w sieci, czyli
+dokładnie tam, gdzie go nie ma.
+
+Poprawione:
+
+- nowy kod błędu `auth_failed`, odrębny od `upstream_unavailable`, rozpoznawany
+  po `AuthenticationFailure.authenticationFailed` z imapflow;
+- komunikat zawiera teraz kod błędu klienta i `serverResponseCode`, jeśli serwer
+  go podał;
+- `check:mail` idzie po łańcuchu `cause`, więc pokazuje to, co faktycznie
+  powiedział serwer, a nie tylko własne opakowanie;
+- po porażce wypisuje podpowiedzi **zależne od tego, czy serwer odpowiedział** —
+  osobne dla odrzuconego logowania i osobne dla braku połączenia;
+- adresy w komunikatach nadal maskowane.
+
+Sprawdzone na wymuszonym `ECONNREFUSED`: raportuje kod błędu, komunikat
+źródłowy i właściwą listę podpowiedzi.

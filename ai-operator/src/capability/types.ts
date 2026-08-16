@@ -92,6 +92,8 @@ export class CapabilityError extends Error {
       | "invalid_output"
       | "forbidden_effect"
       | "forbidden_scope"
+      /** Dostawca odrzucił dane logowania — inna przyczyna niż brak połączenia. */
+      | "auth_failed"
       | "upstream_unavailable"
       | "upstream_error"
       | "not_configured"

@@ -125,9 +125,30 @@ export class ImapMailProvider implements MailProvider {
     try {
       await client.connect();
     } catch (err) {
+      // `connect()` obejmuje TAKŻE logowanie, więc odrzucone hasło i nieosiągalny
+      // host wychodzą tym samym miejscem. Rozróżniamy je jawnie: „nie udało się
+      // połączyć" przy złym haśle wysyła człowieka szukać problemu w sieci,
+      // czyli dokładnie tam, gdzie go nie ma.
+      const e = err as {
+        authenticationFailed?: boolean;
+        serverResponseCode?: string;
+        code?: string;
+        message?: string;
+      };
+      const detail = [e?.code, e?.serverResponseCode, e?.message]
+        .filter(Boolean)
+        .join(" | ");
+
+      if (e?.authenticationFailed) {
+        throw new CapabilityError(
+          "auth_failed",
+          `serwer poczty odrzucił dane logowania dla ${this.cfg.host}:${this.cfg.port} — ${detail || "serwer nie podał powodu"}`,
+          err,
+        );
+      }
       throw new CapabilityError(
         "upstream_unavailable",
-        `nie udało się połączyć z serwerem poczty (${this.cfg.host}:${this.cfg.port})`,
+        `nie udało się nawiązać połączenia z ${this.cfg.host}:${this.cfg.port} — ${detail || "brak szczegółów od klienta IMAP"}`,
         err,
       );
     }
