@@ -1,35 +1,46 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
-Dokument przekazania. Czytaj razem z `docs/AI-OPERATOR-MVP.md` (pełny opis, w
-szczególności sekcja **8. Live validation**) i `docs/ARCHITEKTURA-AI-2026.md`
+Dokument przekazania. Czytaj razem z `docs/AI-OPERATOR-MVP.md` (pełny opis,
+w szczególności **sekcja 8 — Live validation**) i `docs/ARCHITEKTURA-AI-2026.md`
 (dlaczego to wygląda tak, a nie inaczej).
 
-**Zadanie, które zostało:** doprowadzić `ai-operator` do działania w `MODE=live`
-na prawdziwej poczcie i prawdziwym TeaBrew v2. Kod jest gotowy. Brakuje sekretów
-i akcji człowieka. **Nie rozszerzaj zakresu.**
+**Nie rozszerzaj zakresu i nie projektuj niczego od nowa.**
 
 ---
 
-## 0. Przeczytaj to najpierw
+## 0. Stan na dziś: LIVE DZIAŁA
 
-**`MODE=live` nie uruchomi się w środowisku agentowym w chmurze.** Polityka
-egress typowej sesji przepuszcza GitHub, npm i `api.anthropic.com`, ale nie
-serwer poczty ani wdrożenie Convex firmy (zmierzone: TCP timeout na IMAP,
-403 z proxy na Convex). Uruchomienie live należy do maszyny właściciela —
-tam jest dostęp i tam mają zostać sekrety.
+Uruchomienie na prawdziwych danych firmy jest **zakończone**. Nie musisz go
+powtarzać ani „dokańczać".
 
-Do tego jest gotowy skrypt: `ai-operator/scripts/live-setup.sh`. Dopytuje
-tylko o brakujące wartości, sekrety czyta bez echa, zapisuje do `.env` z
-prawami 600 i uruchamia wszystkie testy bez modelu. Nie próbuj tego odtwarzać
-ręcznie ani obchodzić — pełny opis w `docs/AI-OPERATOR-MVP.md` §8.9.
+| element | wynik | gdzie |
+| --- | --- | --- |
+| `verify:teabrew` | **17/17** na produkcyjnych danych | 8.10 |
+| `check:mail` | **11/11** na prawdziwej skrzynce (okno 7 dni) | 8.11 |
+| `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
+| tryb MCP (Claude jako model) | protokół przetestowany, 7 narzędzi z rejestru | 8.11 |
+| testy | **68**, bez sieci i bez klucza API | — |
 
-**Trasy ERP są już wdrożone na żywym backendzie**, choć `main` ich nie zawiera:
-build preview Vercela uruchamia `convex deploy` bez guardów produkcyjnych
-(one działają tylko przy `VERCEL_ENV === "production"`). Potwierdzone:
-`/ai-operator/health` zwraca **500**, czyli trasa istnieje, a
-`AI_OPERATOR_API_TOKEN` nie jest jeszcze ustawiony (fail-closed). Konsekwencja:
-merge PR #27 domyka rozjazd między `main` a wdrożeniem — gdyby ktoś zbudował
-produkcję z `main`, trasy zniknęłyby.
+Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
+
+1. **Uruchomienie live odbywa się na maszynie właściciela, nie w środowisku
+   agentowym.** Polityka egress typowej sesji w chmurze nie przepuszcza ani
+   `imap.zenbox.pl` (TCP timeout na 993 i 143), ani wdrożenia Convex (proxy
+   odrzuca CONNECT z 403). Zmierzone, nie założone — dowody w 8.9. Nie próbuj
+   tego obchodzić; do uruchomienia u właściciela jest
+   `ai-operator/scripts/live-setup.sh` (dopytuje tylko o brakujące wartości,
+   sekrety bez echa, prawa 600, `--reset KLUCZ` do poprawienia literówki).
+
+2. **Trasy ERP są wdrożone na żywym backendzie, choć `main` ich nie zawiera.**
+   Build preview Vercela uruchamia `convex deploy` bez guardów produkcyjnych —
+   te działają tylko przy `VERCEL_ENV === "production"`. PR
+   [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) jest
+   **nadal otwarty**, a jego merge domyka rozjazd: gdyby ktoś zbudował produkcję
+   z `main`, trasy zniknęłyby. Szczegóły i ocena ryzyka w 8.9 i w komentarzu na PR.
+
+3. **Tryb MCP nie potrzebuje `ANTHROPIC_API_KEY`.** Modelem jest Claude po
+   stronie klienta. Jeśli zobaczysz, że `npm run mcp` domaga się klucza — to
+   regresja, bo warstwa modelu jest celowo leniwa.
 
 ---
 
@@ -38,181 +49,169 @@ produkcję z `main`, trasy zniknęłyby.
 | co | gdzie |
 | --- | --- |
 | kod agenta | `bhtea-debug/nudge-chat`, gałąź `claude/ai-company-architecture-mvy1uv`, katalog `ai-operator/` |
-| łatka ERP | `bhtea-debug/teabrew-v2`, gałąź `claude/ai-operator-read-only-endpoints`, HEAD `27262de`, baza `b777d4d` |
-| PR do merge | [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) — `mergeable_state: clean`. Brak GitHub Actions; jedyny automat to preview Vercela (i to on wdrożył funkcje) |
-
-Stan: **56 testów przechodzi, `tsc --noEmit` czysty w obu repo, `check:mail`
-11/11 na fiksturach, `MODE=live` nigdy nie był uruchomiony.**
+| łatka ERP | `bhtea-debug/teabrew-v2`, gałąź `claude/ai-operator-read-only-endpoints`, baza `b777d4d` |
+| PR do merge | `teabrew-v2#27` — `mergeable_state: clean`, brak GitHub Actions; jedyny automat to preview Vercela (i to on wdrożył funkcje) |
+| klon roboczy właściciela | `~/nudge-chat-live/ai-operator` na jego Macu, z wypełnionym `.env` |
 
 ---
 
-## 2. Co to jest w trzech zdaniach
+## 2. Dwa tryby. Nie mieszaj ich
 
-Agent `inbox-operator` czyta przychodzącą pocztę (IMAP), wyciąga z niej numery
-zamówień i nazwy produktów, sprawdza je w TeaBrew v2 i odpowiada właścicielowi
-firmy z danych, które faktycznie pobrał. Ma **7 capability, wszystkie
-read-only** — 3 do poczty, 4 do danych operacyjnych. Dwa wejścia:
-`npm run triage` (przegląd poczty w 5 kategoriach) i `npm run ask -- "pytanie"`.
+| tryb | ścieżka | do czego | klucz API |
+| --- | --- | --- | --- |
+| **interaktywny** | `Claude → MCP → capabilities → Poczta/TeaBrew` | codzienna rozmowa człowieka z firmą | **nie** |
+| **automatyczny** | `inbox-operator → API modelu → capabilities` | crony, nocne analizy, procesy bez człowieka | tak |
 
-Firma ma ~12 osób. Architektura jest celowo mała: jeden katalog w istniejącym
-repo, uruchamiany komendą, bez wdrożenia, bez DevOps, bez nowych usług.
+W trybie MCP **nie wołamy modelu u siebie**. Nie ma podwójnego wywołania,
+podwójnego kosztu ani dwóch agentów podejmujących decyzje jednocześnie.
+`inbox-operator` zostaje dla automatyzacji — nie podpinaj go pod MCP.
 
 ---
 
 ## 3. Ograniczenia, których nie wolno naruszyć
 
-To nie są preferencje. Każde jest wymuszone konstrukcyjnie i pokryte testem,
-który się wywali, jeśli je złamiesz.
+Każde jest wymuszone konstrukcyjnie i pokryte testem, który się wywali.
 
 ### 100% read-only
 
 | gdzie | jak wymuszone |
 | --- | --- |
-| `src/capability/registry.ts` | `ALLOWED_EFFECTS = ["read"]`. Capability z innym `effectClass` **nie da się zarejestrować** |
-| `src/mail/types.ts` | `MailProvider` nie ma metody zapisu. W całym `src/mail/` nie ma linii SMTP |
-| `src/mail/imap.ts` | `mailboxOpen(..., { readOnly: true })` — serwer odmówi zmiany, czytanie nie oznacza wiadomości jako przeczytanych |
-| łatka ERP | wyłącznie `internalQuery`. Zero mutacji, zero `scheduler`, zero `storage` |
+| `src/capability/registry.ts` | `ALLOWED_EFFECTS = ["read"]` — capability z innym `effectClass` **nie da się zarejestrować** |
+| `src/bin/mcp.ts` | osobny, jawny filtr `effectClass === "read"` przy `tools/list` **i** `tools/call` |
+| `src/mail/types.ts` | `MailProvider` nie ma metody zapisu; w `src/mail/` nie ma linii SMTP |
+| `src/mail/imap.ts` | `mailboxOpen(..., { readOnly: true })` — czytanie nie oznacza wiadomości jako przeczytanych |
+| łatka ERP | wyłącznie `internalQuery`; zero mutacji, `scheduler`, `storage` |
 
-Jeśli agent ma coś zrobić — **pisze sugestię, wykonuje człowiek**. To nie jest
-ostrożność na zapas: firma już raz usunęła funkcję AI (Drive, „AI Organizuj"),
-bo pisała bez rozliczalności.
+Filtr w MCP jest **celowo redundantny** wobec rejestru: gdyby rejestr kiedyś
+dopuścił capability zapisującą, nie może ona trafić do publicznego MCP przez
+samo dodanie do rejestru.
+
+Jeśli agent ma coś zrobić — **pisze sugestię, wykonuje człowiek**. Firma już raz
+usunęła funkcję AI (Drive, „AI Organizuj"), bo pisała bez rozliczalności.
 
 ### Zasada „nie zgaduj"
 
 `src/agent/evidence.ts`, trzy mechanizmy:
 
-1. **Stopka dowodowa powstaje z logu audytu, nie od modelu.** Model nie ma jak
-   dopisać wywołania, którego nie było.
-2. **Kontrola po fakcie** — twierdzenie o statusie, stanie magazynowym, treści
-   poczty albo numerze zamówienia musi mieć odpowiadające mu **udane** wywołanie
-   capability. Kody: `claim_without_any_erp_call`, `stock_claim_without_stock_call`,
+1. **Stopka dowodowa powstaje z logu audytu, nie od modelu.**
+2. **Kontrola po fakcie** — twierdzenie o statusie, stanie, poczcie albo numerze
+   zamówienia musi mieć odpowiadające mu **udane** wywołanie. Kody:
+   `claim_without_any_erp_call`, `stock_claim_without_stock_call`,
    `mail_claim_without_mail_call`, `order_ref_never_checked`.
-3. **Ostrzeżenie jest widoczne** dla człowieka w odpowiedzi; `npm run ask`
-   kończy się **kodem wyjścia 3**.
+3. **Ostrzeżenie jest widoczne**; `npm run ask` kończy się **kodem 3**.
 
-**Nie obchodź tej kontroli.** Jeśli zgłasza fałszywy alarm, popraw detektor
-(jest kontekstowy, nie oparty na czarnej liście jednostek) i dodaj test.
-Jeśli zgłasza prawdziwy problem — to jest sygnał, po co ona jest.
+**Nie obchodź tej kontroli.** Fałszywy alarm → popraw detektor (jest kontekstowy,
+nie oparty na czarnej liście jednostek) i dodaj test.
 
-Po stronie danych ta sama zasada: brak zamówienia to `matchedBy: "none"`
-(HTTP 200, nie 404), nieznany kod to `unknownCodes` (**nie** stan zero),
-przycięty wynik to `truncated: true`. Nigdy cicho.
+Po stronie danych: brak zamówienia to `matchedBy: "none"` (HTTP 200, nie 404),
+nieznany kod to `unknownCodes` (**nie** stan zero), przycięty wynik to
+`truncated: true`, niepełny wątek to `incomplete: true`. Nigdy cicho.
 
 ### Audyt
 
-Każde wywołanie zapisuje `ts`, `agent`, `capability`, `capabilityVersion`, `ok`,
-`latencyMs`, `correlationId`, `refs`. W `refs` **wyłącznie identyfikatory i
-liczniki** — to, co capability sama zadeklarowała w `auditRefs`.
+`ts`, `agent`, `capability`, `capabilityVersion`, `ok`, `latencyMs`,
+`correlationId`, `refs`. W `refs` **wyłącznie identyfikatory i liczniki**.
 
-**Nigdy w audycie:** treści maili, tematów, adresów nadawców, credentiali,
-tokenów. Frazy wyszukiwania są logowane (bez nich audyt nie odpowiada na
-pytanie, czego agent szukał), ale **adresy w nich są maskowane** przez
-`maskAddressesInText` — model może szukać po adresie nadawcy.
+**Nigdy:** treści maili, tematów, adresów nadawców, credentiali, tokenów.
+Frazy wyszukiwania są logowane (bez nich audyt nie odpowiada na pytanie, czego
+agent szukał), ale **adresy w nich są maskowane** przez `maskAddressesInText`.
 
-Test `tests/scenarios.test.ts` („Scenariusz 5") tego pilnuje.
+W trybie MCP: **jedna korelacja na sesję**, nie na wywołanie — bo „co Claude
+sprawdził, zanim odpowiedział" obejmuje całą rozmowę.
 
 ### Warstwa modeli po rolach
 
-Dwie role: `fast` (klasyfikacja poczty), `reason` (analiza i odpowiedź).
-**W logice agenta nie ma ani jednego identyfikatora modelu.** Podmiana =
-zmiana `MODEL_FAST` / `MODEL_REASON` w `.env`. Nie wpisuj nazwy modelu w kod.
+`fast` (klasyfikacja), `reason` (analiza). **W logice agenta nie ma ani jednego
+identyfikatora modelu** — podmiana to `MODEL_FAST` / `MODEL_REASON` w `.env`.
 
 ### Czego NIE dodawać
 
-Wysyłania maili, draftów, mutacji ERP, integracji z Budżecikiem/B2B/Drive,
-RAG, vector DB, kolejnego agenta, panelu webowego, cronów, automatycznego
-porannego uruchamiania, centralnej bramy, SSO, nowych usług.
+Wysyłania maili, draftów, mutacji ERP, integracji z Budżecikiem/B2B/Drive, RAG,
+vector DB, kolejnego agenta, PWA/iOS/Android, własnego chatu ani UI, cronów,
+automatycznego porannego uruchamiania, centralnej bramy, SSO, nowych usług.
 
-Najpierw dowód, że **obecny** operator działa dobrze na żywych danych.
+Świadoma decyzja: najpierw 1–2 tygodnie używania Claude jako gotowego
+interfejsu, potem ewentualna decyzja o własnym UI — na podstawie realnych
+potrzeb, nie przewidywania.
 
 ---
 
 ## 4. Miny, które już wybuchły — nie nadepnij ponownie
 
-To są realne błędy znalezione przy weryfikacji łatki wobec aktualnego schematu
-TeaBrew. Wszystkie naprawione. Wszystkie łatwo wprowadzić z powrotem.
+Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
+łatwe do wprowadzenia z powrotem.
 
-### `productionRunStatus` nie ma wartości `"running"`
+### Schemat TeaBrew
 
-Prawdziwe: `pending | in_progress | paused | partially_done | done | cancelled`.
+- **`productionRunStatus` nie ma wartości `"running"`.** Prawdziwe:
+  `pending | in_progress | paused | partially_done | done | cancelled`.
+  Zapytanie o `"running"` **nie wywala się** — zwraca pustą listę, którą agent
+  uczciwie zaraportuje jako „brak otwartych ruchów" przy pracującej hali.
+  Kontrola dowodów tego nie wyłapie, bo wywołanie się odbyło. Na produkcji było
+  **9 otwartych ruchów**. Test blokuje powrót `"running"`.
+- **`"in_production"` nie jest statusem realizacji zamówienia.**
+  `orderFulfillmentStatus` = `awaiting_payment | new | confirmed | in_picking |
+  packed | shipped | delivered | cancelled`. O produkcji mówi powiązane
+  `productionOrders.status === "in_progress"`.
+  `productionOrderStatus` = `plan | draft | assigned | in_progress | done |
+  cancelled` (`"planned"` nie istnieje).
+- **`skus.gramatura` to liczba w gramach**, nie tekst. W kontrakcie
+  `gramaturaG`, żeby to było widać. Potwierdzone na produkcji.
+- **Materiał po kodzie MUSI iść przez `buildMaterialIndex`.** Dwa materiały mogą
+  mieć ten sam `code`; kalkulator preferuje ten z tagiem `sku`. Naiwne „pierwszy
+  o tym kodzie" opisze ilość jednego materiału nazwą i jednostką drugiego.
+- **`convex codegen` jest ZABRONIONY** (może wysłać funkcje). Wpisy modułu
+  w `convex/_generated/api.d.ts` dodawane **ręcznie**, w formie generowanej
+  przez codegen. Wdrożenie tylko przez `npm run convex:live:deploy --
+  --confirm=<wdrożenie>`. Przed edycją wykonaj kroki z `AGENTS.md` tamtego repo.
 
-Zapytanie o `"running"` **nie wywala się** — zwraca pustą listę, którą agent
-uczciwie zaraportuje jako „brak otwartych ruchów produkcyjnych", przy pracującej
-hali. Kontrola dowodów tego **nie wyłapie**, bo wywołanie się odbyło i zwróciło
-ten wynik. Cicho fałszywa odpowiedź.
+### Poczta
 
-Aktualnie `productionStatus` pyta o `in_progress` oraz `paused`.
-Test w `tests/patch-security.test.ts` blokuje powrót `"running"`.
+- **Nazwy folderu wysłanych nie wolno zgadywać.** Wykrywanie po atrybucie IMAP
+  **SPECIAL-USE** `\Sent` (`src/mail/folders.ts`, `MAIL_THREAD_FOLDERS=auto`).
+  Test pokrywa przypadek odwrotny do intuicji: folder o nazwie „Sent" **bez**
+  atrybutu nie jest brany. Na Zenboxie wykrywa się przez `extension`.
+- **`mailparser` zwraca `references` raz jako string, raz jako tablicę.**
+  Normalizacja: `normalizeReferences()`.
+- **Automaty wstawiają własny `Message-ID` do własnego `References`.** Realny
+  przypadek: OpenERP/Odoo. Bez wykluczenia samej siebie taka wiadomość udaje
+  odpowiedź z rodzicem w skrzynce, a poprawnie odtworzony wątek jednoelementowy
+  wygląda jak usterka. Helper: **`parentRefsWithin`**.
+  `normalizeReferences` świadomie NIE odsiewa autoreferencji — jej zadaniem jest
+  wiernie oddać nagłówek; interpretacja należy do miejsca użycia.
+- **Cytowana historia od `>` musi być odcinana** (`stripQuotedHistory`), inaczej
+  model dostaje pięć poprzednich odpowiedzi jako nową treść.
+- **Adapter MUSI mieć limity czasu.** `connectionTimeout`, `greetingTimeout`,
+  `socketTimeout` oraz `acquireTimeout` na blokadach. `SEARCH BODY` na dużym
+  folderze bez indeksu pełnotekstowego skanuje treść **każdej** wiadomości, a
+  Dovecot potrafi przy tym odpowiadać na poziomie socketu — bez limitu narzędzie
+  wisi bez komunikatu. Dlatego `search` nie odpala `SEARCH BODY`, jeśli nagłówki
+  coś zwróciły, i mówi o tym w `searchNote`.
+- **Nie pytaj osobno o każdą referencję wątku.** Pierwsza wersja wysyłała ~58
+  zapytań na JEDEN wątek (29 referencji × 2 foldery, każde z osobną blokadą) i
+  Zenbox rozłączył połączenie w trakcie. `maxMessages` ogranicza wynik, ale nie
+  **pracę**. IMAP `SEARCH` ma kryterium `OR` — wszystkie `Message-ID` idą jednym
+  zapytaniem na folder. Referencje bierz z **ogona** listy (`References` jest od
+  najstarszej, więc najbliżsi przodkowie są na końcu).
 
-### `"in_production"` nie jest statusem realizacji zamówienia
+### Narzędzia diagnostyczne
 
-`orderFulfillmentStatus` = `awaiting_payment | new | confirmed | in_picking |
-packed | shipped | delivered | cancelled`.
+- **Nie myl „brak danych" z „zepsute".** `check:mail` raportował jako porażki
+  pusty folder wysłanych i wątek, którego rodzica nie ma w skrzynce. Narzędzie
+  krzyczące na spokojnej skrzynce uczy właściciela ignorować czerwone krzyżyki —
+  ten sam argument co przy kontroli dowodów.
+- **Nie reimplementuj w sondzie tego, co diagnozujesz.** `probe:thread`
+  wybierała ziarno po UID rosnąco, a `check:mail` po dacie malejąco — testowały
+  dwa różne wątki, więc sonda rzetelnie odpowiadała na inne pytanie niż zadane.
+  Sonda woła teraz **prawdziwy adapter**.
 
-**„Zamówienie jest w produkcji" wynika z powiązanego
-`productionOrders.status === "in_progress"`**, nie ze statusu zamówienia.
-Fikstura z wymyślonym statusem uczyła agenta nieistniejącego słownictwa.
+### Metoda
 
-`productionOrderStatus` = `plan | draft | assigned | in_progress | done | cancelled`
-(`"planned"` **nie istnieje**).
-
-### `skus.gramatura` to `v.optional(v.number())` — gramy liczbą, nie tekst
-
-W kontrakcie pole nazywa się `gramaturaG` właśnie po to, żeby to było widać.
-
-### Materiał po kodzie MUSI iść przez `buildMaterialIndex`
-
-Dwa materiały mogą mieć ten sam `code` (herbata z tagiem `sku` i akcesorium
-z woocommerce). Kalkulator dostępności preferuje ten z tagiem `sku`. Naiwne
-„pierwszy o tym kodzie" opisze ilość jednego materiału nazwą i jednostką
-drugiego. Dlatego `buildMaterialIndex` dostał `export` w
-`convex/lib/salesAvailability.ts` — **nie duplikuj tej reguły**.
-
-Tak samo stan liczy `salesAvailabilityByCode`, ten sam kalkulator, którego
-używa portal B2B i push do sklepu. Osobna arytmetyka dla AI = agent podaje
-inne liczby niż portal i któraś jest nieprawdziwa.
-
-### `convex codegen` jest ZABRONIONY
-
-`AGENTS.md` w teabrew-v2: nigdy `convex deploy`, `convex dev` ani
-`convex codegen`, gdy środowisko wskazuje na żywy backend — **codegen może też
-wysłać funkcje**.
-
-Wpisy modułu w `convex/_generated/api.d.ts` są dodane **ręcznie**, dokładnie
-w formie generowanej przez codegen: jeden `import type * as queries_aiOperator`,
-jeden wpis `"queries/aiOperator": typeof queries_aiOperator`, alfabetycznie
-między `queries/access` i `queries/allegroSnapshot`. Jeśli dodasz kolejny
-moduł — zrób to tak samo, ręcznie.
-
-Wdrożenie idzie wyłącznie przez `npm run convex:live:check`, potem
-`npm run convex:live:deploy -- --confirm=<nazwa-wdrożenia>`. To celowa bramka
-dla człowieka. Przed jakąkolwiek edycją w teabrew-v2 wykonaj kroki wymagane
-w jego `AGENTS.md` (`pwd`, `git remote -v`, `git status`, `git fetch origin main`,
-`git rev-parse HEAD` vs `origin/main`, `git worktree list`).
-
-### Nazwy folderu wysłanych NIE WOLNO zgadywać
-
-Wykrywanie idzie po atrybucie IMAP **SPECIAL-USE** `\Sent`
-(`src/mail/folders.ts`, `MAIL_THREAD_FOLDERS=auto`). U różnych dostawców to
-„Sent", „Sent Items", „Sent Messages", „INBOX.Sent" albo nazwa zlokalizowana.
-
-Test pokrywa przypadek odwrotny do intuicji: folder o nazwie „Sent" **bez**
-atrybutu `\Sent` nie jest brany.
-
-Stawka: bez folderu wysłanych agent nie widzi **naszych** odpowiedzi i może
-uznać, że klientowi nikt nie odpisał.
-
-### `mailparser` zwraca `references` raz jako string, raz jako tablicę
-
-Archiwalny kod się na tym potknął. Normalizacja: `normalizeReferences()`
-w `src/mail/thread.ts`.
-
-### Cytowana historia zaczynająca się od `>`
-
-Najczęstszy sposób cytowania w ogóle. Bez odcięcia model dostaje pięć
-poprzednich odpowiedzi jako nową treść. `stripQuotedHistory()` w
-`src/mail/text.ts`, z zabezpieczeniem: jeśli po odcięciu zostałoby < 20 znaków
-(wiadomość cytowana górą), zwracana jest całość.
+Przy usterce wątków postawiłem trzy hipotezy (format `Message-ID`, połykany
+`catch` w `fetchByUids`, podmiana ziarna przez `uids.slice(-1)`). Wszystkie
+rozsądne, wszystkie **błędne**. Rozstrzygnęły dopiero dane z sondy wołającej
+prawdziwy adapter. Jeśli trafisz na coś podobnego — zbierz dane, nie poprawiaj
+na wyczucie.
 
 ---
 
@@ -223,159 +222,119 @@ ai-operator/
   src/capability/    rejestr (wymusza read), typy, audyt, projekcje
                      projections.ts: JSON Schema + OpenAPI + MCP z JEDNEJ definicji
   src/mail/          types.ts (MailProvider — brak metod zapisu)
-                     imap.ts (adapter, readOnly), fixture.ts (adapter na plikach)
-                     folders.ts (SPECIAL-USE), thread.ts (union-find), text.ts
-  src/teabrew/       contract.ts (zod, JEDNO źródło prawdy o kształcie)
-                     client.ts (HTTP + fixture, ten sam interfejs TeabrewReader)
-  src/model/         roles.ts — fast / reason, zero ID modeli w logice
-  src/agent/         operator.ts (pętla ręczna, bo w niej powstaje log dowodowy)
-                     triage.ts, prompt.ts, evidence.ts
-  src/bin/           ask, triage, caps, openapi, mcp, check-mail, verify-teabrew
-  teabrew-patch/     źródło kontraktu ERP (już założone jako PR #27)
-  fixtures/          poczta (INBOX + Sent) i dane ERP — prawdziwe enumy!
-  tests/             scenarios (19), units (25), patch-security (12)
+                     imap.ts (adapter, readOnly, limity czasu, SEARCH OR)
+                     fixture.ts, folders.ts (SPECIAL-USE), thread.ts, text.ts
+  src/teabrew/       contract.ts (zod, JEDNO źródło prawdy), client.ts (HTTP + fixture)
+  src/model/         roles.ts — fast / reason, zero ID modeli w logice, LENIWA
+  src/agent/         operator.ts, triage.ts, prompt.ts, evidence.ts
+  src/bin/           ask, triage, caps, openapi, mcp, check-mail, verify-teabrew,
+                     probe-thread
+  scripts/           live-setup.sh — uruchomienie live na maszynie właściciela
+  teabrew-patch/     źródło kontraktu ERP (założone jako PR #27)
+  fixtures/          poczta (INBOX + Sent) i dane ERP — PRAWDZIWE enumy
+  tests/             68 testów: scenariusze, jednostkowe, bezpieczeństwo łatki, MCP
+  claude-desktop.example.json   konfiguracja MCP dla Claude Desktop
 ```
 
-Kluczowa właściwość: **z jednej deklaracji capability** (`nazwa, opis,
-input, output, wersja, zakres, effectClass`) powstaje klient TypeScript,
-JSON Schema dla function callingu, dokument OpenAPI i lista narzędzi MCP.
-Nie ma drugiego miejsca opisującego tę samą funkcję. Jeśli dodajesz
-capability — dodaj ją **tylko** w rejestrze.
+**Z jednej deklaracji capability** powstaje klient TypeScript, JSON Schema dla
+function callingu, OpenAPI i lista narzędzi MCP. Dodając capability, dodaj ją
+**tylko** w rejestrze.
 
-MCP (`src/bin/mcp.ts`) jest **adapterem, nie fundamentem**: nie definiuje
-żadnej capability, nie dodaje zależności, skasowanie go nie psuje agenta.
+MCP (`src/bin/mcp.ts`) jest **adapterem**: nie definiuje capability, nie dodaje
+zależności (JSON-RPC po stdio), nie woła modelu po naszej stronie. Skasowanie go
+nie psuje agenta. Sześć testów pilnuje, żeby nie stał się drugim systemem.
 
 ---
 
 ## 6. Testowanie bez sekretów
 
-Wszystkie 56 testów działają **bez sieci i bez klucza API**. Model jest atrapą
-odgrywającą zaplanowane kroki (`tests/helpers.ts`, `scriptedModel`), dane
-pochodzą z fikstur. Możesz rozszerzać testy nie mając żadnego dostępu.
+Wszystkie 68 testów działają **bez sieci i bez klucza API** — model jest atrapą
+(`tests/helpers.ts`, `scriptedModel`), dane z fikstur.
 
 ```bash
-cd ai-operator
-npm install
-npm run typecheck
-npm test                  # 56 testów
+cd ai-operator && npm install
+npm run typecheck && npm test
 npm run check:mail        # 11 sprawdzeń poczty na fiksturach, 11/11
-npm run caps              # 7 capability, 0 zapisujących
-npm run openapi           # projekcja HTTP
+npm run caps             # 7 capability, 0 zapisujących
 ```
 
 Fikstury mają dwie właściwości, których nie psuj:
 
-- **daty są względne** (`{{-3h}}`, `{{+2d}}`) — inaczej okno `sinceDays`
-  przestaje być testowane dzień po napisaniu testu,
-- **statusy są dokładnie z enumów źródłowego schematu**, nie „w tym stylu".
+- **daty względne** (`{{-3h}}`, `{{+2d}}`) — inaczej okno `sinceDays` przestaje
+  być testowane dzień po napisaniu testu,
+- **statusy dokładnie z enumów źródłowego schematu**, nie „w tym stylu".
   Fikstura z wymyśloną wartością przechodzi przez `z.string()` i uczy agenta
-  nieistniejącego słownictwa.
+  nieistniejącego słownictwa. To już raz się zdarzyło.
 
 ---
 
-## 7. Co zostało do zrobienia — w tej kolejności
+## 7. Co zostało do zrobienia
 
-### Krok 1 (człowiek): merge i wdrożenie łatki
+### Etap A — do potwierdzenia przez właściciela
 
-Review i merge [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27),
-potem wygenerowanie `AI_OPERATOR_API_TOKEN` (min. 32 losowe znaki) i ustawienie
-go **w zmiennych środowiskowych Convex**, potem wdrożenie przez guarded command.
-Bez tokenu trasy zwracają 500 (fail-closed).
+Konfiguracja MCP jest gotowa (`claude-desktop.example.json`). Właściciel wkleja
+wpis do `~/Library/Application Support/Claude/claude_desktop_config.json`,
+restartuje Claude Desktop i wykonuje testy z punktu 7 zadania: poczta,
+zamówienie, mail+TeaBrew, produkt, nieistniejące zamówienie.
 
-### Krok 2: sekrety w `.env` (nigdy w repo, nigdy na czacie)
+**Nie zaczynaj Etapu B, dopóki A nie jest potwierdzone.**
 
-```bash
-cd ai-operator && cp .env.example .env && chmod 600 .env
-```
+### Etap B — dostęp zdalny, DECYZJA WŁAŚCICIELA
 
-Brakujące wartości:
+Rekomendacja: **nie budować własnego hostingu.** Najprostsza bezpieczna droga to
+Convex jako broker MCP — to samo wdrożenie, które już trzyma token TeaBrew.
+Jedna trasa `POST /mcp` po Streamable HTTP, autoryzowana osobnym tokenem per
+urządzenie. HTTPS z pudełka, zero nowej infrastruktury, credentiale zostają
+serwerowe, odebranie dostępu = usunięcie jednej zmiennej.
 
-| zmienna | uwagi |
-| --- | --- |
-| `ANTHROPIC_API_KEY` | — |
-| `TEABREW_BASE_URL` | baza HTTP actions wdrożenia Convex, bez końcowego ukośnika |
-| `TEABREW_AI_OPERATOR_TOKEN` | ta sama wartość co `AI_OPERATOR_API_TOKEN` w Convex |
-| `MAIL_IMAP_HOST`, `MAIL_IMAP_PORT` | port zwykle 993 |
-| `MAIL_IMAP_USER`, `MAIL_IMAP_PASSWORD` | **hasło aplikacji**, nie hasło główne. Preferuj konto/hasło z prawem tylko do odczytu, jeśli dostawca to umożliwia. Jeśli nie umożliwia — kod i tak jest read-only |
+**Twardy problem: Convex nie ma dostępu do IMAP-a.** Z telefonu działałby więc
+tylko TeaBrew. Stąd dwie opcje, wymagające wyboru właściciela:
 
-`AUDIT_FILE` jest już włączony w `.env.example` — na pierwsze uruchomienia
-zostaw go, bo bez trwałego logu po tygodniu nie da się odpowiedzieć, czego
-agent naprawdę szukał.
+- **B1 — tylko TeaBrew zdalnie.** Mała, oczywista zmiana w istniejącym
+  wdrożeniu. Poczta zostaje lokalna.
+- **B2 — pełny zakres.** Wymaga procesu z wyjściem na `imap.zenbox.pl`, czyli
+  **pierwszej nowej usługi** w tym projekcie — wbrew dotychczasowej zasadzie.
+  Wymaga jawnej zgody, nie domysłu.
 
-### Krok 3: testy bez modelu — MUSZĄ przejść w całości
-
-```bash
-npm run verify:teabrew          # 17 sprawdzeń wdrożonej łatki
-MODE=live npm run check:mail    # 11 sprawdzeń poczty
-```
-
-**Jeśli którykolwiek nie przechodzi — nie włączaj modelu.** Przyczyna jest po
-stronie danych albo konfiguracji; model tego nie naprawi, tylko przykryje.
-
-`verify:teabrew` odkrywa prawdziwe numery i kody z systemu (endpoint produkcji
-je zwraca), więc testy pozytywne działają bez podawania czegokolwiek.
-Wymuszenie: `-- --order <numer> --product <fraza>`.
-
-Sprawdź szczególnie: `1b. Wykrycie folderu wysłanych`. Jeśli serwer nie wskaże
-`\Sent`, wpisz nazwę ręcznie w `MAIL_THREAD_FOLDERS`.
-
-### Krok 4: dopiero teraz model
-
-```bash
-MODE=live npm run triage
-MODE=live npm run ask -- --trace "Co ważnego przyszło dzisiaj?"
-```
-
-### Krok 5: trzy testy korelacji na prawdziwych danych
-
-| test | co agent powinien zrobić |
-| --- | --- |
-| **A** | mail o zamówieniu istniejącym w TeaBrew → przeczytać, wykryć numer, sprawdzić, podać status, pokazać evidence |
-| **B** | mail o produkcie/dostępności → rozpoznać produkt, znaleźć kod, sprawdzić stan, odpowiedzieć z TeaBrew |
-| **C** | mail, którego **nie da się** wiarygodnie połączyć → powiedzieć, że nie znalazł powiązania. **Nie wymyślić go** |
-
-Po każdym: `npm run ask -- --trace` i weryfikacja, że każde twierdzenie o
-statusie / stanie / produkcji / treści poczty ma odpowiadające mu prawdziwe
-wywołanie capability.
-
-### Krok 6: uzupełnij `docs/AI-OPERATOR-MVP.md` sekcję 8
-
-Dopisz, co **faktycznie** uruchomiono, które testy przeszły, czego nie udało
-się zweryfikować i jakie problemy wyszły dopiero na prawdziwych danych.
-
-**Nie deklaruj działania czegoś, czego nie uruchomiłeś.** Sekcja 8 jest teraz
-napisana w tej konwencji — utrzymaj ją.
+Nie wybieraj za właściciela.
 
 ---
 
-## 8. Znane ograniczenia (świadome, nie do „naprawienia" po drodze)
+## 8. Otwarte obserwacje operacyjne
 
-- **`orderByRef` skanuje wszystkie zamówienia.** Indeks `by_external` jest
-  złożony `(source, externalOrderId)`, a źródła z maila nie znamy. Przy obecnej
-  skali to tańsze niż zapytanie po każdym źródle. Jeśli `latencyMs` w audycie
-  zacznie rosnąć, właściwą odpowiedzią jest indeks po samym numerze — **nie**
-  cache po stronie agenta.
-- **Wyszukiwanie to IMAP SEARCH, nie wyszukiwarka.** Odpowiedź zawiera
-  `searchNote`. Część serwerów odrzuca `SEARCH BODY` — wtedy pomijamy to
-  kryterium, nie całe wyszukiwanie.
-- **Klasyfikacja triage nie jest deterministyczna.** Nieparsowalna odpowiedź
-  modelu nie udaje, że się udała — wiadomości idą do „Nieklasyfikowane".
-- **Kontrola dowodów jest heurystyką.** Woli przepuścić niejasny przypadek niż
-  krzyczeć na każdą liczbę — ostrzeżenie, które krzyczy zawsze, zostanie
-  zignorowane i wtedy nie chroni przed niczym.
-- **Limit 12 tur** w pętli agenta. Po przekroczeniu agent mówi, że przerwał, i
-  pokazuje, co zdążył sprawdzić — nie improwizuje.
-- Jeden agent, jedna skrzynka, jeden użytkownik. Brak tożsamości wielu
-  użytkowników i delegacji — świadomie odłożone.
+**Zasięg agenta w poczcie.** Pierwszy `triage` na prawdziwej skrzynce zwrócił
+2 wiadomości z 24 godzin, obie niebiznesowe (automat rezerwacyjny i „wróciłem
+z urlopu"). Skrzynka ma jednak **21 folderów**, w tym `FAKTURY`, `ROSSMANN`,
+`NPD`, `INBOX.WHITE LABEL.*`. Jeśli reguły serwerowe przenoszą korespondencję
+z klientami do podfolderów, agent czytający tylko `INBOX` będzie odpowiadał
+prawdziwie, ale bezużytecznie.
+
+To **decyzja właściciela** i dotyczy konfiguracji (`MAIL_FOLDER`), nie kodu.
+Rozstrzygnie ją tydzień używania: jeśli odpowiedzi będą regularnie pomijać
+sprawy, o których właściciel wie, że przyszły — wtedy wiadomo, które foldery
+dołożyć i dlaczego. Nie rozszerzaj zasięgu bez tego dowodu.
+
+**`shipmentReservationUncovered` niezerowe na realnym SKU.** Istnieją aktywne
+rezerwacje wysyłkowe wskazujące partie wykluczone z profilu. Helper
+`salesAvailability` celowo tego nie naprawia — tylko pokazuje. Zgłoszone
+właścicielowi jako sygnał operacyjny; diagnoza przyczyny jest poza zakresem.
+
+**Luka w guardach wdrożeniowych teabrew-v2.** Build preview uruchamia
+`convex deploy` bez kontroli produkcyjnych. Zgłoszone w komentarzu na PR #27,
+z sugestią domknięcia (rozszerzyć guardy na preview albo odciąć
+`CONVEX_DEPLOY_KEY` od środowiska preview). **Nie domykaj tego bez zgody** — to
+zmiana w produkcyjnej ścieżce wdrożeniowej.
 
 ---
 
-## 9. Decyzje należące do właściciela firmy — nie rozstrzygaj ich sam
+## 9. Decyzje należące do właściciela — nie rozstrzygaj ich sam
 
-1. **Która skrzynka** — firmowa czy prywatna właściciela.
-2. **Czy dostawca daje konto tylko do czytania** — jeśli tak, użyć go.
-3. **Jak długo trzymać log audytu** i czy na dysku. Log nie ma treści maili,
-   ale ma numery zamówień i frazy wyszukiwania.
-4. **Kto poza właścicielem może pytać agenta.** Dziś: kto ma dostęp do maszyny
-   i `.env`. Jeśli więcej osób — tożsamość użytkownika wraca jako decyzja
-   projektowa, a nie szczegół.
+1. **Merge PR #27** i domknięcie rozjazdu między `main` a wdrożeniem.
+2. **Etap B: B1 czy B2** (patrz wyżej).
+3. **Zasięg folderów poczty** — po tygodniu używania.
+4. **Jak długo trzymać log audytu** i czy na dysku. Nie ma treści maili, ale ma
+   numery zamówień i frazy wyszukiwania.
+5. **Kto poza właścicielem może pytać agenta.** Dziś: kto ma dostęp do jego
+   maszyny i `.env`. Przy większej liczbie osób tożsamość użytkownika wraca jako
+   decyzja projektowa.
+6. **Czy domykać lukę w guardach wdrożeniowych** teabrew-v2.
