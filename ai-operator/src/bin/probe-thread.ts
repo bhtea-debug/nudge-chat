@@ -4,6 +4,7 @@ import { simpleParser } from "mailparser";
 import { loadConfig } from "../config.js";
 import { normalizeReferences } from "../mail/thread.js";
 import { planFolders, type MailboxInfo } from "../mail/folders.js";
+import { ImapMailProvider } from "../mail/imap.js";
 
 /**
  * Sonda diagnostyczna dla rekonstrukcji wątku. Narzędzie jednorazowe, nie
@@ -182,97 +183,68 @@ async function main(): Promise<number> {
     }
   }
 
-  // ── 4. Odtwórz krok 3 adaptera: dociąganie każdej referencji ────────────────
+  // ── 4. Wywołaj PRAWDZIWY adapter, dokładnie jak check:mail ──────────────────
   //
-  // Wyszukiwanie działa (punkt 3), więc jeśli wątek i tak wraca jednoelementowy,
-  // błąd jest PO wyszukiwaniu — w pobieraniu albo parsowaniu. Adapter ma tam
-  // połykający catch, więc awaria wygląda jak "nie znaleziono".
+  // Poprzednia wersja tej sekcji reimplementowała krok 3 adaptera — i dlatego
+  // odpowiadała na inne pytanie: wybierała ziarno po UID rosnąco, a check:mail
+  // wybiera po dacie malejąco. Testowały dwa różne wątki.
   //
-  // Ten krok robi to samo, ale mówi, co się stało: ile uid znalazło wyszukiwanie,
-  // ile rekordów wyszło z pobrania, i jaki błąd poleciał, jeśli poleciał.
-  process.stdout.write("\nDOCIĄGANIE REFERENCJI — krok 3 adaptera, bez połykania błędów\n");
+  // Reimplementacja narzędzia diagnostycznego zawsze będzie się rozjeżdżać
+  // z rzeczą, którą diagnozuje. Więc teraz sonda woła adapter.
+  await client.logout();
 
-  const wanted = [...new Set([linked.id, ...linked.refs])];
-  process.stdout.write(`  referencji do sprawdzenia: ${wanted.length}\n\n`);
+  const provider = new ImapMailProvider({
+    host: config.mail.host,
+    port: config.mail.port,
+    user: config.mail.user,
+    pass: config.mail.pass,
+    folder: config.mail.folder,
+    threadFolders: config.mail.threadFolders,
+  });
 
-  let hits = 0;
-  let fetchFailures = 0;
-  let parseFailures = 0;
+  try {
+    // Ta sama selekcja co w check:mail: listRecent sortuje po dacie malejąco.
+    const recent = await provider.listRecent({ limit: 25, since, folder: plan.inbox });
+    const ids = new Set(recent.map((m) => m.id));
+    const target =
+      recent.find((m) =>
+        [...m.references, ...(m.inReplyTo ? [m.inReplyTo] : [])].some((r) => ids.has(r)),
+      ) ?? null;
 
-  for (const [i, id] of wanted.entries()) {
-    if (id === linked.id) continue;
-    const isParent = id === parentRef;
-    const tag = isParent ? " ← RODZIC" : "";
+    if (!target) {
+      process.stdout.write("\nAdapter nie znalazł odpowiedzi z rodzicem w oknie.\n");
+      return 1;
+    }
 
-    for (const folder of plan.threadFolders) {
-      let l: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
-      try {
-        l = await client.getMailboxLock(folder, { readOnly: true });
-        const res = await client.search({ header: { "Message-ID": id } } as never, {
-          uid: true,
-        });
-        const uids = res === false ? [] : res;
-        if (uids.length === 0) {
-          if (isParent) {
-            process.stdout.write(`  [${i}] ${folder}: 0 uid — a POWINIEN być${tag}\n`);
-          }
-          continue;
-        }
+    process.stdout.write("\nZIARNO WYBRANE TAK JAK W check:mail (po dacie malejąco)\n");
+    process.stdout.write(`  temat:      ${clip(target.subject)}\n`);
+    process.stdout.write(`  Message-ID: ${JSON.stringify(target.id)}\n`);
+    process.stdout.write(`  folder:     ${target.folder}\n`);
+    process.stdout.write(`  providerRef:${JSON.stringify(target.providerRef)}\n`);
+    process.stdout.write(`  In-Reply-To:${JSON.stringify(target.inReplyTo)}\n`);
+    process.stdout.write(`  References: ${target.references.length} pozycji\n`);
+    const inWindow = [...target.references, ...(target.inReplyTo ? [target.inReplyTo] : [])].filter(
+      (r) => ids.has(r),
+    );
+    process.stdout.write(`  z tego w oknie: ${JSON.stringify(inWindow)}\n`);
 
-        // Pobranie i parsowanie — tu adapter połyka błędy.
-        let fetched = 0;
-        let parsed = 0;
-        let lastError = "";
-        for await (const msg of client.fetch(
-          String(uids[uids.length - 1]),
-          { uid: true, envelope: true, source: true, internalDate: true, flags: true },
-          { uid: true },
-        )) {
-          fetched += 1;
-          try {
-            const hasSource = Boolean(msg.source);
-            if (!hasSource) throw new Error("fetch nie zwrócił pola source");
-            await simpleParser(msg.source as Buffer);
-            parsed += 1;
-          } catch (err) {
-            lastError = err instanceof Error ? err.message : String(err);
-          }
-        }
-
-        if (parsed > 0) {
-          hits += 1;
-          process.stdout.write(
-            `  [${i}] ${folder}: znaleziono i sparsowano (uid ${uids[uids.length - 1]})${tag}\n`,
-          );
-        } else if (fetched === 0) {
-          fetchFailures += 1;
-          process.stdout.write(
-            `  [${i}] ${folder}: SEARCH dał uid ${uids.join(",")}, ale FETCH nie zwrócił nic${tag}\n`,
-          );
-        } else {
-          parseFailures += 1;
-          process.stdout.write(
-            `  [${i}] ${folder}: pobrano ${fetched}, PARSOWANIE PADŁO: ${lastError}${tag}\n`,
-          );
-        }
-        break;
-      } catch (err) {
-        process.stdout.write(
-          `  [${i}] ${folder}: BŁĄD: ${err instanceof Error ? err.message : String(err)}${tag}\n`,
-        );
-      } finally {
-        l?.release();
+    process.stdout.write("\nWYNIK provider.getThread() — to samo wywołanie co check:mail\n");
+    const thread = await provider.getThread({ messageId: target.id, maxMessages: 20 });
+    if (!thread) {
+      process.stdout.write("  getThread zwrócił null — ziarna nie znaleziono po Message-ID\n");
+    } else {
+      process.stdout.write(`  messageCount:   ${thread.messageCount}\n`);
+      process.stdout.write(`  incomplete:     ${thread.incomplete}\n`);
+      process.stdout.write(`  incompleteNote: ${thread.incompleteNote ?? "(brak)"}\n`);
+      process.stdout.write("  wiadomości:\n");
+      for (const m of thread.messages) {
+        process.stdout.write(`    - ${m.folder} ${JSON.stringify(m.id)} ${clip(m.subject, 30)}\n`);
       }
     }
+  } finally {
+    await provider.close();
   }
 
-  process.stdout.write(
-    `\n  Podsumowanie: dociągnięto ${hits}, awarii pobrania ${fetchFailures}, ` +
-      `awarii parsowania ${parseFailures}.\n` +
-      `  Wątek powinien mieć ${hits + 1} wiadomości (ziarno + dociągnięte).\n`,
-  );
-
-  await client.logout();
   process.stdout.write("\nGotowe.\n");
   return 0;
 }
