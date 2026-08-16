@@ -149,7 +149,19 @@ podejmujących decyzje jednocześnie. `npm run mcp` startuje **bez**
 
 ### Podłączenie klienta
 
-Dwa klienty, ta sama konfiguracja serwera. Wybierz ten, którego masz.
+Serwer MCP po stdio jest **procesem lokalnym** — uruchamia go klient na tej samej
+maszynie. Trzeba więc mieć klienta na tej maszynie. Sama przeglądarka
+z claude.ai nie wystarczy: strona nie ma jak uruchomić procesu na Twoim
+komputerze i nie zobaczy serwera stdio. To nie brak konfiguracji, to inny model
+działania — dostęp z przeglądarki i telefonu wymaga zdalnego MCP (Etap B).
+
+Dwa klienty, ta sama konfiguracja serwera. Wybierz ten, którego masz — albo
+zainstaluj jednego:
+
+| klient | instalacja | doświadczenie |
+| --- | --- | --- |
+| Claude Desktop | `claude.ai/download` | normalny czat, docelowe |
+| Claude Code | `npm install -g @anthropic-ai/claude-code` | terminal, dobre do weryfikacji |
 
 **Claude Code** — nic nie trzeba konfigurować. `.mcp.json` leży w tym katalogu,
 więc wystarczy uruchomić Claude Code **z katalogu `ai-operator`**:
