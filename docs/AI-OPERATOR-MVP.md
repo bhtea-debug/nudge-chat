@@ -141,13 +141,15 @@ skasowanie pliku nie psuje agenta.
 
 ### Nie działa, dopóki nie dostanie danych wejściowych
 
-Dwie rzeczy są poza zasięgiem tego repozytorium i **nie zostały udawane**:
+Dwie rzeczy są poza zasięgiem tego środowiska i **nie zostały udawane** —
+szczegóły i dowody w 8.9:
 
-1. **Poczta.** Nie mam żadnych danych dostępowych do skrzynki. Adapter IMAP jest
-   napisany, ale nigdy nie łączył się z prawdziwym serwerem.
-2. **TeaBrew v2.** Mam do tamtego repozytorium dostęp wyłącznie do odczytu, więc
-   pięć tras nie zostało tam wdrożonych. Leżą gotowe w
-   `ai-operator/teabrew-patch/` wraz z instrukcją i skryptem weryfikującym.
+1. **Poczta.** Adapter IMAP jest napisany i przetestowany na fiksturach, ale
+   nigdy nie łączył się z prawdziwym serwerem: polityka sieciowa tego środowiska
+   nie przepuszcza `imap.zenbox.pl` (TCP timeout na 993 i 143).
+2. **TeaBrew v2.** Łatka jest założona i wypchnięta (PR #27), ale wdrożenie Convex
+   wymaga jawnej akcji człowieka, a samo wdrożenie jest niedostępne z tego
+   środowiska (proxy odrzuca CONNECT z 403).
 
 Dlatego wszystko jest zbudowane **do interfejsów**, z dostawcami na fiksturach.
 `MODE=fixture` przechodzi całą ścieżkę end-to-end od razu; `MODE=live` zmienia
@@ -161,8 +163,8 @@ implementację dostawcy, nie narzędzia widziane przez AI.
 | ścieżka poczta → AI → TeaBrew na fiksturach | działa end-to-end |
 | `npm run caps`, `npm run openapi` | uruchomione, dają 7 capability |
 | konfiguracja → warstwa modeli → API Anthropic | potwierdzone (żądanie dociera, przy błędnym kluczu wraca 401) |
-| odpowiedź prawdziwego modelu | **nie uruchomione — brak klucza API w tym środowisku** |
-| adapter IMAP wobec prawdziwego serwera | **nie uruchomione — brak danych dostępowych** |
+| odpowiedź prawdziwego modelu | **nie uruchomione — brak klucza API w tym środowisku** (samo `api.anthropic.com` jest osiągalne) |
+| adapter IMAP wobec prawdziwego serwera | **nie uruchomione — host poczty niedostępny z tego środowiska** |
 | pięć tras w TeaBrew v2 | **nie wdrożone — brak uprawnień do zapisu** |
 
 ---
@@ -579,3 +581,74 @@ tego nie naprawi, tylko przykryje.
    nie ma i nie powinno być. Kolejność „najpierw dowód, że działa, potem
    uprawnienia" jest tu celowa — firma już raz usunęła funkcję AI, która pisała
    bez rozliczalności.
+
+### 8.9 Ustalenia z próby uruchomienia `MODE=live`
+
+Dwa fakty ustalone empirycznie przy próbie uruchomienia. Oba zmieniają plan
+z 8.7, więc są tu zapisane zamiast poprawiania go w miejscu.
+
+#### Środowisko agenta nie ma dostępu sieciowego do poczty ani do Convex
+
+Polityka egress tej sesji przepuszcza GitHub, npm i `api.anthropic.com`.
+Nie przepuszcza serwera poczty ani wdrożenia Convex firmy:
+
+| host | wynik |
+| --- | --- |
+| `api.anthropic.com:443` | osiągalny (HTTP 401 bez klucza — czyli połączenie działa) |
+| `github.com:443` | osiągalny |
+| `imap.zenbox.pl:993` | DNS rozwiązuje się, TCP **timeout** |
+| `imap.zenbox.pl:143` | TCP **timeout** |
+| wdrożenie Convex, `:443` | proxy odrzuca CONNECT z **403** (`connect_rejected`, policy denial) |
+
+Wniosek: **`MODE=live` nie może zostać uruchomiony z tej sesji** — ani
+`check:mail`, ani `verify:teabrew`. Nie jest to brak sekretów, tylko brak
+trasy sieciowej. Podanie hasła do skrzynki w tym środowisku nie dałoby nic
+poza wyniesieniem sekretu do kontenera, który i tak nie ma jak się połączyć.
+
+Właściwym miejscem uruchomienia `MODE=live` jest **maszyna właściciela**:
+ma dostęp do jednego i drugiego hosta, a hasło do skrzynki nigdy nie opuszcza
+jego komputera. Rozszerzanie polityki sieciowej tego środowiska byłoby
+rozwiązaniem gorszym — wymagałoby wstawienia hasła do efemerycznego kontenera.
+
+Wszystko, co da się sprawdzić bez sieci, jest sprawdzone: 56 testów,
+`tsc --noEmit` w obu repozytoriach, `check:mail` 11/11 na fiksturach.
+
+#### Build preview na Vercelu uruchamia `convex deploy` bez guardów produkcyjnych
+
+`scripts/safe-build.mjs` w teabrew-v2 ma silne kontrole — zgodność
+`NEXT_PUBLIC_CONVEX_URL`, zakres `CONVEX_DEPLOY_KEY`, gałąź tylko `main` —
+ale **wyłącznie w bloku `isVercel && isProduction`** (`VERCEL_ENV === "production"`).
+Build preview nie wchodzi w ten blok i dochodzi do ostatniej instrukcji pliku:
+
+```
+convex deploy --cmd-url-env-var-name NEXT_PUBLIC_CONVEX_URL --cmd "next build"
+```
+
+Bot Vercela zaraportował na PR #27 preview jako **Ready**, czyli
+`convex deploy` zakończył się sukcesem, czyli miał działający klucz wdrożeniowy.
+Zgodnie z `AGENTS.md` klucz jest scope'owany na to samo wdrożenie, którego
+używa live frontend — więc funkcje z PR-a **najprawdopodobniej są już na żywym
+backendzie**, bez przejścia przez `npm run convex:live:deploy`.
+
+Co to znaczy praktycznie:
+
+- **Nie ma tu wycieku danych.** Trasy są fail-closed: dopóki
+  `AI_OPERATOR_API_TOKEN` nie jest ustawiony w zmiennych Convex, każde żądanie
+  dostaje 500, niezależnie od nagłówka.
+- **Zdanie „ten PR niczego nie wdraża" w opisie PR-a było nieprawdziwe.**
+  Poprawione w opisie PR-a.
+- **To luka w modelu bezpieczeństwa wdrożeń, nie skutek tej zmiany.** Każdy PR
+  do tego repo zachowuje się tak samo. Ten PR tylko to ujawnił.
+- Weryfikacja wymaga jednej komendy z maszyny mającej dostęp do wdrożenia:
+  `curl -s -o /dev/null -w "%{http_code}" <baza-http-actions>/ai-operator/health`.
+  `404` = niewdrożone, `500` = wdrożone bez tokenu, `401` = wdrożone z tokenem.
+
+Jeśli funkcje faktycznie są już wdrożone, z kroku 1 w 8.7 zostaje **tylko**
+ustawienie `AI_OPERATOR_API_TOKEN` w zmiennych Convex — `convex:live:deploy`
+nie jest potrzebne. To warto ustalić przed czymkolwiek innym.
+
+Osobno, poza zakresem tego zadania, warto rozważyć domknięcie luki: albo
+rozszerzyć guardy `safe-build.mjs` na buildy preview, albo odciąć
+`CONVEX_DEPLOY_KEY` od środowiska preview na Vercelu. Nie robię tego tutaj —
+to zmiana w ścieżce wdrożeniowej produkcji, a zadanie brzmiało „nie obchodź
+istniejących zabezpieczeń deploymentu", nie „przepisz je".
