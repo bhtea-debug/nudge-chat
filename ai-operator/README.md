@@ -50,6 +50,19 @@ wiadomości ani danych dostępowych — adresy są maskowane, tematy przycinane,
 z treści raportowane są tylko właściwości (długość, obecność polskich znaków,
 czy HTML został poprawnie zamieniony na tekst).
 
+### Poprawianie raz wpisanego sekretu
+
+`scripts/live-setup.sh` dopytuje wyłącznie o brakujące wartości, więc samo
+ponowne uruchomienie nie zapyta o coś, co już jest w `.env`. Do zmiany:
+
+```bash
+bash scripts/live-setup.sh --reset MAIL_IMAP_PASSWORD
+bash scripts/live-setup.sh --reset MAIL_IMAP_PASSWORD,ANTHROPIC_API_KEY
+```
+
+Czyści wskazane klucze i pyta o nie ponownie, bez echa. Alternatywą byłoby
+otwieranie pliku z hasłami w edytorze, żeby poprawić literówkę.
+
 ### Folder wysłanych
 
 `MAIL_THREAD_FOLDERS=auto` (domyślnie) wykrywa go po atrybucie IMAP

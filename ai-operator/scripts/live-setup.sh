@@ -4,6 +4,11 @@
 #
 #   cd ai-operator && bash scripts/live-setup.sh
 #
+# Podanie wartości od nowa (np. po wpisaniu złego hasła):
+#
+#   bash scripts/live-setup.sh --reset MAIL_IMAP_PASSWORD
+#   bash scripts/live-setup.sh --reset MAIL_IMAP_PASSWORD,ANTHROPIC_API_KEY
+#
 # Skrypt istnieje z jednego powodu: MODE=live wymaga dostępu sieciowego do
 # serwera poczty i do wdrożenia Convex, a sekrety mają zostać na Twoim
 # komputerze. Środowiska agentowe w chmurze nie mają ani jednego, ani drugiego.
@@ -111,6 +116,29 @@ ask_secret() {
   env_set "$key" "$answer"
   ok "$key zapisane do $ENV_FILE (nie pokazuję wartości)"
 }
+
+# ── 2a. --reset: wyczyść wskazane wartości, żeby skrypt zapytał o nie ponownie ──
+#
+# Bez tego jedyną drogą do zmiany raz wpisanego sekretu byłaby ręczna edycja
+# .env — czyli otwarcie pliku z hasłami w edytorze, żeby poprawić literówkę.
+
+if [ "${1:-}" = "--reset" ]; then
+  RESET_KEYS="${2:-}"
+  [ -n "$RESET_KEYS" ] || fail "--reset wymaga nazwy zmiennej, np. --reset MAIL_IMAP_PASSWORD"
+  for key in $(printf '%s' "$RESET_KEYS" | tr ',' ' '); do
+    if [ -n "$(env_get "$key")" ]; then
+      tmp="$(mktemp)"
+      grep -vE "^#? *${key}=" "$ENV_FILE" > "$tmp" 2>/dev/null || true
+      mv "$tmp" "$ENV_FILE"
+      chmod 600 "$ENV_FILE"
+      info "wyczyszczono $key — zapytam o nią ponownie"
+    else
+      info "$key nie było ustawione, nic do czyszczenia"
+    fi
+  done
+elif [ -n "${1:-}" ]; then
+  fail "Nieznany argument: $1. Dozwolone: --reset KLUCZ[,KLUCZ...]"
+fi
 
 env_set MODE live
 ok "MODE = live"
