@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bht-operator": {
+      "command": "npx",
+      "args": ["tsx", "--env-file-if-exists=.env", "src/bin/mcp.ts"]
+    }
+  }
+}

@@ -147,14 +147,28 @@ Nie ma więc podwójnego wywołania, podwójnego kosztu ani dwóch agentów
 podejmujących decyzje jednocześnie. `npm run mcp` startuje **bez**
 `ANTHROPIC_API_KEY`; klucz jest potrzebny wyłącznie dla `ask` i `triage`.
 
-### Podłączenie do Claude Desktop
+### Podłączenie klienta
 
-Patrz `claude-desktop.example.json` — skopiuj wpis `bht-operator` do
-`~/Library/Application Support/Claude/claude_desktop_config.json`, podmieniając
-ścieżki na absolutne. Potem zrestartuj Claude Desktop.
+Dwa klienty, ta sama konfiguracja serwera. Wybierz ten, którego masz.
 
-Sekrety zostają po stronie serwera. Claude Desktop nie widzi hasła IMAP ani
-tokenu TeaBrew — widzi siedem narzędzi read-only.
+**Claude Code** — nic nie trzeba konfigurować. `.mcp.json` leży w tym katalogu,
+więc wystarczy uruchomić Claude Code **z katalogu `ai-operator`**:
+
+```bash
+cd ai-operator && claude
+```
+
+Ścieżki w `.mcp.json` są względne właśnie dlatego: plik jest w repozytorium i
+ma działać na każdej maszynie bez podmieniania czegokolwiek.
+
+**Claude Desktop** — patrz `claude-desktop.example.json`. Skopiuj wpis
+`bht-operator` do `~/Library/Application Support/Claude/claude_desktop_config.json`
+(katalog powstaje razem z aplikacją; jeśli go nie ma, aplikacji nie ma),
+podmieniając ścieżki na **absolutne** — Claude Desktop uruchamia serwer z
+nieokreślonego katalogu roboczego. Potem zrestartuj aplikację.
+
+W obu przypadkach sekrety zostają po stronie serwera, w `.env`. Klient nie widzi
+hasła IMAP ani tokenu TeaBrew — widzi siedem narzędzi read-only.
 
 ### Dlaczego to jest adapter, nie drugi system
 
