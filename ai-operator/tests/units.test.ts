@@ -1,0 +1,214 @@
+import { describe, expect, it } from "vitest";
+import {
+  assignThreadIds,
+  baseSubject,
+  normalizeReferences,
+  threadMemberIds,
+} from "../src/mail/thread.js";
+import {
+  htmlToPlainText,
+  makeSnippet,
+  stripQuotedHistory,
+  truncateBody,
+} from "../src/mail/text.js";
+import { FixtureMailProvider, resolveFixtureDate } from "../src/mail/fixture.js";
+import {
+  toMarkdownTable,
+  toMcpToolList,
+  toOpenApiDocument,
+  toToolDefinitions,
+} from "../src/capability/projections.js";
+import { createRegistryForProjections } from "../src/index.js";
+import { ROUTES } from "../src/teabrew/contract.js";
+
+describe("rekonstrukcja wątków", () => {
+  it("normalizuje References podane jako string i jako tablicę", () => {
+    // Realna pułapka: mailparser zwraca References raz tak, raz tak.
+    expect(normalizeReferences("<a@x> <b@x>", null)).toEqual(["<a@x>", "<b@x>"]);
+    expect(normalizeReferences(["<a@x>", "<b@x>"], null)).toEqual(["<a@x>", "<b@x>"]);
+    expect(normalizeReferences(undefined, "<c@x>")).toEqual(["<c@x>"]);
+    expect(normalizeReferences("<a@x>", "<a@x>")).toEqual(["<a@x>"]);
+  });
+
+  it("scala wiadomości w jeden wątek przez References", () => {
+    const ids = assignThreadIds([
+      { id: "<c@x>", inReplyTo: "<b@x>", references: ["<a@x>", "<b@x>"], subject: "Re: t", date: "2026-08-03" },
+      { id: "<a@x>", inReplyTo: null, references: [], subject: "t", date: "2026-08-01" },
+      { id: "<b@x>", inReplyTo: "<a@x>", references: ["<a@x>"], subject: "Re: t", date: "2026-08-02" },
+    ]);
+    // Najstarsza posiadana wiadomość jest identyfikatorem wątku, niezależnie
+    // od kolejności wejścia.
+    expect([...new Set(ids.values())]).toEqual(["<a@x>"]);
+  });
+
+  it("nie scala niepowiązanych wiadomości", () => {
+    const ids = assignThreadIds([
+      { id: "<a@x>", inReplyTo: null, references: [], subject: "jedno", date: "2026-08-01" },
+      { id: "<z@x>", inReplyTo: null, references: [], subject: "drugie", date: "2026-08-02" },
+    ]);
+    expect(new Set(ids.values()).size).toBe(2);
+  });
+
+  it("zbiera identyfikatory do dociągnięcia i czyści temat z prefiksów", () => {
+    expect(
+      threadMemberIds({
+        id: "<c@x>",
+        inReplyTo: "<b@x>",
+        references: ["<a@x>"],
+        subject: "Re: t",
+        date: "2026-08-03",
+      }).sort(),
+    ).toEqual(["<a@x>", "<b@x>", "<c@x>"]);
+
+    expect(baseSubject("Re: Odp: FWD: Zamówienie 12345")).toBe("Zamówienie 12345");
+    expect(baseSubject("")).toBe("(brak tematu)");
+  });
+});
+
+describe("normalizacja treści", () => {
+  it("zamienia HTML na tekst i nie zostawia znaczników", () => {
+    const out = htmlToPlainText(
+      "<html><style>p{color:red}</style><body><p>Cześć&nbsp;Anna</p><br><div>Do środy</div></body></html>",
+    );
+    expect(out).not.toMatch(/<[^>]+>/);
+    expect(out).toContain("Cześć Anna");
+    expect(out).toContain("Do środy");
+    expect(out).not.toContain("color:red");
+  });
+
+  it("odcina cytowaną historię, ale nie kasuje krótkiej wiadomości", () => {
+    const withQuote = "Ponawiam pytanie o 12345.\n\n> Dzień dobry,\n> pytałam wczoraj o to zamówienie.";
+    expect(stripQuotedHistory(withQuote)).toBe("Ponawiam pytanie o 12345.");
+
+    const onlyQuote = "ok\n\nW dniu 2026-08-15 Anna napisał:\n> treść";
+    // Po odcięciu zostałoby „ok" — za mało, więc lepiej pokazać całość.
+    expect(stripQuotedHistory(onlyQuote)).toContain("W dniu");
+  });
+
+  it("przycina długie treści i oznacza to jawnie", () => {
+    const { body, truncated } = truncateBody("x".repeat(9000));
+    expect(truncated).toBe(true);
+    expect(body).toContain("treść przycięta");
+    expect(truncateBody("krótka").truncated).toBe(false);
+  });
+
+  it("podgląd jest jednolinijkowy i ograniczony", () => {
+    const snippet = makeSnippet("linia 1\n\nlinia 2   z   odstępami");
+    expect(snippet).toBe("linia 1 linia 2 z odstępami");
+    expect(makeSnippet("y".repeat(1000)).length).toBeLessThanOrEqual(321);
+  });
+});
+
+describe("dostawca na fiksturach", () => {
+  const provider = new FixtureMailProvider({
+    filePath: new URL("../fixtures/mail/inbox.json", import.meta.url).pathname,
+  });
+
+  it("rozwiązuje daty względne, więc okno czasowe zawsze działa", () => {
+    const now = Date.UTC(2026, 7, 16, 12, 0, 0);
+    expect(resolveFixtureDate("{{-2h}}", now)).toBe("2026-08-16T10:00:00.000Z");
+    expect(resolveFixtureDate("{{-1d}}", now)).toBe("2026-08-15T12:00:00.000Z");
+    expect(resolveFixtureDate("2026-01-02T03:04:05.000Z", now)).toBe("2026-01-02T03:04:05.000Z");
+  });
+
+  it("filtruje po oknie czasowym i po nieprzeczytanych", async () => {
+    const recent = await provider.listRecent({ limit: 50, since: new Date(Date.now() - 7 * 3_600_000) });
+    expect(recent.length).toBeGreaterThan(0);
+    expect(recent.every((m) => Date.now() - new Date(m.date).getTime() <= 7 * 3_600_000)).toBe(true);
+
+    const unread = await provider.listRecent({
+      limit: 50,
+      since: new Date(Date.now() - 3 * 86_400_000),
+      unreadOnly: true,
+    });
+    expect(unread.every((m) => !m.seen)).toBe(true);
+  });
+
+  it("szuka w temacie, nadawcy i treści", async () => {
+    expect((await provider.search({ query: "12345", limit: 10 })).length).toBe(2);
+    expect((await provider.search({ query: "sanepid", limit: 10 })).length).toBe(1);
+    expect((await provider.search({ query: "hurt-herbaty", limit: 10 })).length).toBe(1);
+    expect((await provider.search({ query: "nie ma takiej frazy xyz", limit: 10 })).length).toBe(0);
+  });
+
+  it("zwraca cały wątek dla dowolnej wiadomości z wątku", async () => {
+    const fromReply = await provider.getThread({
+      messageId: "<zam-12345-2@sklep-ziolowy.example>",
+      maxMessages: 10,
+    });
+    const fromOriginal = await provider.getThread({
+      messageId: "<zam-12345-1@sklep-ziolowy.example>",
+      maxMessages: 10,
+    });
+    expect(fromReply?.messageCount).toBe(2);
+    expect(fromReply?.threadId).toBe(fromOriginal?.threadId);
+    expect(fromReply?.subject).toBe("Zapytanie o zamówienie 12345");
+    // Chronologicznie, od najstarszej.
+    expect(fromReply!.messages[0]!.id).toBe("<zam-12345-1@sklep-ziolowy.example>");
+  });
+
+  it("nieistniejąca wiadomość to null, nie wymyślony wątek", async () => {
+    expect(await provider.getThread({ messageId: "<nie-ma@x>", maxMessages: 5 })).toBeNull();
+  });
+});
+
+describe("projekcje — jedna definicja, wiele klientów", () => {
+  const caps = createRegistryForProjections().list();
+
+  it("rejestr zawiera dokładnie zaplanowane capability", () => {
+    expect(caps.map((c) => c.name)).toEqual([
+      "mail_get_thread",
+      "mail_list_recent",
+      "mail_search",
+      "teabrew_find_product",
+      "teabrew_get_order_status",
+      "teabrew_get_production_status",
+      "teabrew_get_stock",
+    ]);
+  });
+
+  it("definicje narzędzi mają poprawny JSON Schema dla każdej capability", () => {
+    const tools = toToolDefinitions(caps);
+    expect(tools).toHaveLength(caps.length);
+    for (const t of tools) {
+      expect(t.input_schema["type"]).toBe("object");
+      expect(t.input_schema).not.toHaveProperty("$schema");
+      expect(t.description).toContain("read-only");
+    }
+    const stock = tools.find((t) => t.name === "teabrew_get_stock")!;
+    const props = stock.input_schema["properties"] as Record<string, unknown>;
+    expect(Object.keys(props).sort()).toEqual(["codes", "profile"]);
+    expect(stock.input_schema["required"]).toEqual(["codes"]);
+  });
+
+  it("OpenAPI powstaje dla wszystkich capability i wymusza bearer", () => {
+    const doc = toOpenApiDocument(caps, { title: "t", version: "1" });
+    const paths = doc["paths"] as Record<string, Record<string, Record<string, unknown>>>;
+    expect(Object.keys(paths)).toHaveLength(caps.length);
+    for (const cap of caps) {
+      const op = paths[`/capabilities/${cap.name}`]!["post"]!;
+      expect(op["operationId"]).toBe(cap.name);
+      expect(op["x-effect-class"]).toBe("read");
+      expect(op["security"]).toEqual([{ bearerAuth: [] }]);
+    }
+  });
+
+  it("projekcja MCP używa tego samego rejestru", () => {
+    const mcp = toMcpToolList(caps);
+    expect(mcp.map((t) => t.name)).toEqual(caps.map((c) => c.name));
+    expect(mcp.every((t) => (t.inputSchema["type"] as string) === "object")).toBe(true);
+  });
+
+  it("tabela dla człowieka wypisuje effectClass każdej capability", () => {
+    const md = toMarkdownTable(caps);
+    expect(md.match(/\| read \|/g)).toHaveLength(caps.length);
+  });
+});
+
+describe("kontrakt TeaBrew", () => {
+  it("ścieżki są nazwane po konsumencie, zgodnie z konwencją convex/http.ts", () => {
+    for (const route of Object.values(ROUTES)) {
+      expect(route.startsWith("/ai-operator/")).toBe(true);
+    }
+  });
+});

@@ -1,0 +1,108 @@
+import { z } from "zod";
+
+/**
+ * Znormalizowany model poczty. Kształt jest celowo niezależny od dostawcy:
+ * kanonicznym identyfikatorem jest RFC Message-ID, a nie IMAP UID.
+ *
+ * Dzięki temu zamiana hostingu poczty (IMAP -> API dostawcy) nie zmienia
+ * schematów narzędzi, których używa AI. Rzeczy specyficzne dla dostawcy
+ * (uid, ścieżka folderu) siedzą w nieprzejrzystym `providerRef`.
+ */
+
+export const MailAddress = z.object({
+  name: z.string().nullable(),
+  address: z.string(),
+});
+export type MailAddress = z.infer<typeof MailAddress>;
+
+export const MailAttachmentMeta = z.object({
+  filename: z.string().nullable(),
+  contentType: z.string().nullable(),
+  sizeBytes: z.number().int().nonnegative().nullable(),
+});
+export type MailAttachmentMeta = z.infer<typeof MailAttachmentMeta>;
+
+export const MailMessage = z.object({
+  /** RFC Message-ID. Stabilny między dostawcami. */
+  id: z.string(),
+  /** Nieprzejrzysty uchwyt dostawcy (np. "imap:INBOX:1234"). Nie interpretować. */
+  providerRef: z.string(),
+  threadId: z.string(),
+  subject: z.string(),
+  from: MailAddress.nullable(),
+  to: z.array(MailAddress),
+  cc: z.array(MailAddress),
+  date: z.string().describe("ISO 8601"),
+  /** Folder / etykieta w rozumieniu dostawcy, np. "INBOX". */
+  folder: z.string(),
+  seen: z.boolean(),
+  answered: z.boolean(),
+  inReplyTo: z.string().nullable(),
+  references: z.array(z.string()),
+  attachments: z.array(MailAttachmentMeta),
+  /** Skrócony podgląd treści. Pełna treść tylko przez mail_get_thread. */
+  snippet: z.string(),
+});
+export type MailMessage = z.infer<typeof MailMessage>;
+
+/** Wiadomość z pełną treścią tekstową — zwracana tylko dla wskazanego wątku. */
+export const MailMessageFull = MailMessage.extend({
+  body: z.string().describe("Treść tekstowa, po usunięciu HTML, przycięta"),
+  bodyTruncated: z.boolean(),
+});
+export type MailMessageFull = z.infer<typeof MailMessageFull>;
+
+export const MailThread = z.object({
+  threadId: z.string(),
+  subject: z.string(),
+  messageCount: z.number().int().nonnegative(),
+  /** Chronologicznie, od najstarszej. */
+  messages: z.array(MailMessageFull),
+});
+export type MailThread = z.infer<typeof MailThread>;
+
+export interface ListRecentOptions {
+  /** Ile wiadomości maksymalnie. */
+  readonly limit: number;
+  /** Nie starsze niż ta data. */
+  readonly since: Date;
+  readonly folder?: string;
+  readonly unreadOnly?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export interface SearchOptions {
+  /** Fraza szukana w temacie, nadawcy i treści. */
+  readonly query: string;
+  readonly limit: number;
+  readonly since?: Date;
+  readonly folder?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface GetThreadOptions {
+  /** Message-ID dowolnej wiadomości z wątku. */
+  readonly messageId: string;
+  readonly maxMessages: number;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Kontrakt dostawcy poczty. MVP dostarcza dwie implementacje: `imap` i `fixture`.
+ * Nie ma tu żadnej metody zapisu — ani wysyłki, ani zmiany flag, ani przenoszenia.
+ * To jest granica, na której "read-only" jest wymuszone typem, nie zapisem w promptcie.
+ */
+export interface MailProvider {
+  /** Krótki identyfikator do audytu, np. "imap" / "fixture". */
+  readonly id: string;
+  /** Co ten dostawca realnie potrafi — agent musi umieć powiedzieć "nie umiem". */
+  readonly features: {
+    readonly serverSideSearch: boolean;
+    readonly fullTextSearch: boolean;
+    readonly threads: boolean;
+  };
+  listRecent(opts: ListRecentOptions): Promise<MailMessage[]>;
+  search(opts: SearchOptions): Promise<MailMessage[]>;
+  getThread(opts: GetThreadOptions): Promise<MailThread | null>;
+  close(): Promise<void>;
+}

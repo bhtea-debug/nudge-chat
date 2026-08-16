@@ -1,0 +1,30 @@
+{
+  "name": "@bht/ai-operator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "inbox-operator — agent read-only: poczta przychodząca + dane operacyjne TeaBrew v2",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "openapi": "tsx src/bin/openapi.ts",
+    "caps": "tsx src/bin/caps.ts",
+    "ask": "tsx --env-file-if-exists=.env src/bin/ask.ts",
+    "triage": "tsx --env-file-if-exists=.env src/bin/triage.ts",
+    "mcp": "tsx --env-file-if-exists=.env src/bin/mcp.ts",
+    "verify:teabrew": "tsx --env-file-if-exists=.env src/bin/verify-teabrew.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1",
+    "@types/mailparser": "^3.4.6",
+    "imapflow": "^1.0.196",
+    "mailparser": "^3.7.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}

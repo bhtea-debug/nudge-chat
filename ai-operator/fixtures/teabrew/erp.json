@@ -1,0 +1,332 @@
+{
+  "orders": [
+    {
+      "id": "ord_k7d2m1",
+      "source": "b2b",
+      "externalOrderId": "12345",
+      "nexoZkNumber": "ZK/2026/0881",
+      "customerName": "Sklep Ziołowy",
+      "placedAt": "{{-5d}}",
+      "deadline": "{{+2d}}",
+      "priority": 2,
+      "fulfillmentStatus": "in_production",
+      "paymentStatus": "paid",
+      "paymentMethod": "przelew",
+      "courierType": "dpd",
+      "pickupPointName": null,
+      "pickupReadyAt": null,
+      "totalPLN": 4218.5,
+      "notes": "Klient prosił o dostawę przed otwarciem punktu.",
+      "items": [
+        {
+          "skuCode": "BHT-ROO-VAN-100",
+          "skuName": "Rooibos Vanilla 100 g",
+          "qty": 120,
+          "fulfilledQty": 120,
+          "pricePLN": 18.9
+        },
+        {
+          "skuCode": "BHT-EARL-50",
+          "skuName": "Earl Grey 50 g",
+          "qty": 200,
+          "fulfilledQty": 60,
+          "pricePLN": 9.9
+        }
+      ],
+      "production": [
+        {
+          "number": "ZP-2026-0412",
+          "status": "in_progress",
+          "targetQty": 200,
+          "batchNumber": "043",
+          "plannedStartAt": "{{-1d}}",
+          "plannedEndAt": "{{+1d}}",
+          "deadline": "{{+2d}}"
+        }
+      ]
+    },
+    {
+      "id": "ord_p9x4t8",
+      "source": "b2b",
+      "externalOrderId": "12346",
+      "nexoZkNumber": "ZK/2026/0884",
+      "customerName": "Sieć EKO",
+      "placedAt": "{{-2d}}",
+      "deadline": "{{+6d}}",
+      "priority": 3,
+      "fulfillmentStatus": "confirmed",
+      "paymentStatus": "unpaid",
+      "paymentMethod": "przelew_14dni",
+      "courierType": "dpd",
+      "pickupPointName": null,
+      "pickupReadyAt": null,
+      "totalPLN": 3960.0,
+      "notes": null,
+      "items": [
+        {
+          "skuCode": "BHT-EARL-50",
+          "skuName": "Earl Grey 50 g",
+          "qty": 200,
+          "fulfilledQty": 0,
+          "pricePLN": 9.9
+        },
+        {
+          "skuCode": "BHT-MIETA-80",
+          "skuName": "Mięta Marokańska 80 g",
+          "qty": 150,
+          "fulfilledQty": 0,
+          "pricePLN": 13.5
+        }
+      ],
+      "production": []
+    },
+    {
+      "id": "ord_c3f7w2",
+      "source": "medusa",
+      "externalOrderId": "20411",
+      "nexoZkNumber": null,
+      "customerName": "Delikatesy Nowak",
+      "placedAt": "{{-11d}}",
+      "deadline": null,
+      "priority": 5,
+      "fulfillmentStatus": "shipped",
+      "paymentStatus": "paid",
+      "paymentMethod": "przelewy24",
+      "courierType": "inpost",
+      "pickupPointName": "Paczkomat KRA265M, ul. Długa 12",
+      "pickupReadyAt": "{{-9d}}",
+      "totalPLN": 812.4,
+      "notes": null,
+      "items": [
+        {
+          "skuCode": "BHT-EARL-50",
+          "skuName": "Earl Grey 50 g",
+          "qty": 84,
+          "fulfilledQty": 84,
+          "pricePLN": 9.9
+        }
+      ],
+      "production": [
+        {
+          "number": "ZP-2026-0388",
+          "status": "done",
+          "batchNumber": "042",
+          "targetQty": 300,
+          "plannedStartAt": "{{-14d}}",
+          "plannedEndAt": "{{-13d}}",
+          "deadline": "{{-12d}}"
+        }
+      ]
+    }
+  ],
+  "stock": [
+    {
+      "code": "BHT-ROO-VAN-100",
+      "name": "Rooibos Vanilla 100 g",
+      "hasMaterial": true,
+      "onHand": 412,
+      "reservedProduction": 0,
+      "reservedShipment": 120,
+      "available": 292,
+      "shipmentReservationUncovered": 0,
+      "minStock": 150,
+      "uom": "szt"
+    },
+    {
+      "code": "BHT-EARL-50",
+      "name": "Earl Grey 50 g",
+      "hasMaterial": true,
+      "onHand": 148,
+      "reservedProduction": 60,
+      "reservedShipment": 60,
+      "available": 28,
+      "shipmentReservationUncovered": 0,
+      "minStock": 200,
+      "uom": "szt"
+    },
+    {
+      "code": "BHT-MIETA-80",
+      "name": "Mięta Marokańska 80 g",
+      "hasMaterial": true,
+      "onHand": 640,
+      "reservedProduction": 0,
+      "reservedShipment": 150,
+      "available": 490,
+      "shipmentReservationUncovered": 0,
+      "minStock": 120,
+      "uom": "szt"
+    },
+    {
+      "code": "SUR-ROOIBOS-BIO",
+      "name": "Rooibos liść cięty BIO",
+      "hasMaterial": true,
+      "onHand": 84.5,
+      "reservedProduction": 60,
+      "reservedShipment": 0,
+      "available": 24.5,
+      "shipmentReservationUncovered": 0,
+      "minStock": 100,
+      "uom": "kg"
+    },
+    {
+      "code": "SUR-BERGAMOTKA",
+      "name": "Aromat bergamotka",
+      "hasMaterial": true,
+      "onHand": 3.2,
+      "reservedProduction": 2.0,
+      "reservedShipment": 0,
+      "available": 1.2,
+      "shipmentReservationUncovered": 0,
+      "minStock": 5,
+      "uom": "kg"
+    }
+  ],
+  "skus": [
+    {
+      "code": "BHT-ROO-VAN-100",
+      "name": "Rooibos Vanilla 100 g",
+      "gramatura": "100 g",
+      "productCategory": "herbaty_bezkofeinowe",
+      "ean": "5901234567890",
+      "isActive": true,
+      "minStock": 150
+    },
+    {
+      "code": "BHT-ROO-VAN-50",
+      "name": "Rooibos Vanilla 50 g",
+      "gramatura": "50 g",
+      "productCategory": "herbaty_bezkofeinowe",
+      "ean": "5901234567906",
+      "isActive": true,
+      "minStock": 80
+    },
+    {
+      "code": "BHT-EARL-50",
+      "name": "Earl Grey 50 g",
+      "gramatura": "50 g",
+      "productCategory": "herbaty_czarne",
+      "ean": "5901234567913",
+      "isActive": true,
+      "minStock": 200
+    },
+    {
+      "code": "BHT-MIETA-80",
+      "name": "Mięta Marokańska 80 g",
+      "gramatura": "80 g",
+      "productCategory": "herbaty_ziolowe",
+      "ean": "5901234567920",
+      "isActive": true,
+      "minStock": 120
+    }
+  ],
+  "materials": [
+    {
+      "code": "SUR-ROOIBOS-BIO",
+      "name": "Rooibos liść cięty BIO",
+      "type": "surowiec",
+      "baseUom": "kg",
+      "isActive": true,
+      "minStock": 100,
+      "lotTracked": true
+    },
+    {
+      "code": "SUR-WANILIA-AR",
+      "name": "Aromat wanilia naturalny",
+      "type": "surowiec",
+      "baseUom": "kg",
+      "isActive": true,
+      "minStock": 4,
+      "lotTracked": true
+    },
+    {
+      "code": "SUR-BERGAMOTKA",
+      "name": "Aromat bergamotka",
+      "type": "surowiec",
+      "baseUom": "kg",
+      "isActive": true,
+      "minStock": 5,
+      "lotTracked": true
+    },
+    {
+      "code": "OPK-TOREBKA-100",
+      "name": "Torebka doypack 100 g",
+      "type": "opakowanie",
+      "baseUom": "szt",
+      "isActive": true,
+      "minStock": 2000,
+      "lotTracked": false
+    }
+  ],
+  "production": [
+    {
+      "number": "ZP-2026-0412",
+      "status": "in_progress",
+      "skuCode": "BHT-EARL-50",
+      "skuName": "Earl Grey 50 g",
+      "targetQty": 200,
+      "batchNumber": "043",
+      "plannedStartAt": "{{-1d}}",
+      "plannedEndAt": "{{+1d}}",
+      "deadline": "{{+2d}}",
+      "priority": 2,
+      "salesOrderRef": "12345"
+    },
+    {
+      "number": "ZP-2026-0415",
+      "status": "planned",
+      "skuCode": "BHT-ROO-VAN-100",
+      "skuName": "Rooibos Vanilla 100 g",
+      "targetQty": 500,
+      "batchNumber": "044",
+      "plannedStartAt": "{{+1d}}",
+      "plannedEndAt": "{{+2d}}",
+      "deadline": "{{+4d}}",
+      "priority": 3,
+      "salesOrderRef": null
+    },
+    {
+      "number": "ZP-2026-0416",
+      "status": "planned",
+      "skuCode": "BHT-MIETA-80",
+      "skuName": "Mięta Marokańska 80 g",
+      "targetQty": 300,
+      "batchNumber": "045",
+      "plannedStartAt": "{{+3d}}",
+      "plannedEndAt": "{{+3d}}",
+      "deadline": "{{+6d}}",
+      "priority": 4,
+      "salesOrderRef": "12346"
+    },
+    {
+      "number": "ZP-2026-0388",
+      "status": "done",
+      "skuCode": "BHT-EARL-50",
+      "skuName": "Earl Grey 50 g",
+      "targetQty": 300,
+      "batchNumber": "042",
+      "plannedStartAt": "{{-14d}}",
+      "plannedEndAt": "{{-13d}}",
+      "deadline": "{{-12d}}",
+      "priority": 5,
+      "salesOrderRef": "20411"
+    }
+  ],
+  "activeRuns": [
+    {
+      "type": "dozowanie",
+      "status": "running",
+      "productionOrderNumber": "ZP-2026-0412",
+      "actualStartAt": "{{-4h}}",
+      "actualEndAt": null,
+      "mixerName": "Linia dozująca 1"
+    },
+    {
+      "type": "mieszanie",
+      "status": "done",
+      "productionOrderNumber": "ZP-2026-0412",
+      "actualStartAt": "{{-1d}}",
+      "actualEndAt": "{{-20h}}",
+      "mixerName": "Mieszalnik łopatkowy 500L"
+    }
+  ]
+}
