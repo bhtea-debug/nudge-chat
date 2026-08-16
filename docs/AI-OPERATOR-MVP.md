@@ -357,9 +357,9 @@ Etap przejścia z fikstur na prawdziwe dane firmy. Ta sekcja rozdziela to, co
 Trzy rzeczy blokują `MODE=live` i żadnej z nich nie da się obejść z tego
 środowiska. Nie są to problemy techniczne — to brakujące uprawnienia i wartości.
 
-| blokada | powód |
+| blokada | stan |
 | --- | --- |
-| łatka nie jest wdrożona w TeaBrew v2 | próba nadania temu sesji prawa zapisu do `bhtea-debug/teabrew-v2` została odrzucona; zakres to `bhtea-debug/nudge-chat`. Niezależnie od tego `AGENTS.md` w TeaBrew wymaga, żeby wdrożenie na żywe Convex szło przez `npm run convex:live:deploy -- --confirm=<wdrożenie>` — to jest celowa bramka dla człowieka |
+| łatka w TeaBrew v2 | **kod założony i wypchnięty**, PR [`bhtea-debug/teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) na gałęzi `claude/ai-operator-read-only-endpoints`. Czeka na merge, ustawienie `AI_OPERATOR_API_TOKEN` w zmiennych Convex i wdrożenie. Wdrożenie na żywe Convex idzie **wyłącznie** przez `npm run convex:live:deploy -- --confirm=<wdrożenie>` — `AGENTS.md` w TeaBrew celowo stawia tu bramkę dla człowieka i nie jest to coś do obejścia |
 | brak danych dostępowych do skrzynki | host, port, login i hasło aplikacji nie istnieją w tym środowisku |
 | brak klucza API modelu | `ANTHROPIC_API_KEY` nie jest ustawiony |
 
@@ -395,11 +395,20 @@ Fikstura z wymyślonym statusem uczyła agenta nieistniejącego słownictwa.
 
 Co potwierdzono pozytywnie:
 
-- **Łatka kompiluje się wobec prawdziwego schematu.** `queries/aiOperator.ts`
-  plus jednosłowna zmiana w `lib/salesAvailability.ts` przechodzą `tsc --noEmit`
-  przy realnym `convex/_generated/dataModel.d.ts` i realnym `convex/schema.ts` —
-  zero błędów. To weryfikuje każdą nazwę pola, każdą nazwę indeksu
-  (`by_order`, `by_sales_order`, `by_status`) i każdą sygnaturę helpera.
+- **Całe repozytorium TeaBrew v2 przechodzi `npx tsc --noEmit` z założoną
+  łatką — zero błędów**, po pełnym `npm ci`. To weryfikuje każdą nazwę pola,
+  każdą nazwę indeksu (`by_order`, `by_sales_order`, `by_status`), każdą
+  sygnaturę helpera i integrację z 949-linijkowym wygenerowanym `api.d.ts`.
+  Wymagane kroki z `AGENTS.md` wykonano przed edycją: czysty worktree,
+  `HEAD == origin/main`, `git fetch origin main`.
+- **Wpisy w `convex/_generated/api.d.ts` dodane ręcznie**, dokładnie w formie
+  i kolejności generowanej przez codegen (jeden import, jeden wpis w mapie,
+  alfabetycznie). `AGENTS.md` zabrania uruchamiania `convex codegen` przy
+  środowisku wskazującym na żywy backend, bo codegen może też **wysłać
+  funkcje**. Przy najbliższym `npx convex dev` plik zregeneruje się identycznie.
+- `next lint` nie jest w tym repo skonfigurowany (pyta interaktywnie o setup
+  ESLint), więc nie był bramką. Playwright (`npm test`) nie był uruchamiany —
+  wymaga działającej aplikacji i danych.
 - **Wykorzystuje istniejące helpery domenowe.** Stan liczy
   `salesAvailabilityByCode`, ten sam, którego używa portal B2B i push do sklepu.
   Materiał wybiera `buildMaterialIndex`, ten sam, którego użył kalkulator.
@@ -507,12 +516,18 @@ wartości z enumów źródłowego schematu, a nie wartości „w tym stylu".
 Trzy wartości i jedno uprawnienie. Nic z tego nie może trafić do repozytorium
 ani na czat.
 
-1. **Wdrożenie łatki w TeaBrew v2.** Albo nadanie tej sesji prawa zapisu do
-   `bhtea-debug/teabrew-v2` (wtedy przygotuję gałąź i PR — samo wdrożenie na
-   żywe Convex i tak wykonuje człowiek przez guarded command), albo założenie
-   łatki własnoręcznie według `ai-operator/teabrew-patch/README.md`. Do tego
-   wygenerowanie `AI_OPERATOR_API_TOKEN` (min. 32 losowe znaki) i ustawienie go
-   **w zmiennych środowiskowych Convex**, nie w plikach.
+1. **Merge PR-a i wdrożenie łatki.** Kod jest gotowy w
+   [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27). Po
+   review i merge trzeba:
+   - wygenerować `AI_OPERATOR_API_TOKEN` (min. 32 losowe znaki) i ustawić go
+     **w zmiennych środowiskowych Convex**, nie w żadnym pliku w repo,
+   - wdrożyć przez `npm run convex:live:check`, a potem
+     `npm run convex:live:deploy -- --confirm=<nazwa-wdrożenia>`, zgodnie z
+     `AGENTS.md` i `docs/DEPLOYMENT_SAFETY.md` w TeaBrew.
+
+   Bez tokenu trasy zwracają 500 (fail-closed), więc kolejność „najpierw token,
+   potem wdrożenie" nie ma znaczenia dla bezpieczeństwa — ma tylko dla tego,
+   czy `verify:teabrew` od razu przejdzie.
 2. **Dane skrzynki** — host IMAP, port (zwykle 993), login, oraz **hasło
    aplikacji** (nie hasło główne). Jeśli dostawca umożliwia konto lub hasło
    aplikacji z prawem tylko do odczytu — użyć go. Jeśli nie umożliwia, kod i tak
@@ -521,9 +536,14 @@ ani na czat.
    nie ma delete/move/archive.
 3. **Klucz API modelu** — `ANTHROPIC_API_KEY`.
 
-Wszystkie trzy ustawia się w **jednym miejscu**: plik `ai-operator/.env`
+Punkty 2 i 3 ustawia się w **jednym miejscu**: plik `ai-operator/.env`
 (`cp .env.example .env && chmod 600 .env`). Ten plik jest w `.gitignore` i
-nigdy nie wchodzi do repozytorium.
+nigdy nie wchodzi do repozytorium. Token z punktu 1 idzie do zmiennych
+środowiskowych Convex po stronie TeaBrew, a jego kopia do `.env` jako
+`TEABREW_AI_OPERATOR_TOKEN` (plus `TEABREW_BASE_URL` — baza HTTP actions
+wdrożenia).
+
+Żadna z tych wartości nie należy do czatu ani do dokumentacji.
 
 Potem, w tej kolejności:
 

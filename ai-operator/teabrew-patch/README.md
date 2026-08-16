@@ -21,6 +21,15 @@ do tamtego repo.
 Nazwy tras są nazwane po konsumencie — tak samo jak istniejące `/medusa/*`,
 `/b2b/*` i `/budzeciek/*`.
 
+> **Ta łatka jest już założona.** Kod znajduje się w PR
+> [`bhtea-debug/teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27),
+> gałąź `claude/ai-operator-read-only-endpoints`. Pliki poniżej zostają jako
+> źródło kontraktu i jako referencja przy review — instrukcja „jak założyć"
+> jest potrzebna tylko, gdyby trzeba było odtworzyć zmianę od zera.
+>
+> Do zrobienia po stronie człowieka: review i merge, ustawienie
+> `AI_OPERATOR_API_TOKEN` w zmiennych Convex, wdrożenie przez guarded command.
+
 ## Stan weryfikacji tej łatki
 
 Sprawdzona wobec `teabrew-v2` na `main` (`b777d4d`, „Eksport do Budzecika: ceny
