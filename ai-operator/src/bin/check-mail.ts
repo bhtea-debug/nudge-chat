@@ -256,30 +256,63 @@ async function main(): Promise<number> {
     );
 
     // ── 5. rekonstrukcja wątku ────────────────────────────────────────────────
-    // Szukamy w oknie wiadomości, która faktycznie jest odpowiedzią.
-    const reply = recent.find((m) => m.references.length > 0 || m.inReplyTo);
-    if (reply) {
-      const t = await withDeadline(
-        "rekonstrukcja wątku",
-        provider.getThread({ messageId: reply.id, maxMessages: 20 }),
-      );
-      record(
-        "5. Rekonstrukcja wątku",
-        Boolean(t && t.messageCount >= 2),
-        t
-          ? `wątek "${clipSubject(t.subject)}": ${t.messageCount} wiadomości` +
-              (t.messageCount < 2
-                ? " — mniej niż 2, choć wiadomość ma References. Sprawdź MAIL_THREAD_FOLDERS"
-                : "")
-          : "nie udało się odtworzyć wątku",
-      );
-    } else {
+    //
+    // Sam nagłówek References NIE znaczy, że wątek da się odtworzyć: automatyczni
+    // nadawcy (systemy biletowe, portale rezerwacyjne) ustawiają References na
+    // wątek, który żyje po ICH stronie, a rodzica w naszej skrzynce nigdy nie było.
+    // Wątek jednoelementowy jest wtedy poprawnym wynikiem, nie usterką.
+    //
+    // Dlatego testujemy na odpowiedzi, której rodzic JEST w oknie. Dopiero wtedy
+    // „mniej niż 2" oznacza rzeczywisty problem z rekonstrukcją.
+    const idsInWindow = new Set(recent.map((m) => m.id));
+    const linkedReply = recent.find((m) =>
+      [...m.references, ...(m.inReplyTo ? [m.inReplyTo] : [])].some((ref) =>
+        idsInWindow.has(ref),
+      ),
+    );
+    const anyReply = recent.find((m) => m.references.length > 0 || m.inReplyTo);
+    const reply = linkedReply ?? anyReply;
+
+    if (!reply) {
       record(
         "5. Rekonstrukcja wątku",
         true,
         `w ostatnich ${SINCE_DAYS} dniach nie ma wiadomości z References/In-Reply-To — brak materiału`,
         true,
       );
+    } else {
+      const t = await withDeadline(
+        "rekonstrukcja wątku",
+        provider.getThread({ messageId: reply.id, maxMessages: 20 }),
+      );
+      if (!t) {
+        record("5. Rekonstrukcja wątku", false, "nie udało się odtworzyć wątku");
+      } else if (t.messageCount >= 2) {
+        const folders = [...new Set(t.messages.map((m) => m.folder))].join(", ");
+        record(
+          "5. Rekonstrukcja wątku",
+          true,
+          `wątek "${clipSubject(t.subject)}": ${t.messageCount} wiadomości z folderów: ${folders}`,
+        );
+      } else if (linkedReply) {
+        // Rodzic jest w oknie, a mimo to nie został dołączony — to jest usterka.
+        record(
+          "5. Rekonstrukcja wątku",
+          false,
+          `wątek "${clipSubject(t.subject)}": 1 wiadomość, choć wiadomość-rodzic jest w tym samym oknie. ` +
+            "Sprawdź MAIL_THREAD_FOLDERS i uprawnienia do folderów.",
+        );
+      } else {
+        // Brak materiału, nie usterka: rodzic nie istnieje w tej skrzynce.
+        record(
+          "5. Rekonstrukcja wątku",
+          true,
+          `wątek "${clipSubject(t.subject)}": 1 wiadomość. Nagłówek References wskazuje ` +
+            "wiadomość, której w tej skrzynce nie ma — typowe dla nadawców " +
+            "automatycznych. Brak materiału do sprawdzenia sklejania wątku.",
+          true,
+        );
+      }
     }
 
     // ── 6. wiadomości z folderu wysłanych ─────────────────────────────────────
@@ -288,12 +321,19 @@ async function main(): Promise<number> {
         "listowanie folderu wysłanych",
         provider.listRecent({ limit: 10, since, folder: sentFolder }),
       );
+      // Pusty folder wysłanych w oknie to fakt o skrzynce, nie usterka:
+      // nikt nie musiał niczego wysłać w ostatnich N dniach. Sprawdzeniem
+      // zdolności do CZYTANIA tego folderu jest samo udane listowanie —
+      // brak wyjątku powyżej. Oznaczanie tego jako porażki uczyłoby
+      // właściciela ignorować czerwone krzyżyki.
       record(
-        "6. Widoczność folderu wysłanych",
-        sent.length > 0,
+        "6. Czytanie folderu wysłanych",
+        true,
         sent.length > 0
           ? `${sent.length} naszych wiadomości w "${sentFolder}"; najnowsza ${sent[0]!.date.slice(0, 16)}`
-          : `folder "${sentFolder}" jest widoczny, ale w oknie ${SINCE_DAYS} dni nic w nim nie ma`,
+          : `folder "${sentFolder}" otwarty i odczytany, ale w oknie ${SINCE_DAYS} dni nic nie wysłano — ` +
+              "wydłuż okno (--days 7), żeby to potwierdzić na danych",
+        sent.length === 0,
       );
     } else {
       record(
