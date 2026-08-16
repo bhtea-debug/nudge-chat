@@ -121,7 +121,7 @@ wycieku treści. Do tego testy jednostkowe warstwy poczty i projekcji oraz
 12 testów bezpieczeństwa łatki ERP (patrz 8.3).
 
 Osobno, bez modelu: `npm run check:mail` (11 sprawdzeń warstwy poczty) i
-`npm run verify:teabrew` (16 sprawdzeń wdrożonej łatki).
+`npm run verify:teabrew` (17 sprawdzeń wdrożonej łatki).
 
 ---
 
@@ -440,7 +440,7 @@ Co potwierdzono pozytywnie:
   do odpowiedzi na pytanie z maila wystarcza nazwa.
 
 `npm run verify:teabrew` sprawdza te same rzeczy z zewnątrz, na wdrożeniu:
-16 sprawdzeń, w tym brak tokenu na każdej z pięciu tras, token w URL (musi być
+17 sprawdzeń, w tym brak tokenu na każdej z pięciu tras, token w URL (musi być
 bezsilny), metody zapisu i sondowanie nieudokumentowanych ścieżek
 (`/ai-operator/query`, `/ai-operator/db`, …).
 

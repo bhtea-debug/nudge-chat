@@ -4,9 +4,8 @@ Te pliki dodają do TeaBrew v2 **pięć tras GET tylko do czytania**, z których
 korzysta agent `inbox-operator`. Nie zmieniają istniejącego zachowania i nie
 dodają ani jednej mutacji.
 
-Leżą tutaj, a nie w `teabrew-v2`, z prostego powodu: to repozytorium ma do
-`teabrew-v2` dostęp wyłącznie do odczytu. Łatkę zakłada człowiek z uprawnieniami
-do tamtego repo.
+Leżą tutaj jako **źródło kontraktu** — ten sam kształt opisuje
+`ai-operator/src/teabrew/contract.ts`, którym klient waliduje odpowiedzi.
 
 ## Co dokładnie dochodzi
 
@@ -35,10 +34,11 @@ Nazwy tras są nazwane po konsumencie — tak samo jak istniejące `/medusa/*`,
 Sprawdzona wobec `teabrew-v2` na `main` (`b777d4d`, „Eksport do Budzecika: ceny
 sieci sa NETTO"):
 
-- **Kompiluje się wobec prawdziwego schematu.** `queries/aiOperator.ts` plus
-  zmiana z `lib/salesAvailability.export.md` przechodzą `tsc --noEmit` przy
-  realnym `convex/_generated/dataModel.d.ts` i realnym `convex/schema.ts` —
-  zero błędów. To potwierdza każdą nazwę pola, nazwę indeksu i sygnaturę helpera.
+- **Całe repozytorium teabrew-v2 przechodzi `npx tsc --noEmit` z założoną
+  łatką — zero błędów**, po pełnym `npm ci`. To potwierdza każdą nazwę pola,
+  nazwę indeksu, sygnaturę helpera i integrację z wygenerowanym `api.d.ts`.
+- Build preview Vercela na PR-ze: **Ready** (`scripts/safe-build.mjs` +
+  `next build` przechodzą).
 - **Bezpieczeństwo jest testowane, nie obiecane.** `tests/patch-security.test.ts`
   (12 testów) sprawdza: brak mutacji i akcji, wyłącznie `internalQuery`, brak
   `v.any()` i dynamicznych nazw tabel, zamknięta lista sześciu czytanych tabel,
@@ -122,7 +122,7 @@ bramka dla człowieka; nie obchodź jej `convex deploy` ani `convex codegen`.
    npm run verify:teabrew
    ```
 
-   16 sprawdzeń w czterech grupach:
+   17 sprawdzeń w czterech grupach:
 
    - **bezpieczeństwo** — brak tokenu na każdej z pięciu tras, zły token, token
      w query stringu (musi być bezsilny), brak metod zapisu (POST/PUT/PATCH/DELETE),

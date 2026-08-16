@@ -5,8 +5,31 @@ szczególności sekcja **8. Live validation**) i `docs/ARCHITEKTURA-AI-2026.md`
 (dlaczego to wygląda tak, a nie inaczej).
 
 **Zadanie, które zostało:** doprowadzić `ai-operator` do działania w `MODE=live`
-na prawdziwej poczcie i prawdziwym TeaBrew v2. Kod jest gotowy. Brakuje trzech
-sekretów i akcji człowieka. **Nie rozszerzaj zakresu.**
+na prawdziwej poczcie i prawdziwym TeaBrew v2. Kod jest gotowy. Brakuje sekretów
+i akcji człowieka. **Nie rozszerzaj zakresu.**
+
+---
+
+## 0. Przeczytaj to najpierw
+
+**`MODE=live` nie uruchomi się w środowisku agentowym w chmurze.** Polityka
+egress typowej sesji przepuszcza GitHub, npm i `api.anthropic.com`, ale nie
+serwer poczty ani wdrożenie Convex firmy (zmierzone: TCP timeout na IMAP,
+403 z proxy na Convex). Uruchomienie live należy do maszyny właściciela —
+tam jest dostęp i tam mają zostać sekrety.
+
+Do tego jest gotowy skrypt: `ai-operator/scripts/live-setup.sh`. Dopytuje
+tylko o brakujące wartości, sekrety czyta bez echa, zapisuje do `.env` z
+prawami 600 i uruchamia wszystkie testy bez modelu. Nie próbuj tego odtwarzać
+ręcznie ani obchodzić — pełny opis w `docs/AI-OPERATOR-MVP.md` §8.9.
+
+**Trasy ERP są już wdrożone na żywym backendzie**, choć `main` ich nie zawiera:
+build preview Vercela uruchamia `convex deploy` bez guardów produkcyjnych
+(one działają tylko przy `VERCEL_ENV === "production"`). Potwierdzone:
+`/ai-operator/health` zwraca **500**, czyli trasa istnieje, a
+`AI_OPERATOR_API_TOKEN` nie jest jeszcze ustawiony (fail-closed). Konsekwencja:
+merge PR #27 domyka rozjazd między `main` a wdrożeniem — gdyby ktoś zbudował
+produkcję z `main`, trasy zniknęłyby.
 
 ---
 
@@ -14,12 +37,12 @@ sekretów i akcji człowieka. **Nie rozszerzaj zakresu.**
 
 | co | gdzie |
 | --- | --- |
-| kod agenta | `bhtea-debug/nudge-chat`, gałąź `claude/ai-company-architecture-mvy1uv`, HEAD `943da5f`, katalog `ai-operator/` |
+| kod agenta | `bhtea-debug/nudge-chat`, gałąź `claude/ai-company-architecture-mvy1uv`, katalog `ai-operator/` |
 | łatka ERP | `bhtea-debug/teabrew-v2`, gałąź `claude/ai-operator-read-only-endpoints`, HEAD `27262de`, baza `b777d4d` |
-| PR czekający na merge | [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) — brak CI w tym repo, więc nic się na nim nie uruchomi automatycznie |
+| PR do merge | [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) — `mergeable_state: clean`. Brak GitHub Actions; jedyny automat to preview Vercela (i to on wdrożył funkcje) |
 
-Stan: **56 testów przechodzi, `tsc --noEmit` czysty w obu repo, `MODE=live`
-nigdy nie był uruchomiony.**
+Stan: **56 testów przechodzi, `tsc --noEmit` czysty w obu repo, `check:mail`
+11/11 na fiksturach, `MODE=live` nigdy nie był uruchomiony.**
 
 ---
 
@@ -282,7 +305,7 @@ agent naprawdę szukał.
 ### Krok 3: testy bez modelu — MUSZĄ przejść w całości
 
 ```bash
-npm run verify:teabrew          # 16 sprawdzeń wdrożonej łatki
+npm run verify:teabrew          # 17 sprawdzeń wdrożonej łatki
 MODE=live npm run check:mail    # 11 sprawdzeń poczty
 ```
 
