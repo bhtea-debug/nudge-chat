@@ -10,6 +10,7 @@ import type {
   SearchOptions,
 } from "./types.js";
 import { assignThreadIds, baseSubject, normalizeReferences } from "./thread.js";
+import { AUTO, planFolders, type FolderPlan, type MailboxInfo } from "./folders.js";
 import { makeSnippet, stripQuotedHistory, toPlainText, truncateBody } from "./text.js";
 
 /**
@@ -44,7 +45,19 @@ const FixtureMessage = z.object({
   html: z.string().nullable().default(null),
 });
 
+/**
+ * Foldery deklarowane JAWNIE, dokładnie tak, jak serwer IMAP deklaruje je
+ * atrybutem SPECIAL-USE. Nie ma tu zgadywania po nazwie — gdyby fikstura
+ * pozwalała rozpoznać folder wysłanych po tym, że nazywa się „Sent",
+ * testowałaby coś innego niż zachowanie produkcyjne.
+ */
+const FixtureFolder = z.object({
+  path: z.string(),
+  specialUse: z.string().nullable().default(null),
+});
+
 const FixtureFile = z.object({
+  folders: z.array(FixtureFolder).default([{ path: "INBOX", specialUse: null }]),
   messages: z.array(FixtureMessage),
 });
 
@@ -74,11 +87,27 @@ export class FixtureMailProvider implements MailProvider {
   } as const;
 
   private readonly records: { message: MailMessage; body: string }[];
+  private readonly folders: readonly MailboxInfo[];
+  private readonly requestedThreadFolders: readonly string[];
 
-  constructor(input: { filePath?: string; messages?: readonly FixtureMessageInput[] }) {
-    const raw = input.filePath
-      ? FixtureFile.parse(JSON.parse(readFileSync(input.filePath, "utf8"))).messages
-      : FixtureFile.parse({ messages: input.messages ?? [] }).messages;
+  constructor(input: {
+    filePath?: string;
+    messages?: readonly FixtureMessageInput[];
+    threadFolders?: readonly string[];
+  }) {
+    const file = input.filePath
+      ? FixtureFile.parse(JSON.parse(readFileSync(input.filePath, "utf8")))
+      : FixtureFile.parse({ messages: input.messages ?? [] });
+    const raw = file.messages;
+
+    this.folders = file.folders.map((f) => ({
+      path: f.path,
+      name: f.path.split(/[./]/).pop() ?? f.path,
+      specialUse: f.specialUse ?? undefined,
+      specialUseSource: f.specialUse ? "extension" : undefined,
+      subscribed: true,
+    }));
+    this.requestedThreadFolders = input.threadFolders ?? [AUTO];
 
     const parsed = raw.map((m) => {
       const body = toPlainText(m.text, m.html);
@@ -110,6 +139,15 @@ export class FixtureMailProvider implements MailProvider {
   }
 
   async close(): Promise<void> {}
+
+  /** Ta sama diagnostyka co w adapterze IMAP — patrz folders.ts. */
+  async listMailboxes(): Promise<MailboxInfo[]> {
+    return [...this.folders];
+  }
+
+  async resolveFolders(): Promise<FolderPlan> {
+    return planFolders(this.folders, this.requestedThreadFolders, "INBOX");
+  }
 
   async listRecent(opts: ListRecentOptions): Promise<MailMessage[]> {
     const folder = opts.folder ?? "INBOX";

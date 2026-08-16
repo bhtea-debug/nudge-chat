@@ -5,7 +5,7 @@ import {
   type Capability,
 } from "../capability/types.js";
 import { MailMessage, MailThread, type MailProvider } from "./types.js";
-import { hashShort } from "./text.js";
+import { hashShort, maskAddressesInText } from "./text.js";
 
 /**
  * Capability poczty. Trzy, nie dziesięć: wypisz ostatnie, znajdź, pokaż wątek.
@@ -125,7 +125,9 @@ export function createMailCapabilities(
     auditRefs: (input, output) => ({
       // Zapytanie to działanie agenta, nie treść korespondencji — i dokładnie
       // ono odpowiada na pytanie "czego agent szukał, zanim odpowiedział".
-      query: input.query,
+      // Adresy maskujemy: model może szukać po adresie nadawcy, a adresy
+      // nadawców do audytu nie trafiają.
+      query: maskAddressesInText(input.query),
       count: output?.count ?? 0,
     }),
     handler: async (input, ctx) => {

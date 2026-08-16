@@ -12,6 +12,7 @@ import {
   truncateBody,
 } from "../src/mail/text.js";
 import { FixtureMailProvider, resolveFixtureDate } from "../src/mail/fixture.js";
+import { planFolders, type MailboxInfo } from "../src/mail/folders.js";
 import {
   toMarkdownTable,
   toMcpToolList,
@@ -125,7 +126,9 @@ describe("dostawca na fiksturach", () => {
   });
 
   it("szuka w temacie, nadawcy i treści", async () => {
-    expect((await provider.search({ query: "12345", limit: 10 })).length).toBe(2);
+    // Trzy trafienia: dwa pytania klienta i nasza odpowiedź (temat też liczy się
+    // do wyszukiwania) — agent widzi, że sprawa już raz była obsłużona.
+    expect((await provider.search({ query: "12345", limit: 10 })).length).toBe(3);
     expect((await provider.search({ query: "sanepid", limit: 10 })).length).toBe(1);
     expect((await provider.search({ query: "hurt-herbaty", limit: 10 })).length).toBe(1);
     expect((await provider.search({ query: "nie ma takiej frazy xyz", limit: 10 })).length).toBe(0);
@@ -140,15 +143,80 @@ describe("dostawca na fiksturach", () => {
       messageId: "<zam-12345-1@sklep-ziolowy.example>",
       maxMessages: 10,
     });
-    expect(fromReply?.messageCount).toBe(2);
+    // Trzy wiadomości: dwa pytania klienta z INBOX i nasza odpowiedź z Sent.
+    expect(fromReply?.messageCount).toBe(3);
     expect(fromReply?.threadId).toBe(fromOriginal?.threadId);
     expect(fromReply?.subject).toBe("Zapytanie o zamówienie 12345");
     // Chronologicznie, od najstarszej.
     expect(fromReply!.messages[0]!.id).toBe("<zam-12345-1@sklep-ziolowy.example>");
+    // Wątek przechodzi przez oba foldery — to jest cała stawka wykrywania \Sent.
+    expect(new Set(fromReply!.messages.map((m) => m.folder))).toEqual(
+      new Set(["INBOX", "Sent"]),
+    );
   });
 
   it("nieistniejąca wiadomość to null, nie wymyślony wątek", async () => {
     expect(await provider.getThread({ messageId: "<nie-ma@x>", maxMessages: 5 })).toBeNull();
+  });
+});
+
+describe("wykrywanie folderów — nazwy folderu wysłanych nie wolno zgadywać", () => {
+  const box = (
+    path: string,
+    specialUse?: string,
+    source = "extension",
+  ): MailboxInfo => ({
+    path,
+    name: path.split(/[./]/).pop() ?? path,
+    specialUse,
+    specialUseSource: specialUse ? source : undefined,
+    subscribed: true,
+  });
+
+  it("rozpoznaje folder wysłanych po SPECIAL-USE, niezależnie od nazwy", () => {
+    for (const name of ["Sent", "Sent Items", "INBOX.Sent", "Elementy wysłane"]) {
+      const plan = planFolders([box("INBOX"), box(name, "\\Sent")], ["auto"]);
+      expect(plan.sent).toBe(name);
+      expect(plan.threadFolders).toEqual(["INBOX", name]);
+      expect(plan.warnings).toHaveLength(0);
+    }
+  });
+
+  it("nie bierze folderu tylko dlatego, że nazywa się Sent", () => {
+    // Folder o „właściwej" nazwie, ale bez atrybutu \Sent — np. archiwum
+    // użytkownika. Zgadywanie po nazwie kazałoby go użyć.
+    const plan = planFolders([box("INBOX"), box("Sent")], ["auto"]);
+    expect(plan.sent).toBeNull();
+    expect(plan.threadFolders).toEqual(["INBOX"]);
+    expect(plan.warnings.join(" ")).toMatch(/nie wskazał folderu wysłanych/);
+  });
+
+  it("ostrzega, gdy serwer nie ma folderu wysłanych", () => {
+    const plan = planFolders([box("INBOX"), box("Trash", "\\Trash")], ["auto"]);
+    expect(plan.sent).toBeNull();
+    expect(plan.warnings.join(" ")).toMatch(/nie zobaczy naszych odpowiedzi/);
+  });
+
+  it("respektuje jawną listę, ale ostrzega o pominiętym folderze wysłanych", () => {
+    const plan = planFolders(
+      [box("INBOX"), box("Sent Items", "\\Sent")],
+      ["INBOX"],
+    );
+    expect(plan.threadFolders).toEqual(["INBOX"]);
+    expect(plan.warnings.join(" ")).toMatch(/Sent Items.*nie ma go w MAIL_THREAD_FOLDERS/s);
+  });
+
+  it("ostrzega o folderze, którego na serwerze nie ma", () => {
+    const plan = planFolders([box("INBOX")], ["INBOX", "Wyslane"]);
+    expect(plan.warnings.join(" ")).toMatch(/"Wyslane".*nie ma na serwerze/s);
+  });
+
+  it("nie duplikuje folderów", () => {
+    const plan = planFolders(
+      [box("INBOX"), box("Sent", "\\Sent")],
+      ["INBOX", "INBOX", "Sent"],
+    );
+    expect(plan.threadFolders).toEqual(["INBOX", "Sent"]);
   });
 });
 

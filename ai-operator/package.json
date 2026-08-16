@@ -12,16 +12,18 @@
     "ask": "tsx --env-file-if-exists=.env src/bin/ask.ts",
     "triage": "tsx --env-file-if-exists=.env src/bin/triage.ts",
     "mcp": "tsx --env-file-if-exists=.env src/bin/mcp.ts",
-    "verify:teabrew": "tsx --env-file-if-exists=.env src/bin/verify-teabrew.ts"
+    "check:mail": "tsx --env-file-if-exists=.env src/bin/check-mail.ts",
+    "verify:teabrew": "tsx --env-file-if-exists=.env src/bin/verify-teabrew.ts",
+    "preflight": "npm run typecheck && npm run test && npm run check:mail && npm run verify:teabrew"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
-    "@types/mailparser": "^3.4.6",
     "imapflow": "^1.0.196",
     "mailparser": "^3.7.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

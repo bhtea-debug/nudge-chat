@@ -12,7 +12,8 @@ decyzję”, „co z zamówieniem 12345”, „czy mamy ten towar”, „jak wyg
 cd ai-operator
 npm install
 cp .env.example .env && chmod 600 .env      # wpisz tylko ANTHROPIC_API_KEY
-npm test                                     # 37 testów, bez sieci
+npm test                                     # 56 testów, bez sieci
+npm run check:mail                           # 11 sprawdzeń warstwy poczty, bez modelu
 npm run triage                               # przegląd poczty z fikstur
 npm run ask -- "Co z zamówieniem 12345? Klient potrzebuje dostawy do środy."
 ```
@@ -23,13 +24,40 @@ odpowiedź** działa od pierwszej minuty, bez czekania na hasła.
 
 ## Przełączenie na dane produkcyjne
 
-```bash
-# 1. Po stronie TeaBrew v2 — patrz teabrew-patch/README.md
-npm run verify:teabrew        # 9 sprawdzeń kontraktu, w tym negatywne
+Kolejność jest obowiązkowa: **poczta i ERP sprawdzane bez modelu, model na końcu.**
+Jeśli którykolwiek krok nie przechodzi, nie włączaj `MODE=live` — napraw przyczynę.
 
-# 2. Dopiero gdy wszystkie przechodzą:
+```bash
+# 1. Łatka po stronie TeaBrew v2 — patrz teabrew-patch/README.md
+#    Weryfikacja wdrożenia: bezpieczeństwo, kontrakt, prawdziwe dane.
+npm run verify:teabrew
+npm run verify:teabrew -- --order 12345 --product rooibos   # wymuszone wartości
+
+# 2. Warstwa poczty, BEZ modelu — 11 sprawdzeń, m.in. wykrycie folderu wysłanych
+MODE=live npm run check:mail
+MODE=live npm run check:mail -- --days 7
+
+# 3. Wszystko naraz przed pierwszym uruchomieniem na żywo
+MODE=live npm run preflight        # typecheck + testy + poczta + TeaBrew
+
+# 4. Dopiero teraz model
 MODE=live npm run triage
+MODE=live npm run ask -- --trace "Co ważnego przyszło dzisiaj?"
 ```
+
+`check:mail` i `verify:teabrew` **nie wołają modelu**. Nie wypisują też treści
+wiadomości ani danych dostępowych — adresy są maskowane, tematy przycinane,
+z treści raportowane są tylko właściwości (długość, obecność polskich znaków,
+czy HTML został poprawnie zamieniony na tekst).
+
+### Folder wysłanych
+
+`MAIL_THREAD_FOLDERS=auto` (domyślnie) wykrywa go po atrybucie IMAP
+**SPECIAL-USE** `\Sent`, a nie po nazwie — u różnych dostawców to „Sent",
+„Sent Items", „INBOX.Sent" albo nazwa zlokalizowana. `check:mail` wypisuje,
+co serwer wskazał i skąd to wie. Gdy serwer nie wskaże nic, trzeba podać nazwę
+ręcznie — agent bez tego folderu nie widzi naszych odpowiedzi i może uznać,
+że klientowi nikt nie odpisał.
 
 ## Czego agent NIE potrafi
 
@@ -103,13 +131,14 @@ się podłączyć w Claude Desktop bez pisania drugiej integracji. Nie definiuje
 
 ```
 src/capability/    rejestr, typy, audyt, projekcje (OpenAPI / JSON Schema / MCP)
-src/mail/          MailProvider + adapter IMAP + adapter fikstur + wątki + tekst
+src/mail/          MailProvider + adapter IMAP + adapter fikstur + wątki + foldery + tekst
 src/teabrew/       kontrakt read-only + klient HTTP + klient fikstur
 src/model/         role modeli (fast / reason) — żadnego ID modelu w logice
 src/agent/         pętla agenta, triage, prompt, kontrola dowodów
-src/bin/           ask, triage, caps, openapi, mcp, verify:teabrew
+src/bin/           ask, triage, caps, openapi, mcp, check:mail, verify:teabrew
 teabrew-patch/     gotowe do założenia pliki dla teabrew-v2
-fixtures/          poczta i dane ERP do testów i demo
+fixtures/          poczta (z folderem Sent) i dane ERP do testów i demo
+tests/             56 testów: scenariusze, jednostkowe, bezpieczeństwo łatki
 ```
 
 ## Zmiana dostawcy poczty

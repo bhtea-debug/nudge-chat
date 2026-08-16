@@ -23,6 +23,7 @@ import {
   toPlainText,
   truncateBody,
 } from "./text.js";
+import { AUTO, planFolders, type FolderPlan, type MailboxInfo } from "./folders.js";
 
 export interface ImapConfig {
   readonly host: string;
@@ -60,11 +61,52 @@ export class ImapMailProvider implements MailProvider {
 
   private client: ImapFlow | null = null;
   private readonly folder: string;
-  private readonly threadFolders: readonly string[];
+  private readonly requestedThreadFolders: readonly string[];
+  /** Ustalane raz, po pierwszym połączeniu — patrz resolveFolders(). */
+  private plan: FolderPlan | null = null;
 
   constructor(private readonly cfg: ImapConfig) {
     this.folder = cfg.folder ?? "INBOX";
-    this.threadFolders = cfg.threadFolders ?? [this.folder];
+    this.requestedThreadFolders = cfg.threadFolders ?? [AUTO];
+  }
+
+  /**
+   * Foldery do rekonstrukcji wątku. Rozwiązywane po połączeniu, bo dopóki nie
+   * zapytamy serwera, nie wiemy, jak nazywa się u niego folder wysłanych.
+   */
+  async resolveFolders(): Promise<FolderPlan> {
+    if (this.plan) return this.plan;
+    const client = await this.connect();
+    let boxes: MailboxInfo[] = [];
+    try {
+      boxes = (await client.list()).map((b) => ({
+        path: b.path,
+        name: b.name,
+        specialUse: b.specialUse,
+        specialUseSource: b.specialUseSource,
+        subscribed: b.subscribed,
+      }));
+    } catch {
+      // Serwer bez LIST-a to skrajny przypadek; wtedy działamy na tym, co podano.
+    }
+    this.plan = planFolders(boxes, this.requestedThreadFolders, this.folder);
+    return this.plan;
+  }
+
+  /** Lista folderów na serwerze — do diagnostyki, nie do logiki agenta. */
+  async listMailboxes(): Promise<MailboxInfo[]> {
+    const client = await this.connect();
+    return (await client.list()).map((b) => ({
+      path: b.path,
+      name: b.name,
+      specialUse: b.specialUse,
+      specialUseSource: b.specialUseSource,
+      subscribed: b.subscribed,
+    }));
+  }
+
+  private async threadFolderList(): Promise<readonly string[]> {
+    return (await this.resolveFolders()).threadFolders;
   }
 
   private async connect(): Promise<ImapFlow> {
@@ -177,7 +219,7 @@ export class ImapMailProvider implements MailProvider {
     }
 
     // 4. Dołóż odpowiedzi, które wskazują na ziarno (References go zawiera).
-    for (const folder of this.threadFolders) {
+    for (const folder of await this.threadFolderList()) {
       if (collected.size >= opts.maxMessages) break;
       let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
       try {
@@ -273,7 +315,7 @@ export class ImapMailProvider implements MailProvider {
     messageId: string,
     signal?: AbortSignal,
   ): Promise<ParsedRecord | null> {
-    for (const folder of this.threadFolders) {
+    for (const folder of await this.threadFolderList()) {
       let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
       try {
         lock = await client.getMailboxLock(folder, { readOnly: true });

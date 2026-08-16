@@ -9,7 +9,7 @@
       "placedAt": "{{-5d}}",
       "deadline": "{{+2d}}",
       "priority": 2,
-      "fulfillmentStatus": "in_production",
+      "fulfillmentStatus": "confirmed",
       "paymentStatus": "paid",
       "paymentMethod": "przelew",
       "courierType": "dpd",
@@ -54,7 +54,7 @@
       "placedAt": "{{-2d}}",
       "deadline": "{{+6d}}",
       "priority": 3,
-      "fulfillmentStatus": "confirmed",
+      "fulfillmentStatus": "new",
       "paymentStatus": "unpaid",
       "paymentMethod": "przelew_14dni",
       "courierType": "dpd",
@@ -185,38 +185,38 @@
     {
       "code": "BHT-ROO-VAN-100",
       "name": "Rooibos Vanilla 100 g",
-      "gramatura": "100 g",
       "productCategory": "herbaty_bezkofeinowe",
       "ean": "5901234567890",
       "isActive": true,
-      "minStock": 150
+      "minStock": 150,
+      "gramaturaG": 100
     },
     {
       "code": "BHT-ROO-VAN-50",
       "name": "Rooibos Vanilla 50 g",
-      "gramatura": "50 g",
       "productCategory": "herbaty_bezkofeinowe",
       "ean": "5901234567906",
       "isActive": true,
-      "minStock": 80
+      "minStock": 80,
+      "gramaturaG": 50
     },
     {
       "code": "BHT-EARL-50",
       "name": "Earl Grey 50 g",
-      "gramatura": "50 g",
       "productCategory": "herbaty_czarne",
       "ean": "5901234567913",
       "isActive": true,
-      "minStock": 200
+      "minStock": 200,
+      "gramaturaG": 50
     },
     {
       "code": "BHT-MIETA-80",
       "name": "Mięta Marokańska 80 g",
-      "gramatura": "80 g",
       "productCategory": "herbaty_ziolowe",
       "ean": "5901234567920",
       "isActive": true,
-      "minStock": 120
+      "minStock": 120,
+      "gramaturaG": 80
     }
   ],
   "materials": [
@@ -273,7 +273,7 @@
     },
     {
       "number": "ZP-2026-0415",
-      "status": "planned",
+      "status": "assigned",
       "skuCode": "BHT-ROO-VAN-100",
       "skuName": "Rooibos Vanilla 100 g",
       "targetQty": 500,
@@ -286,7 +286,7 @@
     },
     {
       "number": "ZP-2026-0416",
-      "status": "planned",
+      "status": "assigned",
       "skuCode": "BHT-MIETA-80",
       "skuName": "Mięta Marokańska 80 g",
       "targetQty": 300,
@@ -314,7 +314,7 @@
   "activeRuns": [
     {
       "type": "dozowanie",
-      "status": "running",
+      "status": "in_progress",
       "productionOrderNumber": "ZP-2026-0412",
       "actualStartAt": "{{-4h}}",
       "actualEndAt": null,

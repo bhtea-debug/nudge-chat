@@ -91,6 +91,21 @@ export function redactForAudit(msg: {
   };
 }
 
+/**
+ * Maskuje adresy e-mail w tekście przeznaczonym do audytu.
+ *
+ * Frazę wyszukiwania logujemy, bo to działanie agenta i bez niej nie da się
+ * odpowiedzieć, czego szukał. Ale model może szukać po adresie nadawcy —
+ * a adresy nadawców do logu nie trafiają. Domena zostaje, bo po niej widać
+ * sens zapytania; część lokalna nie.
+ */
+export function maskAddressesInText(text: string): string {
+  return text.replace(/[\w.+-]+@[\w.-]+\.\w+/g, (addr) => {
+    const at = addr.indexOf("@");
+    return `${addr[0]}***${addr.slice(at)}`;
+  });
+}
+
 /** Skrót identyfikatora, żeby log dawał się korelować bez ujawniania adresów. */
 export function hashShort(value: string): string {
   let h = 0x811c9dc5;

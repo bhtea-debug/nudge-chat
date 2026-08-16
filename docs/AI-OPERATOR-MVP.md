@@ -16,9 +16,11 @@ Agent dostaje pytanie, czyta pocztę, wyciąga z treści numery i nazwy, sprawdz
 je w TeaBrew i odpowiada z danych, które faktycznie pobrał. Przykład z zadania —
 mail „Co z zamówieniem 12345? Klient potrzebuje dostawy do środy.” — przechodzi
 całą ścieżkę: `mail_search` → `mail_get_thread` (rekonstrukcja wątku z nagłówka
-`References`, 2 wiadomości) → `teabrew_get_order_status` (dopasowanie po
-`externalOrderId`, status `in_production`, pozycje, powiązane zlecenie
-produkcyjne) → odpowiedź ze stopką dowodową. To jest scenariusz 2 w
+`References`, 3 wiadomości **z dwóch folderów** — dwa pytania klienta ze
+skrzynki odbiorczej i nasza wcześniejsza odpowiedź z folderu wysłanych) →
+`teabrew_get_order_status` (dopasowanie po `externalOrderId`, status realizacji
+`confirmed`, powiązane zlecenie produkcyjne `in_progress`, pozycje) →
+odpowiedź ze stopką dowodową. To jest scenariusz 2 w
 `ai-operator/tests/scenarios.test.ts`.
 
 ### Dwa wejścia dla właściciela
@@ -111,11 +113,15 @@ to martwy kod.
 
 ### Testy
 
-37 testów, bez sieci i bez klucza API — model jest atrapą odgrywającą
+56 testów, bez sieci i bez klucza API — model jest atrapą odgrywającą
 zaplanowane kroki, dane pochodzą z fikstur. Pięć scenariuszy akceptacyjnych
 odpowiada pięciu wymaganiom: read-only, ścieżka od maila do danych, brak
 zmyślania, dostępność produktu z nazwy handlowej, użyteczność audytu bez
-wycieku treści.
+wycieku treści. Do tego testy jednostkowe warstwy poczty i projekcji oraz
+12 testów bezpieczeństwa łatki ERP (patrz 8.3).
+
+Osobno, bez modelu: `npm run check:mail` (11 sprawdzeń warstwy poczty) i
+`npm run verify:teabrew` (16 sprawdzeń wdrożonej łatki).
 
 ---
 
@@ -151,7 +157,7 @@ implementację dostawcy, nie narzędzia widziane przez AI.
 
 | element | stan |
 | --- | --- |
-| rejestr, projekcje, audyt, kontrola dowodów, pętla agenta, triage | przetestowane, 37 testów przechodzi |
+| rejestr, projekcje, audyt, kontrola dowodów, pętla agenta, triage | przetestowane, 56 testów przechodzi |
 | ścieżka poczta → AI → TeaBrew na fiksturach | działa end-to-end |
 | `npm run caps`, `npm run openapi` | uruchomione, dają 7 capability |
 | konfiguracja → warstwa modeli → API Anthropic | potwierdzone (żądanie dociera, przy błędnym kluczu wraca 401) |
@@ -338,3 +344,218 @@ Tylko rzeczy, których nie da się wyczytać z kodu, historii ani infrastruktury
 4. **Kto poza właścicielem może pytać agenta.** Dziś: kto ma dostęp do maszyny
    i `.env`. Jeśli ma to być więcej osób, tożsamość użytkownika przestaje być
    szczegółem i wraca jako decyzja projektowa.
+
+---
+
+## 8. Live validation
+
+Etap przejścia z fikstur na prawdziwe dane firmy. Ta sekcja rozdziela to, co
+**faktycznie uruchomiono**, od tego, co jest **zablokowane** i na czym.
+
+### 8.1 Stan: uruchomienie na żywo NIE nastąpiło
+
+Trzy rzeczy blokują `MODE=live` i żadnej z nich nie da się obejść z tego
+środowiska. Nie są to problemy techniczne — to brakujące uprawnienia i wartości.
+
+| blokada | powód |
+| --- | --- |
+| łatka nie jest wdrożona w TeaBrew v2 | próba nadania temu sesji prawa zapisu do `bhtea-debug/teabrew-v2` została odrzucona; zakres to `bhtea-debug/nudge-chat`. Niezależnie od tego `AGENTS.md` w TeaBrew wymaga, żeby wdrożenie na żywe Convex szło przez `npm run convex:live:deploy -- --confirm=<wdrożenie>` — to jest celowa bramka dla człowieka |
+| brak danych dostępowych do skrzynki | host, port, login i hasło aplikacji nie istnieją w tym środowisku |
+| brak klucza API modelu | `ANTHROPIC_API_KEY` nie jest ustawiony |
+
+W konsekwencji **żaden** z testów z listy Definition of Done wymagających
+żywych danych nie został wykonany: `verify:teabrew` przeciw wdrożeniu,
+`check:mail` przeciw serwerowi, `triage` i `ask` na prawdziwej skrzynce,
+korelacja mail ↔ zamówienie, test produktu, przypadek „nie znaleziono" na
+prawdziwych danych. Nie deklaruję ich jako działających.
+
+To, co **zostało** zrobione, to doprowadzenie kodu do stanu, w którym po
+podaniu trzech brakujących wartości uruchomienie jest kwestią czterech komend —
+oraz wyłapanie błędów, które inaczej wyszłyby dopiero na produkcji.
+
+### 8.2 Weryfikacja łatki wobec aktualnego TeaBrew v2 — wykonana
+
+Łatka została porównana z `teabrew-v2` na `main` (`b777d4d`). **Nie została
+skopiowana mechanicznie** — i słusznie, bo zawierała cztery realne rozjazdy:
+
+| rozjazd | skutek na produkcji, gdyby wszedł |
+| --- | --- |
+| `gramatura` czytana jako tekst, w schemacie `v.optional(v.number())` | każde wyszukanie produktu z ustawioną gramaturą łamałoby kontrakt i wracało jako błąd |
+| zapytanie o `productionRuns.status === "running"` — takiego statusu **nie ma** w schemacie (`pending\|in_progress\|paused\|partially_done\|done\|cancelled`) | zero wierszy **zawsze**. Agent raportowałby „nic się nie produkuje" przy pracującej hali. Cicho fałszywa odpowiedź, najgorszy możliwy błąd w tym systemie |
+| własne dopasowanie materiału po `code`, gdy kalkulator dostępności preferuje materiał z tagiem `sku` | ilość jednego materiału opisana nazwą i jednostką drugiego — liczba o czymś innym, niż mówi napis obok |
+| `ctx: { db: any }` zamiast `QueryCtx` z `_generated/server` | brak kontroli typów dokładnie tam, gdzie chroni przed powyższymi |
+
+Przy okazji poprawiono fikstury, które zawierały statusy nieistniejące w
+schemacie (`in_production` jako status realizacji zamówienia, `planned` jako
+status zlecenia). To był mój błąd rozumienia domeny: **„zamówienie jest w
+produkcji" nie wynika z `orderFulfillmentStatus`** (ten ma wartości
+`awaiting_payment | new | confirmed | in_picking | packed | shipped | delivered
+| cancelled`), tylko z powiązanego `productionOrders.status === "in_progress"`.
+Fikstura z wymyślonym statusem uczyła agenta nieistniejącego słownictwa.
+
+Co potwierdzono pozytywnie:
+
+- **Łatka kompiluje się wobec prawdziwego schematu.** `queries/aiOperator.ts`
+  plus jednosłowna zmiana w `lib/salesAvailability.ts` przechodzą `tsc --noEmit`
+  przy realnym `convex/_generated/dataModel.d.ts` i realnym `convex/schema.ts` —
+  zero błędów. To weryfikuje każdą nazwę pola, każdą nazwę indeksu
+  (`by_order`, `by_sales_order`, `by_status`) i każdą sygnaturę helpera.
+- **Wykorzystuje istniejące helpery domenowe.** Stan liczy
+  `salesAvailabilityByCode`, ten sam, którego używa portal B2B i push do sklepu.
+  Materiał wybiera `buildMaterialIndex`, ten sam, którego użył kalkulator.
+  Autoryzacja to `constantTimeTextEqual` i `jsonResponse` już obecne w `http.ts`.
+- **Jest read-only i to jest testowane**, nie obiecane —
+  `tests/patch-security.test.ts`, 12 testów.
+
+### 8.3 Bezpieczeństwo — zweryfikowane testami, nie deklaracją
+
+`tests/patch-security.test.ts` czyta pliki łatki i sprawdza:
+
+- brak `internalMutation`, `mutation(`, `action(`, `ctx.db.insert/patch/replace/delete`,
+  `ctx.scheduler`, `ctx.storage`;
+- wszystkie cztery eksporty to `internalQuery`, nie publiczne `query` —
+  publiczne `query` byłoby wywoływalne przez każdego, kto zna adres wdrożenia,
+  **bez naszego tokenu**;
+- brak `v.any()` w argumentach i brak dynamicznej nazwy tabeli — agent nie ma
+  jak wykonać dowolnego zapytania;
+- zamknięta lista czytanych tabel: `orders`, `orderItems`, `skus`, `materials`,
+  `productionOrders`, `productionRuns`;
+- wyłącznie metody `GET`, dokładnie pięć zadeklarowanych ścieżek;
+- autoryzacja **przed** jakimkolwiek `ctx.runQuery` w każdej trasie;
+- token czytany tylko z nagłówka `Authorization`, nigdy z query stringu;
+- fail-closed: brak `AI_OPERATOR_API_TOKEN` w środowisku daje 500, nie przejście;
+- `console.error` nie zawiera żądania, URL-a ani tokenu;
+- odpowiedź **nie** zawiera e-maila, telefonu ani adresu dostawy klienta —
+  do odpowiedzi na pytanie z maila wystarcza nazwa.
+
+`npm run verify:teabrew` sprawdza te same rzeczy z zewnątrz, na wdrożeniu:
+16 sprawdzeń, w tym brak tokenu na każdej z pięciu tras, token w URL (musi być
+bezsilny), metody zapisu i sondowanie nieudokumentowanych ścieżek
+(`/ai-operator/query`, `/ai-operator/db`, …).
+
+W audycie doszło jedno wzmocnienie wymuszone wymogiem „nie zapisuj adresów
+nadawców": fraza wyszukiwania jest logowana (bez niej audyt nie odpowiada na
+pytanie, czego agent szukał), ale **adresy w niej są maskowane** —
+`m***@domena.example`. Model może szukać po adresie nadawcy, więc bez tego
+adresy trafiałyby do logu.
+
+### 8.4 Folder wysłanych — rozwiązany bez zgadywania nazwy
+
+Nazwa folderu wysłanych **nie jest zgadywana**. `MAIL_THREAD_FOLDERS=auto`
+(nowa wartość domyślna) wykrywa go po atrybucie IMAP **SPECIAL-USE** `\Sent`.
+ImapFlow rozwiązuje ten atrybut trzema drogami — z podpowiedzi, z rozszerzenia
+SPECIAL-USE/XLIST serwera, oraz przez dopasowanie znanych nazw zlokalizowanych —
+i podaje w `specialUseSource`, skąd wziął wynik.
+
+`src/mail/folders.ts` buduje z tego plan folderów i **ostrzega** w trzech
+sytuacjach: serwer nie wskazał `\Sent`; jawna lista pomija wskazany przez serwer
+folder wysłanych; jawna lista wskazuje folder, którego na serwerze nie ma
+(taki byłby po cichu pomijany).
+
+Testy pokrywają w szczególności przypadek odwrotny do intuicji: folder o
+nazwie „Sent", ale **bez** atrybutu `\Sent`, nie jest brany. Zgadywanie po
+nazwie kazałoby go użyć.
+
+Fikstury zostały rozszerzone o folder `Sent` z dwiema naszymi odpowiedziami,
+więc ta ścieżka jest **testowana**, a nie tylko napisana: wątek zamówienia
+12345 ma teraz 3 wiadomości i przechodzi przez oba foldery. Bez tego agent
+widziałby dwa pytania klienta i mógłby uznać, że nikt nie odpisał — a odpisano.
+
+### 8.5 Testy bez modelu — dodane i przechodzą na fiksturach
+
+`npm run check:mail` — 11 sprawdzeń warstwy poczty, **bez wołania modelu**:
+połączenie, wykrycie folderu wysłanych, listowanie, pobranie treści,
+wyszukiwanie, rekonstrukcja wątku, widoczność folderu wysłanych, polskie znaki,
+zamiana HTML na tekst, `References`/`In-Reply-To`, metadane załączników.
+
+Na fiksturach przechodzi 11/11 — to znaczy, że **sam checker działa**, więc
+porażka na prawdziwej skrzynce będzie prawdziwym problemem, a nie błędem
+narzędzia. Uruchamia się identycznie dla obu dostawców (sprawdzenie strukturalne,
+nie `instanceof`), więc nie jest to ścieżka testowana tylko na produkcji.
+
+Ochrona danych w logach checkera: adresy maskowane (`z***@domena.example`),
+tematy przycinane do 48 znaków, treści **nigdy** nie wypisywane — raportowane
+są tylko właściwości: długość, które diakrytyki wystąpiły, czy po normalizacji
+zostały znaczniki HTML. Komunikaty błędów IMAP też przechodzą przez maskowanie,
+bo zawierają nazwę konta.
+
+`npm run preflight` = `typecheck && test && check:mail && verify:teabrew` —
+jedna komenda przed pierwszym uruchomieniem na żywo.
+
+### 8.6 Problemy, które wyszły dopiero przy tej weryfikacji
+
+Wszystkie cztery rozjazdy z 8.2 to problemy, których nie widać na fiksturach —
+fikstura zwracała to, co sama deklarowała, więc kontrakt się zgadzał sam ze sobą.
+Wyszły dopiero z porównania z prawdziwym `schema.ts`. Dwa z nich są pouczające:
+
+- **Status, którego nie ma, nie jest błędem — jest ciszą.** Zapytanie o
+  `"running"` nie wywala się. Zwraca pustą listę, którą agent uczciwie
+  zaraportuje jako „brak otwartych ruchów produkcyjnych". Nie ma tu żadnego
+  sygnału, że coś jest nie tak. Kontrola dowodów tego nie wyłapie, bo wywołanie
+  faktycznie się odbyło i faktycznie zwróciło ten wynik. Jedyną obroną było
+  porównanie ze schematem.
+- **Fikstura może uczyć nieprawdziwego słownictwa.** `in_production` brzmiało
+  sensownie i przeszło przez `z.string()`. Gdyby weszło na produkcję, agent
+  szukałby statusu, którego nigdy nie zobaczy, i opisywałby produkcję na
+  podstawie złego pola.
+
+Wniosek na przyszłość, już zastosowany: fikstury muszą używać **dokładnie**
+wartości z enumów źródłowego schematu, a nie wartości „w tym stylu".
+
+### 8.7 Czego brakuje, żeby dokończyć — dla właściciela
+
+Trzy wartości i jedno uprawnienie. Nic z tego nie może trafić do repozytorium
+ani na czat.
+
+1. **Wdrożenie łatki w TeaBrew v2.** Albo nadanie tej sesji prawa zapisu do
+   `bhtea-debug/teabrew-v2` (wtedy przygotuję gałąź i PR — samo wdrożenie na
+   żywe Convex i tak wykonuje człowiek przez guarded command), albo założenie
+   łatki własnoręcznie według `ai-operator/teabrew-patch/README.md`. Do tego
+   wygenerowanie `AI_OPERATOR_API_TOKEN` (min. 32 losowe znaki) i ustawienie go
+   **w zmiennych środowiskowych Convex**, nie w plikach.
+2. **Dane skrzynki** — host IMAP, port (zwykle 993), login, oraz **hasło
+   aplikacji** (nie hasło główne). Jeśli dostawca umożliwia konto lub hasło
+   aplikacji z prawem tylko do odczytu — użyć go. Jeśli nie umożliwia, kod i tak
+   pozostaje read-only: skrzynka otwierana jest przez
+   `mailboxOpen(..., { readOnly: true })`, nie ma SMTP, nie ma zmiany flag,
+   nie ma delete/move/archive.
+3. **Klucz API modelu** — `ANTHROPIC_API_KEY`.
+
+Wszystkie trzy ustawia się w **jednym miejscu**: plik `ai-operator/.env`
+(`cp .env.example .env && chmod 600 .env`). Ten plik jest w `.gitignore` i
+nigdy nie wchodzi do repozytorium.
+
+Potem, w tej kolejności:
+
+```bash
+cd ai-operator
+npm run verify:teabrew          # ERP, bez modelu — musi przejść w całości
+MODE=live npm run check:mail    # poczta, bez modelu — musi przejść w całości
+MODE=live npm run triage        # dopiero teraz model
+MODE=live npm run ask -- --trace "Co ważnego przyszło dzisiaj?"
+```
+
+Jeśli którykolwiek z pierwszych dwóch kroków nie przechodzi — nie włączać
+modelu. Przyczyna jest po stronie danych albo konfiguracji, a nie AI, i model
+tego nie naprawi, tylko przykryje.
+
+### 8.8 Rekomendowane następne kroki
+
+1. **Dokończyć uruchomienie według 8.7.** Nic z poniższych nie ma sensu przed tym.
+2. **Pierwszy tydzień z włączonym `AUDIT_FILE`** (już domyślnie w `.env.example`).
+   Bez trwałego logu po tygodniu nie da się odpowiedzieć, czego agent naprawdę
+   szukał — a to jest jedyna wiarygodna podstawa do oceny, czy zmyśla.
+3. **Zebrać przypadki, w których kontrola dowodów zgłosiła problem** (kod wyjścia
+   `3` z `npm run ask`, pole `findings`). Ta lista, a nie wrażenie z demonstracji,
+   mówi, co poprawić.
+4. **Sprawdzić, czy `orderByRef` wystarcza na prawdziwym wolumenie.** Dopasowanie
+   po `externalOrderId` idzie pełnym skanem zamówień, bo indeks `by_external`
+   jest złożony `(source, externalOrderId)`, a źródła z maila nie znamy. Przy
+   obecnej skali to tańsze niż zapytanie po każdym źródle; jeśli czasy z audytu
+   (`latencyMs`) zaczną rosnąć, właściwą odpowiedzią jest indeks po samym numerze
+   — a nie cache po stronie agenta.
+5. **Nie rozszerzać zakresu, dopóki punkty 2–3 nie dadzą wniosków.** Draftów
+   odpowiedzi, mutacji ERP, cronów, kolejnego agenta ani panelu w tym etapie
+   nie ma i nie powinno być. Kolejność „najpierw dowód, że działa, potem
+   uprawnienia" jest tu celowa — firma już raz usunęła funkcję AI, która pisała
+   bez rozliczalności.

@@ -21,6 +21,32 @@ do tamtego repo.
 Nazwy tras są nazwane po konsumencie — tak samo jak istniejące `/medusa/*`,
 `/b2b/*` i `/budzeciek/*`.
 
+## Stan weryfikacji tej łatki
+
+Sprawdzona wobec `teabrew-v2` na `main` (`b777d4d`, „Eksport do Budzecika: ceny
+sieci sa NETTO"):
+
+- **Kompiluje się wobec prawdziwego schematu.** `queries/aiOperator.ts` plus
+  zmiana z `lib/salesAvailability.export.md` przechodzą `tsc --noEmit` przy
+  realnym `convex/_generated/dataModel.d.ts` i realnym `convex/schema.ts` —
+  zero błędów. To potwierdza każdą nazwę pola, nazwę indeksu i sygnaturę helpera.
+- **Bezpieczeństwo jest testowane, nie obiecane.** `tests/patch-security.test.ts`
+  (12 testów) sprawdza: brak mutacji i akcji, wyłącznie `internalQuery`, brak
+  `v.any()` i dynamicznych nazw tabel, zamknięta lista sześciu czytanych tabel,
+  wyłącznie metody GET, autoryzacja przed jakimkolwiek zapytaniem, token tylko
+  z nagłówka, porównanie w czasie stałym, fail-closed przy braku tokenu, brak
+  żądania i tokenu w logach, brak danych kontaktowych klienta w odpowiedzi.
+
+Cztery rozjazdy wobec pierwszej wersji łatki zostały **znalezione i naprawione**
+przy tej weryfikacji:
+
+| co było źle | dlaczego to miało znaczenie |
+| --- | --- |
+| `gramatura` czytana jako tekst | w schemacie to `v.optional(v.number())` — gramy liczbą. Każde wyszukanie produktu z ustawioną gramaturą łamałoby kontrakt |
+| zapytanie o `productionRuns.status === "running"` | tego statusu **nie ma** w schemacie. Zapytanie zwracałoby zawsze zero wierszy, więc agent raportowałby „nic się nie produkuje" przy pracującej hali — cicho fałszywa odpowiedź |
+| własne dopasowanie materiału po `code` | kalkulator dostępności preferuje materiał z tagiem `sku`. Naiwne „pierwszy o tym kodzie" opisywałoby ilość jednego materiału nazwą i jednostką drugiego |
+| `ctx: { db: any }` | repo używa `QueryCtx` z `_generated/server` (patrz `queries/b2bStock.ts`) — `any` kasowało kontrolę typów dokładnie tam, gdzie jest najbardziej potrzebna |
+
 ## Jak założyć
 
 Repozytorium `teabrew-v2` ma własny kontrakt pracy w `AGENTS.md`. Przeczytaj go
@@ -28,6 +54,11 @@ przed zmianą i wykonaj wymagane tam kroki (`git remote -v`, `git fetch origin m
 świeży worktree z `origin/main`). **Nie uruchamiaj `convex deploy`, `convex dev`
 ani `convex codegen`, dopóki środowisko wskazuje na wdrożenie live** — wdrożenie
 idzie wyłącznie przez opisane tam guardy.
+
+Przeczytaj też `AGENTS.md` i `docs/DEPLOYMENT_SAFETY.md` w `teabrew-v2` —
+wdrożenie na żywe Convex idzie **wyłącznie** przez `npm run convex:live:check`
+i `npm run convex:live:deploy -- --confirm=<nazwa-wdrożenia>`. To jest celowa
+bramka dla człowieka; nie obchodź jej `convex deploy` ani `convex codegen`.
 
 1. **Skopiuj plik z zapytaniami**
 
@@ -37,6 +68,17 @@ idzie wyłącznie przez opisane tam guardy.
 
    Zawiera cztery `internalQuery`: `orderByRef`, `stockByCodes`, `findProduct`,
    `productionStatus`. Żadnej mutacji.
+
+   `internalQuery`, a nie `query`, jest tu istotne: publiczne `query` byłoby
+   wywoływalne przez **każdego**, kto zna adres wdrożenia, bez naszego tokenu.
+   `internalQuery` jest osiągalne tylko przez `ctx.runQuery` z wnętrza wdrożenia,
+   czyli wyłącznie przez autoryzowane trasy HTTP z punktu 2.
+
+1a. **Zastosuj jedną zmianę w pliku współdzielonym**
+
+   Patrz `convex/lib/salesAvailability.export.md` — dodanie słowa `export` do
+   `buildMaterialIndex`. Zmiana wyłącznie dodająca, bez zmiany zachowania.
+   Uzasadnienie i odrzucona alternatywa są w tym pliku.
 
 2. **Wklej trasy do `convex/http.ts`**
 
@@ -71,10 +113,23 @@ idzie wyłącznie przez opisane tam guardy.
    npm run verify:teabrew
    ```
 
-   9 sprawdzeń: kształt każdej odpowiedzi plus przypadki negatywne — brak
-   tokenu, zły token, brak wymaganego parametru, nieistniejący numer,
-   nieistniejący kod, zły profil. Negatywne są tu ważniejsze od pozytywnych:
-   wyłapują endpoint, który zwraca dane bez autoryzacji.
+   16 sprawdzeń w czterech grupach:
+
+   - **bezpieczeństwo** — brak tokenu na każdej z pięciu tras, zły token, token
+     w query stringu (musi być bezsilny), brak metod zapisu (POST/PUT/PATCH/DELETE),
+     brak nieudokumentowanych tras `/ai-operator/*`;
+   - **kontrakt** — kształt każdej odpowiedzi wobec schematu zod, walidacja
+     parametrów;
+   - **brak danych** — nieistniejące zamówienie, kod i produkt muszą wracać
+     jawnie, nigdy jako zero ani pusty prawidłowy rekord;
+   - **prawdziwe dane** — pozytywne trafienia na realnych rekordach. Wartości
+     do testu są **odkrywane z systemu** (endpoint produkcji zwraca prawdziwe
+     numery zamówień i kody SKU), więc nie musisz niczego podawać. Nadpisanie:
+     `-- --order <numer> --product <fraza>`.
+
+   Grupa „bezpieczeństwo" jest tu ważniejsza od pozytywnych: wyłapuje endpoint,
+   który zwraca dane bez autoryzacji, i potwierdza, że agent nie dostał niczego
+   poza pięcioma trasami.
 
 ## Decyzje projektowe warte utrzymania
 

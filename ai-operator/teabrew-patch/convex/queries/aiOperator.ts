@@ -1,7 +1,11 @@
 import { v } from "convex/values";
 import { internalQuery } from "../_generated/server";
+import type { QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
-import { salesAvailabilityByCode } from "../lib/salesAvailability";
+import {
+  buildMaterialIndex,
+  salesAvailabilityByCode,
+} from "../lib/salesAvailability";
 
 /**
  * READ-ONLY dane operacyjne dla agenta inbox-operator.
@@ -106,14 +110,14 @@ export const orderByRef = internalQuery({
   },
 });
 
-async function shapeOrder(ctx: { db: any }, order: Doc<"orders">) {
+async function shapeOrder(ctx: QueryCtx, order: Doc<"orders">) {
   const items = await ctx.db
     .query("orderItems")
-    .withIndex("by_order", (q: any) => q.eq("orderId", order._id))
+    .withIndex("by_order", (q) => q.eq("orderId", order._id))
     .collect();
 
   const shapedItems = await Promise.all(
-    items.map(async (item: Doc<"orderItems">) => {
+    items.map(async (item) => {
       const sku = item.skuId ? await ctx.db.get(item.skuId) : null;
       return {
         skuCode: sku?.code ?? null,
@@ -127,7 +131,7 @@ async function shapeOrder(ctx: { db: any }, order: Doc<"orders">) {
 
   const production = await ctx.db
     .query("productionOrders")
-    .withIndex("by_sales_order", (q: any) => q.eq("salesOrderId", order._id))
+    .withIndex("by_sales_order", (q) => q.eq("salesOrderId", order._id))
     .collect();
 
   let customerName: string | null = order.customerSnapshot?.name ?? null;
@@ -158,7 +162,7 @@ async function shapeOrder(ctx: { db: any }, order: Doc<"orders">) {
     totalPLN: order.totalPLN ?? null,
     notes: order.notes ?? null,
     items: shapedItems,
-    production: production.map((p: Doc<"productionOrders">) => ({
+    production: production.map((p) => ({
       number: p.number,
       status: p.status,
       targetQty: p.targetQty,
@@ -191,15 +195,20 @@ export const stockByCodes = internalQuery({
     }
 
     const availability = await salesAvailabilityByCode(ctx, { codes, profile: args.profile });
-    const materials = await ctx.db.query("materials").collect();
-    const byCode = new Map(materials.map((m) => [m.code, m]));
+
+    // MUSI to być ten sam indeks, którego użył kalkulator dostępności.
+    // Dwa materiały mogą mieć ten sam `code` (herbata z tagiem "sku" oraz
+    // akcesorium z woocommerce); kalkulator preferuje ten z tagiem "sku".
+    // Naiwne „pierwszy o tym kodzie" opisałoby ilość jednego materiału nazwą
+    // i jednostką drugiego — czyli podałoby liczbę o czymś innym, niż mówi nazwa.
+    const materialFor = buildMaterialIndex(await ctx.db.query("materials").collect());
 
     const items: Array<Record<string, unknown>> = [];
     const unknownCodes: string[] = [];
 
     for (const code of codes) {
       const a = availability.get(code);
-      const material = byCode.get(code);
+      const material = materialFor(code);
       // Brak materiału to NIE stan zero. Kod, którego nie ma w systemie,
       // wraca osobno — inaczej agent zaraportowałby „nie mamy" o czymś,
       // co po prostu nazywa się inaczej.
@@ -251,7 +260,8 @@ export const findProduct = internalQuery({
       skus: allSkus.slice(0, limit).map((s) => ({
         code: s.code,
         name: s.name,
-        gramatura: s.gramatura ?? null,
+        // W schemacie to `v.optional(v.number())` — gramy liczbą, nie tekst.
+        gramaturaG: s.gramatura ?? null,
         productCategory: s.productCategory ?? null,
         ean: s.ean ?? null,
         isActive: s.isActive !== false,
@@ -329,14 +339,33 @@ export const productionStatus = internalQuery({
       }),
     );
 
-    // Ruchy faktycznie uruchomione — „co się teraz dzieje na hali".
-    const running = await ctx.db
-      .query("productionRuns")
-      .withIndex("by_status", (q) => q.eq("status", "running"))
-      .take(MAX_ROWS);
+    // Ruchy otwarte — „co się teraz dzieje na hali".
+    //
+    // UWAGA: `productionRunStatus` w schemacie to
+    // pending | in_progress | paused | partially_done | done | cancelled.
+    // NIE MA statusu "running". Zapytanie o "running" zwracałoby zawsze zero
+    // wierszy, więc agent raportowałby „nic się nie produkuje" przy pracującej
+    // hali — czyli cicho fałszywą odpowiedź, najgorszy możliwy błąd tutaj.
+    //
+    // Otwarte = `in_progress` (idzie teraz) oraz `paused` (zaczęte i stoi;
+    // dla właściciela to sygnał, nie szum). `pending` to jeszcze nie start,
+    // `partially_done` jest domykane przez zlecenie, więc oba pomijamy.
+    const OPEN_RUN_STATUSES = ["in_progress", "paused"] as const;
+    const openRuns = (
+      await Promise.all(
+        OPEN_RUN_STATUSES.map((status) =>
+          ctx.db
+            .query("productionRuns")
+            .withIndex("by_status", (q) => q.eq("status", status))
+            .take(MAX_ROWS),
+        ),
+      )
+    )
+      .flat()
+      .slice(0, MAX_ROWS);
 
     const activeRuns = await Promise.all(
-      running.map(async (run) => {
+      openRuns.map(async (run) => {
         const po = run.productionOrderId ? await ctx.db.get(run.productionOrderId) : null;
         const mixer = run.mixerId ? await ctx.db.get(run.mixerId) : null;
         return {

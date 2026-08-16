@@ -77,7 +77,10 @@ export function loadConfig(): AppConfig {
             user: req("MAIL_IMAP_USER"),
             pass: req("MAIL_IMAP_PASSWORD"),
             folder: opt("MAIL_FOLDER", "INBOX"),
-            threadFolders: opt("MAIL_THREAD_FOLDERS", "INBOX")
+            // "auto" = skrzynka odbiorcza plus folder wysłanych wykryty po
+            // atrybucie SPECIAL-USE. Nazwy folderu wysłanych nie wolno zgadywać;
+            // bez niego agent nie widzi naszych odpowiedzi.
+            threadFolders: opt("MAIL_THREAD_FOLDERS", "auto")
               .split(",")
               .map((s) => s.trim())
               .filter(Boolean),

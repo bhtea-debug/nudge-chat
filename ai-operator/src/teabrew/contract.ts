@@ -138,7 +138,8 @@ export type StockResponse = z.infer<typeof StockResponse>;
 export const SkuHit = z.object({
   code: z.string(),
   name: z.string(),
-  gramatura: z.string().nullable(),
+  /** Gramatura w GRAMACH, liczbą. W schemacie TeaBrew to `v.number()`, nie tekst. */
+  gramaturaG: z.number().nullable(),
   productCategory: z.string().nullable(),
   ean: z.string().nullable(),
   isActive: z.boolean(),

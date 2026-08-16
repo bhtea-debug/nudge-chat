@@ -1,10 +1,28 @@
 {
+  "folders": [
+    {
+      "path": "INBOX",
+      "specialUse": null
+    },
+    {
+      "path": "Sent",
+      "specialUse": "\\Sent"
+    }
+  ],
   "messages": [
     {
       "id": "<zam-12345-1@sklep-ziolowy.example>",
       "subject": "Zapytanie o zamówienie 12345",
-      "from": { "name": "Anna Wiśniewska", "address": "zakupy@sklep-ziolowy.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Anna Wiśniewska",
+        "address": "zakupy@sklep-ziolowy.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-30h}}",
       "seen": true,
       "answered": false,
@@ -13,33 +31,63 @@
     {
       "id": "<zam-12345-2@sklep-ziolowy.example>",
       "subject": "Re: Zapytanie o zamówienie 12345",
-      "from": { "name": "Anna Wiśniewska", "address": "zakupy@sklep-ziolowy.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Anna Wiśniewska",
+        "address": "zakupy@sklep-ziolowy.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-3h}}",
       "seen": false,
       "answered": false,
       "inReplyTo": "<zam-12345-1@sklep-ziolowy.example>",
-      "references": ["<zam-12345-1@sklep-ziolowy.example>"],
+      "references": [
+        "<zam-12345-1@sklep-ziolowy.example>"
+      ],
       "text": "Ponawiam pytanie — co z zamówieniem 12345? Klient potrzebuje dostawy do środy,\nbo w czwartek ma otwarcie punktu i towar musi być już na półce.\n\nJeśli nie zdążycie, proszę o informację dzisiaj, bo muszę szukać zamiennika.\n\nAnna\n\n> Dzień dobry,\n>\n> chciałam dopytać o zamówienie 12345, które składaliśmy w poniedziałek."
     },
     {
       "id": "<reklamacja-2026-08@delikatesy-nowak.example>",
       "subject": "Reklamacja - obca zawartość w opakowaniu",
-      "from": { "name": "Marek Nowak", "address": "marek.nowak@delikatesy-nowak.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Marek Nowak",
+        "address": "marek.nowak@delikatesy-nowak.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-6h}}",
       "seen": false,
       "answered": false,
       "attachments": [
-        { "filename": "zdjecie-opakowania.jpg", "contentType": "image/jpeg", "sizeBytes": 842311 }
+        {
+          "filename": "zdjecie-opakowania.jpg",
+          "contentType": "image/jpeg",
+          "sizeBytes": 842311
+        }
       ],
       "text": "Dobry wieczór,\n\nklientka zwróciła nam opakowanie Earl Grey 50 g, w którym znalazła twardy fragment\nwyglądający jak kawałek plastiku. Na opakowaniu jest partia 042.\n\nZdjęcie w załączniku. Wstrzymaliśmy sprzedaż tej partii u nas na półce.\nProszę o pilny kontakt, bo klientka zapowiedziała zgłoszenie do sanepidu.\n\nMarek Nowak\nDelikatesy Nowak"
     },
     {
       "id": "<rabat-q4@hurt-herbaty.example>",
       "subject": "Warunki na Q4 - prośba o rabat 12%",
-      "from": { "name": "Tomasz Lis", "address": "t.lis@hurt-herbaty.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Tomasz Lis",
+        "address": "t.lis@hurt-herbaty.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-9h}}",
       "seen": false,
       "answered": false,
@@ -48,8 +96,16 @@
     {
       "id": "<zapytanie-rooibos@nowy-klient.example>",
       "subject": "Czy macie Rooibos Vanilla 100g na stanie?",
-      "from": { "name": "Katarzyna Zając", "address": "k.zajac@nowy-klient.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Katarzyna Zając",
+        "address": "k.zajac@nowy-klient.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-5h}}",
       "seen": false,
       "answered": false,
@@ -58,8 +114,16 @@
     {
       "id": "<zamowienie-99999@stary-klient.example>",
       "subject": "Pilne - status zamówienia 99999",
-      "from": { "name": "Piotr Adamczyk", "address": "biuro@stary-klient.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Piotr Adamczyk",
+        "address": "biuro@stary-klient.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-2h}}",
       "seen": false,
       "answered": false,
@@ -68,34 +132,66 @@
     {
       "id": "<dostawa-surowca@dostawca-ziol.example>",
       "subject": "Potwierdzenie wysyłki - rooibos 200 kg",
-      "from": { "name": "Dostawca Ziół sp. z o.o.", "address": "logistyka@dostawca-ziol.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "zakupy@bht.example" }],
+      "from": {
+        "name": "Dostawca Ziół sp. z o.o.",
+        "address": "logistyka@dostawca-ziol.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "zakupy@bht.example"
+        }
+      ],
       "date": "{{-20h}}",
       "seen": true,
       "answered": false,
       "attachments": [
-        { "filename": "WZ-2026-4471.pdf", "contentType": "application/pdf", "sizeBytes": 118204 }
+        {
+          "filename": "WZ-2026-4471.pdf",
+          "contentType": "application/pdf",
+          "sizeBytes": 118204
+        }
       ],
       "text": "Dzień dobry,\n\npotwierdzamy wysyłkę 200 kg rooibos, partia dostawcy RB-2026-118.\nPrzewidywana dostawa: pojutrze przed południem.\n\nWZ w załączniku."
     },
     {
       "id": "<faktura-08-2026@ksiegowosc-biuro.example>",
       "subject": "Faktura za sierpień",
-      "from": { "name": "Biuro Rachunkowe", "address": "faktury@ksiegowosc-biuro.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Biuro Rachunkowe",
+        "address": "faktury@ksiegowosc-biuro.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-26h}}",
       "seen": true,
       "answered": false,
       "attachments": [
-        { "filename": "FV-2026-08-119.pdf", "contentType": "application/pdf", "sizeBytes": 64118 }
+        {
+          "filename": "FV-2026-08-119.pdf",
+          "contentType": "application/pdf",
+          "sizeBytes": 64118
+        }
       ],
       "text": "W załączeniu faktura za obsługę księgową za sierpień 2026. Termin płatności 14 dni."
     },
     {
       "id": "<newsletter-opakowania@targi-packaging.example>",
       "subject": "Ostatnie dni rejestracji na targi opakowań!",
-      "from": { "name": "Targi Packaging", "address": "news@targi-packaging.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Targi Packaging",
+        "address": "news@targi-packaging.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-14h}}",
       "seen": false,
       "answered": false,
@@ -104,12 +200,66 @@
     {
       "id": "<zam-12346-pilne@siec-eko.example>",
       "subject": "Zamówienie 12346 - zmiana ilości",
-      "from": { "name": "Dział Zakupów", "address": "zakupy@siec-eko.example" },
-      "to": [{ "name": "Brown House & Tea", "address": "biuro@bht.example" }],
+      "from": {
+        "name": "Dział Zakupów",
+        "address": "zakupy@siec-eko.example"
+      },
+      "to": [
+        {
+          "name": "Brown House & Tea",
+          "address": "biuro@bht.example"
+        }
+      ],
       "date": "{{-45m}}",
       "seen": false,
       "answered": false,
       "text": "Dzień dobry,\n\nw zamówieniu 12346 potrzebujemy zwiększyć ilość Earl Grey 50 g z 200 na 400 sztuk.\nReszta pozycji bez zmian. Termin dostawy zostaje.\n\nProszę o potwierdzenie, czy jesteście w stanie to zrobić przy obecnym terminie."
+    },
+    {
+      "id": "<odp-12345-bht@bht.example>",
+      "subject": "Re: Zapytanie o zamówienie 12345",
+      "from": {
+        "name": "Brown House & Tea",
+        "address": "biuro@bht.example"
+      },
+      "to": [
+        {
+          "name": "Anna Wiśniewska",
+          "address": "zakupy@sklep-ziolowy.example"
+        }
+      ],
+      "date": "{{-28h}}",
+      "folder": "Sent",
+      "seen": true,
+      "answered": false,
+      "inReplyTo": "<zam-12345-1@sklep-ziolowy.example>",
+      "references": [
+        "<zam-12345-1@sklep-ziolowy.example>"
+      ],
+      "text": "Dzień dobry,\n\nsprawdzam status i wracam z terminem najpóźniej jutro.\n\nPozdrawiam"
+    },
+    {
+      "id": "<odp-faktura-bht@bht.example>",
+      "subject": "Re: Faktura za sierpień",
+      "from": {
+        "name": "Brown House & Tea",
+        "address": "biuro@bht.example"
+      },
+      "to": [
+        {
+          "name": "Biuro Rachunkowe",
+          "address": "faktury@ksiegowosc-biuro.example"
+        }
+      ],
+      "date": "{{-24h}}",
+      "folder": "Sent",
+      "seen": true,
+      "answered": false,
+      "inReplyTo": "<faktura-08-2026@ksiegowosc-biuro.example>",
+      "references": [
+        "<faktura-08-2026@ksiegowosc-biuro.example>"
+      ],
+      "text": "Dziękuję, przekazane do płatności."
     }
   ]
 }

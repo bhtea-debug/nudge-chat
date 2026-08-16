@@ -100,17 +100,32 @@ describe("Scenariusz 2 — mail o zamówieniu 12345 kończy się odpowiedzią z 
     ]);
     expect(result.audit.every((r) => r.ok)).toBe(true);
 
-    // Wątek został faktycznie odtworzony z nagłówka References: 2 wiadomości.
-    const thread = JSON.parse(model.observed[1]!.result) as { messageCount: number };
-    expect(thread.messageCount).toBe(2);
+    // Wątek odtworzony z nagłówka References, PONAD FOLDERAMI: dwa pytania
+    // klienta z INBOX plus nasza odpowiedź z folderu wysłanych. Bez tej
+    // trzeciej wiadomości agent uznałby, że klientowi nikt nie odpisał.
+    const thread = JSON.parse(model.observed[1]!.result) as {
+      messageCount: number;
+      messages: { folder: string; from: { address: string } | null }[];
+    };
+    expect(thread.messageCount).toBe(3);
+    expect(thread.messages.some((m) => m.folder === "Sent")).toBe(true);
+    expect(thread.messages.some((m) => m.folder === "INBOX")).toBe(true);
 
     // Zamówienie zostało dopasowane po realnym polu, nie „jakoś".
     const order = JSON.parse(model.observed[2]!.result) as {
       matchedBy: string;
-      orders: { fulfillmentStatus: string; items: { skuCode: string; fulfilledQty: number }[] }[];
+      orders: {
+        fulfillmentStatus: string;
+        items: { skuCode: string; fulfilledQty: number }[];
+        production: { status: string }[];
+      }[];
     };
     expect(order.matchedBy).toBe("externalOrderId");
-    expect(order.orders[0]!.fulfillmentStatus).toBe("in_production");
+    // W TeaBrew „jest w produkcji" NIE jest statusem realizacji zamówienia —
+    // orderFulfillmentStatus to awaiting_payment|new|confirmed|in_picking|
+    // packed|shipped|delivered|cancelled. O produkcji mówi powiązane zlecenie.
+    expect(order.orders[0]!.fulfillmentStatus).toBe("confirmed");
+    expect(order.orders[0]!.production[0]!.status).toBe("in_progress");
 
     // Stopka dowodowa pochodzi z audytu, nie od modelu.
     expect(result.answerWithEvidence).toContain("Co sprawdziłem, zanim odpowiedziałem");
@@ -279,6 +294,30 @@ describe("Scenariusz 5 — audyt odpowiada, co agent sprawdził, i nie zawiera t
     expect(dump).toContain("messageIdHash");
   });
 
+  it("fraza wyszukiwania jest logowana, ale adres nadawcy zamaskowany", async () => {
+    const { operator } = buildOperator([
+      {
+        tools: [
+          { name: "mail_search", input: { query: "12345", limit: 5 } },
+          {
+            name: "mail_search",
+            input: { query: "marek.nowak@delikatesy-nowak.example", limit: 5 },
+          },
+        ],
+      },
+      { text: "Gotowe." },
+    ]);
+    const result = await operator.ask("Znajdź te sprawy");
+
+    const refs = result.audit.map((r) => String(r.refs?.["query"] ?? ""));
+    // Numer zamówienia zostaje — bez niego audyt nie odpowiada na pytanie,
+    // czego agent szukał.
+    expect(refs).toContain("12345");
+    // Adres nie — została domena, po której widać sens zapytania.
+    expect(refs.some((q) => q.includes("m***@delikatesy-nowak.example"))).toBe(true);
+    expect(JSON.stringify(result.audit)).not.toContain("marek.nowak@");
+  });
+
   it("nieudane wywołanie zapisuje kod błędu, nie dane", async () => {
     const { operator } = buildOperator([
       { tools: [{ name: "mail_get_thread", input: { messageId: "<nie-istnieje@example>" } }] },
@@ -327,7 +366,7 @@ describe("Widok triage — pięć kategorii i status z TeaBrew przy sprawach pil
     const urgent = result.items[0]!;
     expect(urgent.erp).toHaveLength(1);
     expect(urgent.erp[0]!.found).toBe(true);
-    expect(urgent.erp[0]!.summary).toContain("in_production");
+    expect(urgent.erp[0]!.summary).toContain("confirmed");
 
     // Wiadomości, których model nie zaklasyfikował, nie dostają kategorii na siłę.
     expect(result.unclassified.length).toBeGreaterThan(0);
