@@ -35,7 +35,23 @@ export interface ImapConfig {
   readonly folder?: string;
   /** Folder(y) dodatkowo przeszukiwane przy rekonstrukcji wątku (np. "Sent"). */
   readonly threadFolders?: readonly string[];
+  /** Limity czasu w ms. Bez nich pojedyncze zapytanie może wisieć bez końca. */
+  readonly connectionTimeoutMs?: number;
+  readonly socketTimeoutMs?: number;
 }
+
+/**
+ * Domyślne limity czasu.
+ *
+ * `socketTimeout` jest hojny, bo IMAP SEARCH BODY na dużym folderze bez indeksu
+ * pełnotekstowego to skan każdej wiadomości i serwer może liczyć długo, nie
+ * przestając odpowiadać na poziomie socketu. Ale „długo" musi mieć koniec —
+ * bez limitu narzędzie diagnostyczne wisi i nie mówi, na czym.
+ */
+const DEFAULT_CONNECTION_TIMEOUT_MS = 20_000;
+const DEFAULT_SOCKET_TIMEOUT_MS = 90_000;
+/** Blokada skrzynki nie może czekać w nieskończoność na zwolnienie. */
+const LOCK_ACQUIRE_TIMEOUT_MS = 30_000;
 
 /**
  * Adapter IMAP. Read-only na trzech poziomach:
@@ -118,6 +134,9 @@ export class ImapMailProvider implements MailProvider {
       auth: { user: this.cfg.user, pass: this.cfg.pass },
       logger: false,
       emitLogs: false,
+      connectionTimeout: this.cfg.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
+      greetingTimeout: this.cfg.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
+      socketTimeout: this.cfg.socketTimeoutMs ?? DEFAULT_SOCKET_TIMEOUT_MS,
     });
     // Bez tego pojedynczy błąd socketu przewraca proces zamiast dać nam
     // szansę zwrócić uczciwe "nie udało się sprawdzić poczty".
@@ -169,7 +188,7 @@ export class ImapMailProvider implements MailProvider {
   async listRecent(opts: ListRecentOptions): Promise<MailMessage[]> {
     const folder = opts.folder ?? this.folder;
     const client = await this.connect();
-    const lock = await client.getMailboxLock(folder, { readOnly: true });
+    const lock = await client.getMailboxLock(folder, { readOnly: true, acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS });
     try {
       const criteria: Record<string, unknown> = { since: opts.since };
       if (opts.unreadOnly) criteria["seen"] = false;
@@ -187,30 +206,43 @@ export class ImapMailProvider implements MailProvider {
   async search(opts: SearchOptions): Promise<MailMessage[]> {
     const folder = opts.folder ?? this.folder;
     const client = await this.connect();
-    const lock = await client.getMailboxLock(folder, { readOnly: true });
+    const lock = await client.getMailboxLock(folder, { readOnly: true, acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS });
     try {
-      // IMAP nie ma "OR po trzech polach" w jednym prostym kryterium,
-      // więc pytamy trzy razy i scalamy po UID. Kolejność zapytań od
-      // najtańszego: temat, nadawca, treść.
+      // IMAP nie ma "OR po trzech polach" w jednym prostym kryterium, więc
+      // pytamy osobno i scalamy po UID. Kolejność jest kosztowa, nie estetyczna:
+      // SEARCH SUBJECT i FROM idą po nagłówkach, SEARCH BODY na serwerze bez
+      // indeksu pełnotekstowego skanuje treść KAŻDEJ wiadomości w folderze.
+      // Na skrzynce z dziesiątkami tysięcy maili to różnica między milisekundami
+      // a minutami.
       const base = opts.since ? { since: opts.since } : {};
-      const queries: Record<string, unknown>[] = [
+      const cheap: Record<string, unknown>[] = [
         { ...base, subject: opts.query },
         { ...base, from: opts.query },
-        { ...base, body: opts.query },
       ];
+
       const seen = new Set<number>();
-      for (const q of queries) {
-        if (seen.size >= opts.limit * 3) break;
-        let uids: number[] = [];
+
+      for (const q of cheap) {
         try {
-          uids = await this.searchUids(client, q, opts.signal);
+          for (const u of await this.searchUids(client, q, opts.signal)) seen.add(u);
         } catch {
-          // Serwer może odrzucić SEARCH BODY. Brak wyniku z jednego kryterium
-          // nie może wywalić całego wyszukiwania.
-          continue;
+          // Brak wyniku z jednego kryterium nie może wywalić całego wyszukiwania.
         }
-        for (const u of uids) seen.add(u);
       }
+
+      // Treść przeszukujemy WYŁĄCZNIE wtedy, gdy nagłówki nic nie dały.
+      // Inaczej płacilibyśmy za pełny skan przy zapytaniu, na które już mamy
+      // odpowiedź — a dla numeru zamówienia w temacie mamy ją prawie zawsze.
+      if (seen.size === 0) {
+        try {
+          for (const u of await this.searchUids(client, { ...base, body: opts.query }, opts.signal)) {
+            seen.add(u);
+          }
+        } catch {
+          // Część serwerów odrzuca SEARCH BODY. Wtedy po prostu go nie ma.
+        }
+      }
+
       if (seen.size === 0) return [];
       const wanted = [...seen].sort((a, b) => a - b).slice(-opts.limit);
       const parsed = await this.fetchByUids(client, wanted, folder, opts.signal);
@@ -244,7 +276,7 @@ export class ImapMailProvider implements MailProvider {
       if (collected.size >= opts.maxMessages) break;
       let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
       try {
-        lock = await client.getMailboxLock(folder, { readOnly: true });
+        lock = await client.getMailboxLock(folder, { readOnly: true, acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS });
         const uids = await this.searchUids(
           client,
           { header: { References: seed.message.id } },
@@ -339,7 +371,7 @@ export class ImapMailProvider implements MailProvider {
     for (const folder of await this.threadFolderList()) {
       let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
       try {
-        lock = await client.getMailboxLock(folder, { readOnly: true });
+        lock = await client.getMailboxLock(folder, { readOnly: true, acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS });
         const uids = await this.searchUids(
           client,
           { header: { "Message-ID": messageId } },

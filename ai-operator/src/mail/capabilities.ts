@@ -144,7 +144,9 @@ export function createMailCapabilities(
         query: input.query,
         count: messages.length,
         searchNote: provider.features.fullTextSearch
-          ? "Wyszukiwanie obejmuje temat, nadawcę i treść."
+          ? "Wyszukiwanie obejmuje temat i nadawcę; treść jest przeszukiwana " +
+            "dopiero wtedy, gdy nagłówki nic nie dały. Niepusty wynik może więc " +
+            "pomijać wiadomości, które mają frazę tylko w treści."
           : "Wyszukiwanie obejmuje wyłącznie temat i nadawcę — treść nie jest indeksowana.",
         messages,
       };

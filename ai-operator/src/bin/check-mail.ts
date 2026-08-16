@@ -72,6 +72,45 @@ function record(step: string, ok: boolean, detail: string, skipped = false): voi
   process.stdout.write(`  ${mark} ${step}\n      ${detail}\n`);
 }
 
+/** Ile czekamy na jedno sprawdzenie, zanim uznamy je za zawieszone. */
+const STEP_TIMEOUT_MS = Number(process.env["CHECK_MAIL_STEP_TIMEOUT_MS"] ?? 60_000);
+
+class StepTimeout extends Error {
+  constructor(
+    readonly step: string,
+    readonly seconds: number,
+  ) {
+    super(`serwer nie odpowiedział w ${seconds} s na: ${step}`);
+    this.name = "StepTimeout";
+  }
+}
+
+/**
+ * Twardy limit na jedno sprawdzenie.
+ *
+ * Nie da się anulować zapytania IMAP, które serwer już wykonuje — ale da się
+ * przestać na nie czekać i POWIEDZIEĆ, na czym stanęło. Bez tego narzędzie
+ * diagnostyczne wisi bez komunikatu, czyli nie diagnozuje niczego.
+ */
+async function withDeadline<T>(label: string, work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new StepTimeout(label, Math.round(STEP_TIMEOUT_MS / 1000))),
+      STEP_TIMEOUT_MS,
+    );
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    // Gdy wygrał deadline, `work` nadal biegnie i może odrzucić później.
+    // Bez tego handlera byłoby to nieobsłużone odrzucenie i wywrót procesu.
+    void Promise.resolve(work).catch(() => {});
+  }
+}
+
 async function main(): Promise<number> {
   let config: ReturnType<typeof loadConfig>;
   try {
@@ -167,7 +206,10 @@ async function main(): Promise<number> {
     }
 
     // ── 2. listowanie ─────────────────────────────────────────────────────────
-    const recent = await provider.listRecent({ limit: 25, since, folder: inboxFolder });
+    const recent = await withDeadline(
+      "listowanie",
+      provider.listRecent({ limit: 25, since, folder: inboxFolder }),
+    );
     record(
       "2. Listowanie ostatnich wiadomości",
       recent.length > 0,
@@ -183,7 +225,10 @@ async function main(): Promise<number> {
 
     // ── 3. pobranie jednej wiadomości (pełna treść przez wątek) ───────────────
     const seed = recent[0]!;
-    const thread = await provider.getThread({ messageId: seed.id, maxMessages: 10 });
+    const thread = await withDeadline(
+      "pobranie wątku",
+      provider.getThread({ messageId: seed.id, maxMessages: 10 }),
+    );
     const seedFull = thread?.messages.find((m) => m.id === seed.id) ?? thread?.messages[0];
     record(
       "3. Pobranie treści wiadomości",
@@ -198,7 +243,10 @@ async function main(): Promise<number> {
     // Fraza z prawdziwego nadawcy — pewne trafienie, jeśli wyszukiwanie działa.
     const domain = seed.from?.address.split("@")[1] ?? "";
     const needle = domain || clipSubject(seed.subject, 12);
-    const found = await provider.search({ query: needle, limit: 10, since });
+    const found = await withDeadline(
+      "wyszukiwanie",
+      provider.search({ query: needle, limit: 10, since }),
+    );
     record(
       "4. Wyszukiwanie",
       found.length > 0,
@@ -211,7 +259,10 @@ async function main(): Promise<number> {
     // Szukamy w oknie wiadomości, która faktycznie jest odpowiedzią.
     const reply = recent.find((m) => m.references.length > 0 || m.inReplyTo);
     if (reply) {
-      const t = await provider.getThread({ messageId: reply.id, maxMessages: 20 });
+      const t = await withDeadline(
+        "rekonstrukcja wątku",
+        provider.getThread({ messageId: reply.id, maxMessages: 20 }),
+      );
       record(
         "5. Rekonstrukcja wątku",
         Boolean(t && t.messageCount >= 2),
@@ -233,7 +284,10 @@ async function main(): Promise<number> {
 
     // ── 6. wiadomości z folderu wysłanych ─────────────────────────────────────
     if (sentFolder) {
-      const sent = await provider.listRecent({ limit: 10, since, folder: sentFolder });
+      const sent = await withDeadline(
+        "listowanie folderu wysłanych",
+        provider.listRecent({ limit: 10, since, folder: sentFolder }),
+      );
       record(
         "6. Widoczność folderu wysłanych",
         sent.length > 0,
@@ -310,7 +364,21 @@ async function main(): Promise<number> {
       withAtt.length === 0,
     );
   } catch (err) {
-    record("Nieoczekiwany błąd", false, msg(err));
+    if (err instanceof StepTimeout) {
+      // Po przekroczonym limicie stan połączenia IMAP jest niepewny: serwer może
+      // dosłać odpowiedź na poprzednie polecenie w dowolnym momencie. Dalsze
+      // sprawdzenia na tym samym połączeniu dałyby wynik, któremu nie można
+      // ufać — więc przerywamy i mówimy, na czym stanęło.
+      record("Przekroczony limit czasu", false, `${err.message}. Kolejne sprawdzenia pominięte, bo stan połączenia jest niepewny.`);
+      process.stdout.write(
+        "\n  Co sprawdzić:\n" +
+          "    - to prawie zawsze SEARCH na dużym folderze bez indeksu pełnotekstowego,\n" +
+          "    - zawęź okno: npm run check:mail -- --days 1\n" +
+          `    - albo podnieś limit: CHECK_MAIL_STEP_TIMEOUT_MS=180000 npm run check:mail\n`,
+      );
+    } else {
+      record("Nieoczekiwany błąd", false, msg(err));
+    }
   } finally {
     await provider.close();
   }
