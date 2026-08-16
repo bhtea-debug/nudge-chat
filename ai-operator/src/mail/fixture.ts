@@ -201,6 +201,9 @@ export class FixtureMailProvider implements MailProvider {
       subject: baseSubject(members[0]?.message.subject ?? seed.message.subject),
       messageCount: messages.length,
       messages,
+      // Fikstury czyta się z pliku, więc nie ma tu awarii odczytu do zgłoszenia.
+      incomplete: false,
+      incompleteNote: null,
     };
   }
 }

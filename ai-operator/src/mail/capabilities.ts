@@ -159,7 +159,11 @@ export function createMailCapabilities(
     description:
       "Zwraca pełny wątek korespondencji dla wskazanej wiadomości, chronologicznie, z treścią " +
       "każdej wiadomości po odcięciu cytowanej historii. Użyj, gdy podgląd nie wystarcza, " +
-      "żeby zrozumieć, o co pyta klient albo co już zostało ustalone.",
+      "żeby zrozumieć, o co pyta klient albo co już zostało ustalone.\n\n" +
+      "WAŻNE: gdy incomplete = true, wątek jest NIEPEŁNY — część wiadomości znaleziono, " +
+      "ale nie dało się odczytać. Nie wyciągaj wtedy wniosku, że czegoś nie było. " +
+      "W szczególności nie twierdź, że nikt nie odpisał: powiedz, że wątek jest niekompletny, " +
+      "i podaj powód z incompleteNote.",
     scope: "mail:read",
     effectClass: "read",
     input: GetThreadInput,

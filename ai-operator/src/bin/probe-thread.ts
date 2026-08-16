@@ -182,6 +182,96 @@ async function main(): Promise<number> {
     }
   }
 
+  // ── 4. Odtwórz krok 3 adaptera: dociąganie każdej referencji ────────────────
+  //
+  // Wyszukiwanie działa (punkt 3), więc jeśli wątek i tak wraca jednoelementowy,
+  // błąd jest PO wyszukiwaniu — w pobieraniu albo parsowaniu. Adapter ma tam
+  // połykający catch, więc awaria wygląda jak "nie znaleziono".
+  //
+  // Ten krok robi to samo, ale mówi, co się stało: ile uid znalazło wyszukiwanie,
+  // ile rekordów wyszło z pobrania, i jaki błąd poleciał, jeśli poleciał.
+  process.stdout.write("\nDOCIĄGANIE REFERENCJI — krok 3 adaptera, bez połykania błędów\n");
+
+  const wanted = [...new Set([linked.id, ...linked.refs])];
+  process.stdout.write(`  referencji do sprawdzenia: ${wanted.length}\n\n`);
+
+  let hits = 0;
+  let fetchFailures = 0;
+  let parseFailures = 0;
+
+  for (const [i, id] of wanted.entries()) {
+    if (id === linked.id) continue;
+    const isParent = id === parentRef;
+    const tag = isParent ? " ← RODZIC" : "";
+
+    for (const folder of plan.threadFolders) {
+      let l: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
+      try {
+        l = await client.getMailboxLock(folder, { readOnly: true });
+        const res = await client.search({ header: { "Message-ID": id } } as never, {
+          uid: true,
+        });
+        const uids = res === false ? [] : res;
+        if (uids.length === 0) {
+          if (isParent) {
+            process.stdout.write(`  [${i}] ${folder}: 0 uid — a POWINIEN być${tag}\n`);
+          }
+          continue;
+        }
+
+        // Pobranie i parsowanie — tu adapter połyka błędy.
+        let fetched = 0;
+        let parsed = 0;
+        let lastError = "";
+        for await (const msg of client.fetch(
+          String(uids[uids.length - 1]),
+          { uid: true, envelope: true, source: true, internalDate: true, flags: true },
+          { uid: true },
+        )) {
+          fetched += 1;
+          try {
+            const hasSource = Boolean(msg.source);
+            if (!hasSource) throw new Error("fetch nie zwrócił pola source");
+            await simpleParser(msg.source as Buffer);
+            parsed += 1;
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+          }
+        }
+
+        if (parsed > 0) {
+          hits += 1;
+          process.stdout.write(
+            `  [${i}] ${folder}: znaleziono i sparsowano (uid ${uids[uids.length - 1]})${tag}\n`,
+          );
+        } else if (fetched === 0) {
+          fetchFailures += 1;
+          process.stdout.write(
+            `  [${i}] ${folder}: SEARCH dał uid ${uids.join(",")}, ale FETCH nie zwrócił nic${tag}\n`,
+          );
+        } else {
+          parseFailures += 1;
+          process.stdout.write(
+            `  [${i}] ${folder}: pobrano ${fetched}, PARSOWANIE PADŁO: ${lastError}${tag}\n`,
+          );
+        }
+        break;
+      } catch (err) {
+        process.stdout.write(
+          `  [${i}] ${folder}: BŁĄD: ${err instanceof Error ? err.message : String(err)}${tag}\n`,
+        );
+      } finally {
+        l?.release();
+      }
+    }
+  }
+
+  process.stdout.write(
+    `\n  Podsumowanie: dociągnięto ${hits}, awarii pobrania ${fetchFailures}, ` +
+      `awarii parsowania ${parseFailures}.\n` +
+      `  Wątek powinien mieć ${hits + 1} wiadomości (ziarno + dociągnięte).\n`,
+  );
+
   await client.logout();
   process.stdout.write("\nGotowe.\n");
   return 0;

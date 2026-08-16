@@ -13,6 +13,7 @@ import {
 } from "../src/mail/text.js";
 import { FixtureMailProvider, resolveFixtureDate } from "../src/mail/fixture.js";
 import { planFolders, type MailboxInfo } from "../src/mail/folders.js";
+import { MailThread } from "../src/mail/types.js";
 import {
   toMarkdownTable,
   toMcpToolList,
@@ -278,5 +279,32 @@ describe("kontrakt TeaBrew", () => {
     for (const route of Object.values(ROUTES)) {
       expect(route.startsWith("/ai-operator/")).toBe(true);
     }
+  });
+});
+
+describe("wątek niepełny musi się przyznać, a nie wyglądać na krótki", () => {
+  it("kontrakt MailThread wymaga flagi incomplete i powodu", () => {
+    // Cicho przycięty wątek jest groźniejszy od błędu: agent nie wymyśli
+    // brakującej wiadomości, ale wyciągnie z braku wniosek „nikt nie odpisał".
+    const shape = MailThread.shape;
+    expect(Object.keys(shape)).toContain("incomplete");
+    expect(Object.keys(shape)).toContain("incompleteNote");
+
+    // Brak tych pól musi być błędem walidacji, nie cichym domyślnym false.
+    const withoutFlag = {
+      threadId: "<a@x>",
+      subject: "t",
+      messageCount: 1,
+      messages: [],
+    };
+    expect(MailThread.safeParse(withoutFlag).success).toBe(false);
+  });
+
+  it("opis capability mówi modelowi, żeby nie wnioskował z niepełnego wątku", () => {
+    const cap = createRegistryForProjections()
+      .list()
+      .find((c) => c.name === "mail_get_thread")!;
+    expect(cap.description).toMatch(/incomplete/);
+    expect(cap.description).toMatch(/nie twierdź, że nikt nie odpisał/i);
   });
 });

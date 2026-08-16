@@ -255,8 +255,12 @@ export class ImapMailProvider implements MailProvider {
   async getThread(opts: GetThreadOptions): Promise<MailThread | null> {
     const client = await this.connect();
 
+    // Awarie odczytu zbierane per wywołanie. Niepusta lista znaczy, że wątek
+    // jest niepełny — i musi to POWIEDZIEĆ, a nie wyglądać na krótki wątek.
+    const problems: string[] = [];
+
     // 1. Znajdź wiadomość-ziarno po nagłówku Message-ID.
-    const seed = await this.findByMessageId(client, opts.messageId, opts.signal);
+    const seed = await this.findByMessageId(client, opts.messageId, opts.signal, problems);
     if (!seed) return null;
 
     // 2. Zbierz Message-ID całego wątku z References + In-Reply-To.
@@ -267,7 +271,7 @@ export class ImapMailProvider implements MailProvider {
     for (const id of wantedIds) {
       if (collected.has(id)) continue;
       if (collected.size >= opts.maxMessages) break;
-      const found = await this.findByMessageId(client, id, opts.signal);
+      const found = await this.findByMessageId(client, id, opts.signal, problems);
       if (found) collected.set(found.message.id, found);
     }
 
@@ -288,6 +292,7 @@ export class ImapMailProvider implements MailProvider {
             uids.slice(-opts.maxMessages),
             folder,
             opts.signal,
+            problems,
           );
           for (const rec of extra) {
             if (collected.size >= opts.maxMessages) break;
@@ -323,6 +328,12 @@ export class ImapMailProvider implements MailProvider {
       subject: baseSubject(records[0]?.message.subject ?? seed.message.subject),
       messageCount: messages.length,
       messages,
+      incomplete: problems.length > 0,
+      incompleteNote:
+        problems.length > 0
+          ? `${problems.length} wiadomości wątku nie udało się odczytać: ${problems.slice(0, 3).join("; ")}` +
+            (problems.length > 3 ? ` (+${problems.length - 3} więcej)` : "")
+          : null,
     };
   }
 
@@ -343,6 +354,10 @@ export class ImapMailProvider implements MailProvider {
     uids: readonly number[],
     folder: string,
     signal?: AbortSignal,
+    /** Kolektor awarii odczytu. Przekazywany przez parametr, nie trzymany na
+     *  dostawcy — stan na współdzielonym obiekcie działałby też na produkcji
+     *  i mieszał wyniki równoległych wywołań. */
+    problems?: string[],
   ): Promise<ParsedRecord[]> {
     if (uids.length === 0) return [];
     const range = uids.join(",");
@@ -355,9 +370,19 @@ export class ImapMailProvider implements MailProvider {
       signal?.throwIfAborted();
       try {
         out.push(await this.toRecord(msg, folder));
-      } catch {
-        // Jedna nieparsowalna wiadomość nie może unieważnić całej odpowiedzi.
-        // Agent zobaczy o jedną wiadomość mniej — i tak nie zmyśli tego, czego nie dostał.
+      } catch (err) {
+        // UWAGA: pierwotnie stało tu, że „agent i tak nie zmyśli tego, czego nie
+        // dostał". To było błędne rozumowanie. Agent faktycznie nie wymyśli
+        // brakującej wiadomości — ale z po cichu przyciętego wątku wyciągnie
+        // wniosek „klient nie dostał odpowiedzi". Fałszywy wniosek z cicho
+        // zgubionego dowodu to ta sama szkoda co zmyślenie.
+        //
+        // Dlatego awaria jest tu ZLICZANA i wystawiana wywołującemu, a nie
+        // wyciszana. Jedna nieparsowalna wiadomość nadal nie wywraca całej
+        // odpowiedzi — ale przestaje być niewidzialna.
+        problems?.push(
+          `uid ${msg.uid} w "${folder}": ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     return out;
@@ -367,6 +392,7 @@ export class ImapMailProvider implements MailProvider {
     client: ImapFlow,
     messageId: string,
     signal?: AbortSignal,
+    problems?: string[],
   ): Promise<ParsedRecord | null> {
     for (const folder of await this.threadFolderList()) {
       let lock: Awaited<ReturnType<ImapFlow["getMailboxLock"]>> | null = null;
@@ -378,9 +404,17 @@ export class ImapMailProvider implements MailProvider {
           signal,
         );
         if (uids.length === 0) continue;
-        const recs = await this.fetchByUids(client, uids.slice(-1), folder, signal);
+        const recs = await this.fetchByUids(client, uids.slice(-1), folder, signal, problems);
         if (recs[0]) return recs[0];
-      } catch {
+        // SEARCH znalazł wiadomość, ale nie dała się odczytać. To NIE jest
+        // „nie ma jej" — i wywołujący musi móc tę różnicę zobaczyć.
+        problems?.push(
+          `wiadomość znaleziona w "${folder}" (uid ${uids.slice(-1).join(",")}), ale nieodczytana`,
+        );
+      } catch (err) {
+        problems?.push(
+          `szukanie w "${folder}" nie udało się: ${err instanceof Error ? err.message : String(err)}`,
+        );
         continue;
       } finally {
         lock?.release();

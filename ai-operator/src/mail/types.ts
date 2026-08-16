@@ -58,6 +58,17 @@ export const MailThread = z.object({
   messageCount: z.number().int().nonnegative(),
   /** Chronologicznie, od najstarszej. */
   messages: z.array(MailMessageFull),
+  /**
+   * true = wątek jest NIEPEŁNY: część wiadomości, na które wskazują nagłówki,
+   * została znaleziona, ale nie dała się odczytać.
+   *
+   * Istnieje, bo cicho przycięty wątek jest groźniejszy od błędu. Agent nie
+   * wymyśli brakującej wiadomości — ale bez tej flagi wyciągnie z braku wniosek
+   * „klient nie dostał odpowiedzi", czyli fałsz oparty na zgubionym dowodzie.
+   */
+  incomplete: z.boolean(),
+  /** Na czym polegał brak. null, gdy wątek jest kompletny. */
+  incompleteNote: z.string().nullable(),
 });
 export type MailThread = z.infer<typeof MailThread>;
 
