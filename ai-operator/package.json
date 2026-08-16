@@ -15,7 +15,8 @@
     "check:mail": "tsx --env-file-if-exists=.env src/bin/check-mail.ts",
     "verify:teabrew": "tsx --env-file-if-exists=.env src/bin/verify-teabrew.ts",
     "preflight": "npm run typecheck && npm run test && npm run check:mail && npm run verify:teabrew",
-    "probe:thread": "tsx --env-file-if-exists=.env src/bin/probe-thread.ts"
+    "probe:thread": "tsx --env-file-if-exists=.env src/bin/probe-thread.ts",
+    "mcp:install": "node scripts/install-claude-desktop-config.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

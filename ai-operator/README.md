@@ -173,11 +173,23 @@ cd ai-operator && claude
 Ścieżki w `.mcp.json` są względne właśnie dlatego: plik jest w repozytorium i
 ma działać na każdej maszynie bez podmieniania czegokolwiek.
 
-**Claude Desktop** — patrz `claude-desktop.example.json`. Skopiuj wpis
-`bht-operator` do `~/Library/Application Support/Claude/claude_desktop_config.json`
-(katalog powstaje razem z aplikacją; jeśli go nie ma, aplikacji nie ma),
-podmieniając ścieżki na **absolutne** — Claude Desktop uruchamia serwer z
-nieokreślonego katalogu roboczego. Potem zrestartuj aplikację.
+**Claude Desktop** — jedna komenda, bez edytowania JSON-a ręcznie:
+
+```bash
+npm run mcp:install
+```
+
+Skrypt **scala** wpis z istniejącą konfiguracją (inne serwery MCP zostają),
+używa **absolutnej ścieżki do node i do tsx**, i sprawdza istnienie plików
+zanim cokolwiek zapisze. Absolutne ścieżki nie są ozdobą: aplikacje GUI na
+macOS nie dziedziczą `PATH` z shella, więc `npx` bywa dla Claude Desktop
+niewidoczne — to najczęstsza przyczyna serwera, który „się nie podłącza" bez
+sensownego komunikatu. Uszkodzonego pliku konfiguracyjnego skrypt nie nadpisuje.
+
+Potem **zrestartuj aplikację całkowicie**. Status połączenia:
+Settings → Developer.
+
+Kształt wpisu do wglądu jest w `claude-desktop.example.json`.
 
 W obu przypadkach sekrety zostają po stronie serwera, w `.env`. Klient nie widzi
 hasła IMAP ani tokenu TeaBrew — widzi siedem narzędzi read-only.
