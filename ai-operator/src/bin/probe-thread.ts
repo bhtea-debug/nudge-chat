@@ -2,7 +2,7 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { loadConfig } from "../config.js";
-import { normalizeReferences } from "../mail/thread.js";
+import { normalizeReferences, parentRefsWithin } from "../mail/thread.js";
 import { planFolders, type MailboxInfo } from "../mail/folders.js";
 import { ImapMailProvider } from "../mail/imap.js";
 
@@ -206,10 +206,7 @@ async function main(): Promise<number> {
     // Ta sama selekcja co w check:mail: listRecent sortuje po dacie malejąco.
     const recent = await provider.listRecent({ limit: 25, since, folder: plan.inbox });
     const ids = new Set(recent.map((m) => m.id));
-    const target =
-      recent.find((m) =>
-        [...m.references, ...(m.inReplyTo ? [m.inReplyTo] : [])].some((r) => ids.has(r)),
-      ) ?? null;
+    const target = recent.find((m) => parentRefsWithin(m, ids).length > 0) ?? null;
 
     if (!target) {
       process.stdout.write("\nAdapter nie znalazł odpowiedzi z rodzicem w oknie.\n");
@@ -223,9 +220,7 @@ async function main(): Promise<number> {
     process.stdout.write(`  providerRef:${JSON.stringify(target.providerRef)}\n`);
     process.stdout.write(`  In-Reply-To:${JSON.stringify(target.inReplyTo)}\n`);
     process.stdout.write(`  References: ${target.references.length} pozycji\n`);
-    const inWindow = [...target.references, ...(target.inReplyTo ? [target.inReplyTo] : [])].filter(
-      (r) => ids.has(r),
-    );
+    const inWindow = parentRefsWithin(target, ids);
     process.stdout.write(`  z tego w oknie: ${JSON.stringify(inWindow)}\n`);
 
     process.stdout.write("\nWYNIK provider.getThread() — to samo wywołanie co check:mail\n");

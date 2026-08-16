@@ -4,7 +4,7 @@ import { CapabilityError } from "../capability/types.js";
 import { ImapMailProvider } from "../mail/imap.js";
 import { FixtureMailProvider } from "../mail/fixture.js";
 import type { MailProvider } from "../mail/types.js";
-import { normalizeReferences } from "../mail/thread.js";
+import { normalizeReferences, parentRefsWithin } from "../mail/thread.js";
 import type { FolderPlan, MailboxInfo } from "../mail/folders.js";
 
 /**
@@ -265,11 +265,11 @@ async function main(): Promise<number> {
     // Dlatego testujemy na odpowiedzi, której rodzic JEST w oknie. Dopiero wtedy
     // „mniej niż 2" oznacza rzeczywisty problem z rekonstrukcją.
     const idsInWindow = new Set(recent.map((m) => m.id));
-    const linkedReply = recent.find((m) =>
-      [...m.references, ...(m.inReplyTo ? [m.inReplyTo] : [])].some((ref) =>
-        idsInWindow.has(ref),
-      ),
-    );
+    // parentRefsWithin wyklucza autoreferencje — automaty potrafią wstawić
+    // własny Message-ID do własnego References, a wtedy wiadomość udaje
+    // odpowiedź z rodzicem w skrzynce i „wątek" jednoelementowy wygląda
+    // jak usterka, choć jest poprawnym wynikiem.
+    const linkedReply = recent.find((m) => parentRefsWithin(m, idsInWindow).length > 0);
     const anyReply = recent.find((m) => m.references.length > 0 || m.inReplyTo);
     const reply = linkedReply ?? anyReply;
 

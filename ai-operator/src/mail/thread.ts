@@ -88,6 +88,27 @@ export function assignThreadIds<T extends ThreadableMessage>(
   return out;
 }
 
+/**
+ * Referencje wiadomości wskazujące INNĄ wiadomość z podanego zbioru.
+ *
+ * Wyklucza samą siebie — i to nie jest teoretyczny przypadek brzegowy.
+ * Automaty (OpenERP/Odoo, systemy zgłoszeniowe) potrafią wstawić własny
+ * Message-ID do własnego nagłówka References. Bez tego wykluczenia taka
+ * wiadomość wygląda jak odpowiedź, której rodzic leży w skrzynce, a
+ * odtworzony „wątek" ma jeden element — i wygląda to jak usterka
+ * rekonstrukcji, choć jest poprawnym wynikiem.
+ *
+ * `normalizeReferences` świadomie NIE odsiewa autoreferencji: jej zadaniem jest
+ * wiernie oddać nagłówek. Interpretacja należy do miejsca użycia.
+ */
+export function parentRefsWithin(
+  msg: ThreadableMessage,
+  ids: ReadonlySet<string>,
+): string[] {
+  const candidates = [...msg.references, ...(msg.inReplyTo ? [msg.inReplyTo] : [])];
+  return [...new Set(candidates.filter((ref) => ref !== msg.id && ids.has(ref)))];
+}
+
 /** Wszystkie Message-ID, które trzeba dociągnąć, żeby zobaczyć cały wątek. */
 export function threadMemberIds(
   seed: ThreadableMessage,

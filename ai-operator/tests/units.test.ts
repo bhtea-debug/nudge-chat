@@ -3,6 +3,7 @@ import {
   assignThreadIds,
   baseSubject,
   normalizeReferences,
+  parentRefsWithin,
   threadMemberIds,
 } from "../src/mail/thread.js";
 import {
@@ -306,5 +307,63 @@ describe("wątek niepełny musi się przyznać, a nie wyglądać na krótki", ()
       .find((c) => c.name === "mail_get_thread")!;
     expect(cap.description).toMatch(/incomplete/);
     expect(cap.description).toMatch(/nie twierdź, że nikt nie odpisał/i);
+  });
+});
+
+describe("autoreferencja nie może udawać rodzica w skrzynce", () => {
+  // Realny przypadek z produkcyjnej skrzynki: automat OpenERP/Odoo wstawia
+  // własny Message-ID do własnego nagłówka References. Bez wykluczenia
+  // samej siebie taka wiadomość wygląda jak odpowiedź, której rodzic leży
+  // w skrzynce — i poprawnie odtworzony wątek jednoelementowy wygląda wtedy
+  // jak usterka rekonstrukcji.
+  const selfRef = {
+    id: "<567027834315781.1786888864-openerp-reply_to@eupp259>",
+    inReplyTo: null,
+    references: ["<567027834315781.1786888864-openerp-reply_to@eupp259>"],
+    subject: "Back at work & catching up on your requests",
+    date: "2026-08-14",
+  };
+
+  it("wiadomość referencująca samą siebie nie ma rodzica w zbiorze", () => {
+    const ids = new Set([selfRef.id]);
+    expect(parentRefsWithin(selfRef, ids)).toEqual([]);
+  });
+
+  it("prawdziwy rodzic nadal jest znajdowany", () => {
+    const child = {
+      id: "<c@x>",
+      inReplyTo: "<b@x>",
+      references: ["<a@x>", "<b@x>", "<c@x>"],
+      subject: "Re: t",
+      date: "2026-08-03",
+    };
+    // <c@x> to on sam, <a@x> nie ma w zbiorze — zostaje wyłącznie <b@x>.
+    expect(parentRefsWithin(child, new Set(["<b@x>", "<c@x>"]))).toEqual(["<b@x>"]);
+  });
+
+  it("normalizeReferences NADAL oddaje nagłówek wiernie, w tym autoreferencję", () => {
+    // Wierność nagłówkowi jest celowa: interpretacja należy do miejsca użycia,
+    // nie do parsera. Gdyby parser odsiewał autoreferencje, nie dałoby się
+    // odróżnić nagłówka wadliwego od poprawionego po drodze.
+    expect(normalizeReferences([selfRef.id], null)).toEqual([selfRef.id]);
+  });
+
+  it("wątek takiej wiadomości ma jeden element i NIE jest oznaczony jako niepełny", async () => {
+    const provider = new FixtureMailProvider({
+      messages: [
+        {
+          id: selfRef.id,
+          subject: selfRef.subject,
+          from: { address: "auto@example.invalid" },
+          date: new Date().toISOString(),
+          references: selfRef.references,
+          text: "Automatyczna odpowiedź.",
+        },
+      ],
+    });
+    const thread = await provider.getThread({ messageId: selfRef.id, maxMessages: 20 });
+    expect(thread?.messageCount).toBe(1);
+    // Jednoelementowy wątek to tu POPRAWNY wynik, nie zgubiony dowód.
+    expect(thread?.incomplete).toBe(false);
   });
 });
