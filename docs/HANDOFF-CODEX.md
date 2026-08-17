@@ -262,6 +262,18 @@ Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
   typecheck oraz testy. Weryfikacja samej kontroli: usunięcie jednego pliku
   z rozpakowanego drzewa daje 4 zgłoszone zepsute importy.
 
+### Poczta — zakres folderów (ROZSTRZYGNIĘTE)
+
+- **Foldery biznesowe wskazane w pierwszej wersji tego dokumentu są martwe.**
+  `FAKTURY` 761 dni, `ROSSMANN` 885 dni, `NPD` 530 dni, `INBOX.WHITE LABEL.*`
+  1104 dni albo puste. Obawa „korespondencja z klientami idzie do podfolderów,
+  więc INBOX nie wystarcza" była **nieuzasadniona** — sprawdzona, nie założona
+  (8.15). `MAIL_MONITOR_FOLDERS=INBOX` i nie rozszerzaj bez dowodu.
+- **`Blocked` i `Archive` NIE nadają się do monitorowania.** `Blocked` to
+  zbiornik (985 z 1157 nieprzeczytanych), `Archive` to miejsce, gdzie poczta
+  trafia PO obsłużeniu (27911 wiadomości). Ocena folderów siedzi w
+  `src/mail/folder-verdict.ts` i jest pokryta testami.
+
 ### Narzędzia diagnostyczne
 
 - **Nie myl „brak danych" z „zepsute".** `check:mail` raportował jako porażki

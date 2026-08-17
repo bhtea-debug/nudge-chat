@@ -11,6 +11,8 @@ import { CapabilityRegistry } from "../src/capability/registry.js";
 import { AGENT_SCOPES } from "../src/index.js";
 import type { Issue, SourceRef } from "../src/state/types.js";
 import type { MailMessage } from "../src/mail/types.js";
+import { judge } from "../src/mail/folder-verdict.js";
+import type { FolderStat } from "../src/mail/imap.js";
 
 const fresh = (): string => mkdtempSync(join(tmpdir(), "bht-state-"));
 
@@ -341,5 +343,66 @@ describe("capability spraw", () => {
     const changes = await call("copilot_get_changes_since", { since: "2026-01-01T00:00:00.000Z" });
     expect(presentedIds("copilot_get_changes_since", changes)).toContain(issue.id);
     expect(presentedIds("mail_list_recent", { messages: [] })).toEqual([]);
+  });
+});
+
+describe("ocena folderów poczty", () => {
+  const f = (over: Partial<FolderStat> = {}): FolderStat => ({
+    path: "Coś",
+    specialUse: null,
+    subscribed: true,
+    messages: 100,
+    unseen: 5,
+    newestAt: new Date().toISOString(),
+    error: null,
+    ...over,
+  });
+
+  it("brak liczników to NIE pusty folder", () => {
+    // Realny przypadek: INBOX.WHITE LABEL zwrócił „?" bez błędu, a narzędzie
+    // ogłosiło „pusty". To ta sama pomyłka, którą tępimy w capability —
+    // „nie wiem" nie jest wartością zero.
+    const v = judge(f({ path: "INBOX.WHITE LABEL", messages: null, unseen: null, newestAt: null }));
+    expect(v.verdict).toBe("rozważ");
+    expect(v.why).toContain("NIE zakładam");
+    // Powód CELOWO mówi słowo „pusty" — w zdaniu „nie zakładam, że jest pusty".
+    // Istotne jest, że nie dostał oceny „pomiń", którą dostaje folder naprawdę pusty.
+    expect(judge(f({ messages: 0, unseen: 0, newestAt: null })).verdict).toBe("pomiń");
+  });
+
+  it("naprawdę pusty folder jest pusty", () => {
+    expect(judge(f({ messages: 0, unseen: 0, newestAt: null })).verdict).toBe("pomiń");
+  });
+
+  it("zbiornik z prawie samymi nieprzeczytanymi nie idzie do monitorowania", () => {
+    // Folder „Blocked": 985 z 1157 nieprzeczytanych, wpada dzisiaj. Pierwsza
+    // wersja heurystyki uznała go za „aktywny, monitoruj".
+    const v = judge(f({ path: "Blocked", messages: 1157, unseen: 985 }));
+    expect(v.verdict).toBe("rozważ");
+    expect(v.why).toContain("zbiornik");
+  });
+
+  it("skrzynka odbiorcza z normalnym udziałem nieprzeczytanych — monitoruj", () => {
+    const v = judge(f({ path: "INBOX", messages: 3369, unseen: 889 }));
+    expect(v.verdict).toBe("monitoruj");
+  });
+
+  it("folder porzucony przed latami — pomiń", () => {
+    const old = new Date(Date.now() - 800 * 86_400_000).toISOString();
+    const v = judge(f({ path: "ROSSMANN", messages: 99, unseen: 0, newestAt: old }));
+    expect(v.verdict).toBe("pomiń");
+    expect(v.why).toContain("martwy");
+  });
+
+  it("wysłane pomijamy, ale z właściwego powodu", () => {
+    const v = judge(f({ path: "Sent", specialUse: "\\Sent", messages: 14296, unseen: 4 }));
+    expect(v.verdict).toBe("pomiń");
+    expect(v.why).toContain("wątków");
+  });
+
+  it("folder, którego nie dało się odczytać, mówi o błędzie", () => {
+    const v = judge(f({ error: "NO Mailbox doesn't exist" }));
+    expect(v.verdict).toBe("pomiń");
+    expect(v.why).toContain("nie udało się odczytać");
   });
 });

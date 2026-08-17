@@ -960,3 +960,58 @@ tej blokady jest osobną decyzją właściciela i nie zostało podjęte. Panel j
 plikiem lokalnym w `raporty/` (w `.gitignore`), zawiera tematy i nadawców z
 prawdziwej poczty, więc nie wolno go nikomu wysyłać. Log audytu, w odróżnieniu od
 raportu, treści nie zawiera i nigdy nie będzie zawierał.
+
+---
+
+### 8.15 Inwentaryzacja folderów — obawa o podfoldery była nieuzasadniona
+
+Uruchomiona na prawdziwej skrzynce (`npm run mail:foldery`, 21 folderów).
+Rozstrzyga pytanie otwarte od 8.11 i unieważnia jedną z moich hipotez.
+
+#### Foldery biznesowe z handoffu są MARTWE
+
+| folder | wiadomości | ostatnia |
+| --- | --- | --- |
+| `FAKTURY` | 48 | 761 dni temu |
+| `ROSSMANN` | 99 | 885 dni temu |
+| `NPD` | 65 | 530 dni temu |
+| `INBOX.WHITE LABEL.BEHEMOTH` | 8 | 1104 dni temu |
+| `INBOX.WHITE LABEL.BALTE` / `.BIOLOVE` | 0 | — |
+
+W 8.11 zapisałem obawę: „jeśli reguły serwerowe przenoszą korespondencję
+z klientami do tych podfolderów, to agent czytający wyłącznie INBOX będzie
+odpowiadał prawdziwie, ale bezużytecznie". **Ta obawa była nieuzasadniona.**
+Foldery były używane latami temu i porzucone. Bieżąca korespondencja jest
+w `INBOX` (3369 wiadomości, wpada dzisiaj).
+
+Warto zapisać metodę, nie tylko wynik: hipoteza była rozsądna i sprawdzalna
+jednym tanim zapytaniem. Rozszerzenie monitora „na wszystkie foldery, na wszelki
+wypadek" kosztowałoby przeszukiwanie 27 tysięcy wiadomości archiwum, żeby
+uniknąć problemu, którego nie ma.
+
+#### Dwa błędy w moim własnym narzędziu, wykryte przez uruchomienie go
+
+1. **`null` liczników potraktowane jak zero.** `INBOX.WHITE LABEL` zwrócił „?"
+   bez zgłoszenia błędu (folder nieselektowalny), a narzędzie ogłosiło **„pusty"**.
+   To dokładnie ta pomyłka, którą tępimy w capability: brak danych nie jest
+   wartością zero. Teraz taki folder dostaje „rozważ" z komunikatem
+   „NIE zakładam, że jest pusty".
+2. **Zbiornik uznany za bieżącą pracę.** Folder `Blocked` — 985 nieprzeczytanych
+   z 1157, wpada dzisiaj — dostał ocenę **„monitoruj"**, bo heurystyka patrzyła
+   tylko na aktywność. Monitorowanie folderu, którego właściciel świadomie nie
+   czyta, karmiłoby model pocztą bez znaczenia i kosztowałoby tokeny. Teraz
+   wysoki udział nieprzeczytanych przy dużym folderze daje „rozważ" z powodem.
+
+Heurystyka przeniesiona do `src/mail/folder-verdict.ts` i pokryta siedmioma
+testami — plik `bin` z `main()` na poziomie modułu nie da się zaimportować bez
+uruchomienia narzędzia, więc dopóki tam siedziała, była nietestowalna.
+
+#### Rekomendacja
+
+```
+MAIL_MONITOR_FOLDERS=INBOX
+```
+
+**Bez `Blocked`** (zbiornik) i **bez `Archive`** (27911 wiadomości, to miejsce,
+gdzie poczta trafia PO obsłużeniu, nie skąd przychodzi). Jeden folder, ten
+właściwy — a nie dwadzieścia jeden na wszelki wypadek.
