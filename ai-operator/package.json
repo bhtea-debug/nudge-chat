@@ -28,7 +28,8 @@
     "mcp:install": "node scripts/install-claude-desktop-config.mjs",
     "mcp:doctor": "node scripts/mcp-doctor.mjs",
     "raport:zaplanuj": "bash scripts/install-schedule.sh",
-    "wdroz": "bash scripts/deploy-railway.sh"
+    "wdroz": "bash scripts/deploy-railway.sh",
+    "pilne": "tsx --env-file-if-exists=.env src/bin/pilne.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
