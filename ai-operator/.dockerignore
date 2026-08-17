@@ -1,0 +1,39 @@
+# Co NIE ma opuszczać maszyny właściciela przy wdrożeniu.
+#
+# `railway up` pakuje zawartość katalogu i wysyła ją do usługi budującej.
+# Bez tego pliku poszłyby tam trzy rzeczy, których tam być nie może:
+#
+#   .env          hasło do skrzynki IMAP i token TeaBrew,
+#   state/        dziennik spraw, czyli tematy i podglądy prawdziwych maili,
+#   .audit/       log wywołań z numerami zamówień i frazami wyszukiwania.
+#
+# Dockerfile kopiuje tylko `src`, `fixtures` i pliki pakietu, więc do OBRAZU
+# i tak by nie trafiły — ale kontekst budowania to osobna rzecz i opuszcza
+# maszynę niezależnie od tego, co potem kopiujemy.
+#
+# Sekrety trafiają na serwer wyłącznie jako zmienne środowiskowe Railwaya.
+
+.env
+.env.*
+!.env.example
+
+# Dane firmy z czasu działania.
+state/
+raporty/
+.audit/
+*.jsonl
+
+# 87 MB, które i tak są instalowane na nowo przez `npm ci` w obrazie.
+node_modules/
+
+.git/
+.gitignore
+*.log
+coverage/
+tests/
+scripts/
+
+# UWAGA: `Dockerfile` NIE jest tu wykluczony i nie wolno go dopisać.
+# Przy lokalnym `docker build` wykluczenie go jest nieszkodliwe, bo demon czyta
+# go osobno. Ale Railway buduje ZDALNIE: dostaje tylko to, co wyślemy, więc
+# wykluczony Dockerfile znaczy „nie ma z czego budować".
