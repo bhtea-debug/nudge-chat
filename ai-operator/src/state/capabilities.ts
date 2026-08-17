@@ -2,7 +2,8 @@ import { z } from "zod";
 import type { AnyCapability, Capability } from "../capability/types.js";
 import { ISSUE_CATEGORIES, ISSUE_PRIORITIES, ISSUE_STATUSES, OPEN_STATUSES } from "./types.js";
 import type { CopilotStore, } from "./store.js";
-import { searchableText, viewRef } from "./source-ref.js";
+import { searchableText, viewRef, kindsOf } from "./source-ref.js";
+import { laneCounts, laneOf, LANE_ORDER, missingInErp } from "./lanes.js";
 import type { Issue } from "./types.js";
 
 /**
@@ -33,6 +34,27 @@ const IssueBrief = z.object({
   category: z.enum(ISSUE_CATEGORIES),
   priority: z.enum(ISSUE_PRIORITIES),
   status: z.enum(ISSUE_STATUSES),
+  /**
+   * Gotowa sekcja do pokazania właścicielowi. Wyliczona z faktów po naszej
+   * stronie, żeby dwie odpowiedzi na to samo pytanie nie różniły się układem.
+   * Claude ma prawo ją nadpisać, gdy z treści wynika co innego — ale wtedy
+   * niech powie, że to jego ocena.
+   */
+  lane: z.enum(["teraz", "decyzje", "odpowiedzi", "obserwuj", "prawdopodobnie_nieistotne"]),
+  /** Jedno zdanie: dlaczego ta sprawa jest na liście i skąd ten priorytet. */
+  whyListed: z.string(),
+  /**
+   * Czego potrzeba OD WŁAŚCICIELA. Puste = nic albo nie wiemy — i wtedy nie
+   * wolno wymyślać zadania, którego nikt nie zlecił.
+   */
+  neededFromOwner: z.string().nullable(),
+  /** Z których systemów pochodzą dowody w tej sprawie. */
+  sources: z.array(z.enum(["mail", "connecteam"])),
+  /**
+   * `true` = numer z wiadomości, którego TeaBrew NIE ZNA. Najczęściej znaczy
+   * „przyszło, nikt nie wprowadził" — czyli robota, nie usterka.
+   */
+  missingInErp: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
   waitingFor: z.string().nullable(),
@@ -47,6 +69,22 @@ const IssueBrief = z.object({
   notificationReason: z.string().nullable(),
 });
 
+/**
+ * Czego właściciel ma zrobić — z FAKTÓW, nie z domysłu.
+ *
+ * Świadomie zwraca `null`, gdy nie wiadomo. Wypełnienie tego pola zdaniem
+ * w rodzaju „przejrzyj sprawę" byłoby zadaniem wymyślonym przez system i po
+ * tygodniu właściciel przestałby czytać całą kolumnę.
+ */
+function neededFromOwner(i: Issue): string | null {
+  if (/NIE MA w TeaBrew/i.test(i.lastErpSummary ?? "")) {
+    return `sprawdzić, czy zamówienie ${i.relatedOrderRefs.join(", ")} ma być wprowadzone do TeaBrew`;
+  }
+  if (i.status === "waiting_for_owner") return "Twoja decyzja — sprawa czeka oznaczona przez Ciebie";
+  if (i.category === "reply" && !/odpowiedzieliśmy/i.test(i.waitingFor ?? "")) return "odpowiedź";
+  return null;
+}
+
 const brief = (i: Issue): z.infer<typeof IssueBrief> => ({
   id: i.id,
   title: i.title,
@@ -54,6 +92,11 @@ const brief = (i: Issue): z.infer<typeof IssueBrief> => ({
   category: i.category,
   priority: i.priority,
   status: i.status,
+  lane: laneOf(i),
+  whyListed: i.whyListed,
+  neededFromOwner: neededFromOwner(i),
+  sources: kindsOf(i.sourceRefs),
+  missingInErp: missingInErp(i),
   createdAt: i.createdAt,
   updatedAt: i.updatedAt,
   waitingFor: i.waitingFor,
@@ -111,6 +154,13 @@ const OpenOutput = z.object({
   truncated: z.boolean(),
   byStatus: z.record(z.string(), z.number().int()),
   byCategory: z.record(z.string(), z.number().int()),
+  /**
+   * Ile spraw w której grupie. Do zdania otwierającego odpowiedź, żeby właściciel
+   * dostał obraz całości przed wyliczaniem szczegółów.
+   */
+  byLane: z.record(z.string(), z.number().int()),
+  /** Kolejność grup, w jakiej należy je pokazać. */
+  laneOrder: z.array(z.string()),
   issues: z.array(IssueBrief),
   lastScanAt: z.string().nullable(),
   staleNote: z.string().nullable(),
@@ -227,9 +277,18 @@ export function createIssueCapabilities(store: () => CopilotStore): AnyCapabilit
     version: "1.0.0",
     description:
       "Wypisuje otwarte sprawy — to, co właścicielowi zostało na głowie. Użyj przy pytaniach " +
-      "„co mi zostało”, „co wymaga mojej uwagi”, „kto czeka na odpowiedź”, „czym powinienem " +
-      "zająć się teraz”. Zwraca też liczniki po statusie i kategorii, żebyś mógł podać obraz " +
-      "całości jednym zdaniem przed wyliczaniem szczegółów.",
+      "„co mi zostało”, „co ważnego”, „co wymaga mojej uwagi”, „kto czeka na odpowiedź”, " +
+      "„czym powinienem zająć się teraz”.\n\n" +
+      "JAK TO POKAZAĆ: pogrupuj po polu `lane` w kolejności z `laneOrder` i NADAJ GRUPOM " +
+      "nagłówki po polsku (teraz → „🔴 Teraz”, decyzje → „🟠 Potrzebuję Twojej decyzji”, " +
+      "odpowiedzi → „🟡 Czekają na odpowiedź”, obserwuj → „👀 Obserwuj”). Grupy puste pomiń. " +
+      "Grupy `prawdopodobnie_nieistotne` NIE pokazuj, dopóki właściciel o nią nie zapyta.\n\n" +
+      "NUMERUJ pozycje od 1 przez wszystkie grupy — właściciel wybiera sprawę mówiąc „rozwiń 2”. " +
+      "Zapamiętaj, który numer odpowiada któremu `id`, bo kolejność może się zmienić po nowej " +
+      "wiadomości; NIE wyliczaj numeru ponownie z kolejnego wywołania.\n\n" +
+      "Przy każdej pozycji podaj tytuł, jedno zdanie z `summary`, a potem `neededFromOwner` " +
+      "jako „Potrzebne od Ciebie”. Gdy `neededFromOwner` jest puste, NIE wymyślaj zadania. " +
+      "Zacznij odpowiedź jednym zdaniem o całości, korzystając z `byLane`.",
     scope: ISSUE_SCOPE,
     effectClass: "read",
     input: OpenInput,
@@ -254,6 +313,8 @@ export function createIssueCapabilities(store: () => CopilotStore): AnyCapabilit
         truncated: found.length > shown.length,
         byStatus: tally(found, "status"),
         byCategory: tally(found, "category"),
+        byLane: laneCounts(found),
+        laneOrder: [...LANE_ORDER],
         issues: shown.map(brief),
         lastScanAt: c.lastScanAt,
         staleNote: c.staleNote,
@@ -266,8 +327,11 @@ export function createIssueCapabilities(store: () => CopilotStore): AnyCapabilit
     name: "copilot_get_issue",
     version: "1.0.0",
     description:
-      "Szczegóły jednej sprawy: streszczenie, historia zmian, referencje do wiadomości, powiązane " +
-      "zamówienia i produkty oraz to, na co czekamy. Użyj, gdy właściciel mówi „rozwiń” albo pyta " +
+      "Szczegóły JEDNEJ sprawy: streszczenie, historia zmian, referencje do wiadomości, powiązane " +
+      "zamówienia i produkty oraz to, na co czekamy. Użyj, gdy właściciel mówi „rozwiń 2”, " +
+      "„rozwiń drugą”, „sprawdź to dokładniej” — wtedy weź `id` pozycji o tym numerze z listy, " +
+      "którą właśnie pokazałeś. Odpowiadaj WYŁĄCZNIE o tej sprawie i nie wtrącaj pozostałych. " +
+      "Użyj też, gdy właściciel pyta " +
       "o konkretną sprawę. Zwraca WSKAŹNIKI do wiadomości, nie ich treść — po treść wywołaj " +
       "mail_get_thread z podanym messageId, a po aktualny stan zamówienia teabrew_get_order_status. " +
       "Dane w tej sprawie mogą być sprzed godzin; jeśli mają znaczenie, sprawdź je na świeżo.",

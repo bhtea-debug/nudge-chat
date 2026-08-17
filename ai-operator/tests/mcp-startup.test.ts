@@ -205,29 +205,27 @@ async function boot(env: Record<string, string>, port: number): Promise<Boot> {
 }
 
 describe("start serwera HTTP", () => {
-  it("SAM interfejs wstaje bez MCP_BEARER_TOKEN, a /mcp jest wyłączone", async () => {
-    const b = await boot({ COPILOT_UI_PASSWORD: "haslo-dosc-dlugie-1234" }, 8841);
+  const TOKEN = "x".repeat(48);
+
+  it("z tokenem wstaje i wystawia narzędzia dla Claude", async () => {
+    const b = await boot({ MCP_BEARER_TOKEN: TOKEN }, 8841);
     expect(b.exitCode).toBeNull();
-    expect(b.stdout).toContain("interfejs: http://localhost:8841");
-    expect(b.stdout).toContain("dostęp dla Claude: wyłączony");
-    // Wyłączone znaczy 503, nie „otwarte bez hasła".
-    expect(await b.status("/mcp")).toBe(503);
+    expect(b.stdout).toContain(`narzędzia dla Claude: ${EXPECTED_TOOLS}`);
+    // Bez nagłówka Authorization nie ma dostępu do niczego.
+    expect(await b.status("/mcp")).toBe(401);
   }, 20_000);
 
   it("token ustawiony PO CZĘŚCI nie wstaje — wygląda na zabezpieczenie, którym nie jest", async () => {
-    const b = await boot(
-      { COPILOT_UI_PASSWORD: "haslo-dosc-dlugie-1234", MCP_BEARER_TOKEN: "krotki" },
-      8842,
-    );
+    const b = await boot({ MCP_BEARER_TOKEN: "krotki" }, 8842);
     expect(b.exitCode).toBe(1);
     expect(b.stderr).toContain("za krótki");
   }, 20_000);
 
-  it("bez tokenu i bez hasła mówi, czego brakuje, zamiast wstać puste", async () => {
+  it("bez tokenu nie wstaje wcale — Claude jest jedynym interfejsem", async () => {
+    // Monitor bez wystawionego MCP zbierałby dane, których nikt nie zobaczy.
     const b = await boot({}, 8843);
     expect(b.exitCode).toBe(1);
-    expect(b.stderr).toContain("Nie mam czego uruchomić");
-    expect(b.stderr).toContain("COPILOT_UI_PASSWORD");
+    expect(b.stderr).toContain("nie mam czego uruchomić");
     expect(b.stderr).toContain("MCP_BEARER_TOKEN");
   }, 20_000);
 });

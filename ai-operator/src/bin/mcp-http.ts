@@ -7,9 +7,6 @@ import { newCorrelationId } from "../capability/audit.js";
 import { renderRun, costLine } from "../state/report.js";
 import { appendFileSync } from "node:fs";
 import { fromPackageRoot } from "../paths.js";
-import { handleUi } from "../ui/server.js";
-import { ephemeralSigningKey, MIN_PASSWORD_LENGTH, UiAuth } from "../ui/auth.js";
-import type { SyncState } from "../ui/views.js";
 import { eventTypeOf, ingestChatMessage, messageFromWebhook, verifySignature } from "../connecteam/ingest.js";
 
 /**
@@ -44,19 +41,21 @@ const COST_LOG = fromPackageRoot(process.env["COST_LOG"] ?? "state/koszty.jsonl"
 const MIN_TOKEN_LENGTH = 32;
 
 /**
- * Dwie powierzchnie, dwa NIEZALEŻNE uwierzytelnienia — i każda wstaje osobno.
+ * Jedna powierzchnia dla ludzi i jest nią Claude.
  *
- * Pierwsza wersja wymagała `MCP_BEARER_TOKEN` do startu całego procesu. Było to
- * fail-closed, ale w zły sposób: właściciel chciał uruchomić u siebie sam
- * interfejs, który ma własne hasło, i dostał odmowę startu z powodu tokenu do
- * funkcji, której nie zamierzał włączać.
+ * Przez chwilę stał tu obok interfejs w przeglądarce z własnym hasłem. Został
+ * usunięty na wyraźne polecenie właściciela: **całe UI ma być w Claude.** Nie
+ * jest to porzucony kod, a decyzja produktowa — dlatego serwer bez tokenu nie
+ * wstaje wcale, zamiast wstawać „bez jednej z powierzchni".
  *
- * Poprawne fail-closed wyłącza POWIERZCHNIĘ bez bramy, nie cały produkt:
- *  - brak tokenu           → `/mcp` nie działa (503), interfejs działa,
- *  - token za krótki       → NIE wstajemy. Ktoś próbował ustawić uwierzytelnienie
- *                            i zrobił to źle; cicha praca z takim tokenem byłaby
- *                            gorsza niż odmowa,
- *  - brak tokenu i hasła   → nie ma czego serwować, mówimy to wprost.
+ *  - brak tokenu     → nie ma czego uruchomić; monitor zbierałby dane, których
+ *                      nikt nie zobaczy,
+ *  - token za krótki → NIE wstajemy. Ktoś próbował ustawić uwierzytelnienie
+ *                      i zrobił to źle; cicha praca z takim tokenem byłaby
+ *                      gorsza niż odmowa.
+ *
+ * `/webhook/connecteam` jest wyjątkiem i nie łamie tej zasady: uwierzytelnia się
+ * podpisem ładunku, bo po drugiej stronie stoi serwer dostawcy, nie człowiek.
  */
 const MCP_ENABLED = TOKEN.length >= MIN_TOKEN_LENGTH;
 
@@ -70,57 +69,16 @@ if (TOKEN.length > 0 && !MCP_ENABLED) {
   process.exit(1);
 }
 
-if (!MCP_ENABLED && !app.config.ui.enabled) {
+if (!MCP_ENABLED) {
+  // Claude JEST interfejsem tego produktu, więc bez tokenu nie ma czego
+  // uruchamiać: monitor sam z siebie nikomu niczego nie pokazuje.
   process.stderr.write(
-    `[${SERVER_NAME}] Nie mam czego uruchomić: brak MCP_BEARER_TOKEN (dla Claude) i brak\n` +
-      "COPILOT_UI_PASSWORD (dla interfejsu). Ustaw przynajmniej jedno w .env.\n\n" +
-      "  interfejs w przeglądarce:  COPILOT_UI_PASSWORD=$(openssl rand -base64 24)\n" +
-      "  dostęp dla Claude:         MCP_BEARER_TOKEN=$(openssl rand -base64 48)\n",
+    `[${SERVER_NAME}] Brak MCP_BEARER_TOKEN — nie mam czego uruchomić.\n` +
+      "Claude łączy się z tym serwerem tym tokenem i jest jedynym interfejsem\n" +
+      "tego produktu; bez niego monitor zbierałby dane, których nikt nie zobaczy.\n\n" +
+      "  MCP_BEARER_TOKEN=$(openssl rand -base64 48)\n",
   );
   process.exit(1);
-}
-
-// ── interfejs właściciela ─────────────────────────────────────────────────────
-/**
- * UI jest opcjonalny i sam się włącza, gdy jest hasło. Bez hasła serwer wstaje
- * dalej — Remote MCP działa niezależnie i nie ma powodu, żeby brak jednej
- * zmiennej odbierał Claude dostęp do poczty.
- */
-const ui = app.config.ui.enabled
-  ? (() => {
-      if (app.config.ui.password.length < MIN_PASSWORD_LENGTH) {
-        process.stderr.write(
-          `[${SERVER_NAME}] COPILOT_UI_PASSWORD jest krótsze niż ${MIN_PASSWORD_LENGTH} znaków — UI NIE wstaje.\n` +
-            "To jedyna brama między internetem a pocztą firmy. Wygeneruj: openssl rand -base64 24\n",
-        );
-        return null;
-      }
-      const signingKey = app.config.ui.signingKey ?? ephemeralSigningKey();
-      if (!app.config.ui.signingKey) {
-        process.stdout.write(
-          `[${SERVER_NAME}] COPILOT_UI_SIGNING_KEY nie ustawiony — sesje nie przeżyją restartu procesu.\n`,
-        );
-      }
-      return new UiAuth({
-        password: app.config.ui.password,
-        signingKey,
-        secureCookie: app.config.ui.secureCookie,
-      });
-    })()
-  : null;
-
-function syncState(): SyncState {
-  try {
-    return {
-      lastOkScanAt: app.store.lastOkScanAt(),
-      checkpoints: app.store.checkpoints(),
-      integrityWarning: app.store.integrityWarning(),
-    };
-  } catch {
-    // Awaria stanu nie może zabrać całego ekranu — właściciel ma zobaczyć
-    // stronę mówiącą „nie wiem", a nie błąd serwera.
-    return { lastOkScanAt: null, checkpoints: [], integrityWarning: null };
-  }
 }
 
 // ── limit żądań ───────────────────────────────────────────────────────────────
@@ -260,29 +218,9 @@ const server = createServer((req, res) => {
       return;
     }
 
-    if (ui && (await handleUi(req, res, url, {
-      store: app.store,
-      auth: ui,
-      sync: syncState,
-      claudeUrl: app.config.ui.claudeUrl,
-    }))) {
-      logAccess(res.statusCode, req.method ?? "?", "ui", Date.now() - started);
-      return;
-    }
-
     if (url.pathname !== "/mcp") {
       json(res, 404, { error: "nieznana ścieżka; MCP jest pod /mcp" });
       logAccess(404, req.method ?? "?", null, Date.now() - started);
-      return;
-    }
-
-    if (!MCP_ENABLED) {
-      // Bez tokenu ta powierzchnia jest wyłączona, nie „otwarta". Odpowiedź mówi
-      // czego brakuje, ale NIE zdradza, czy po drugiej stronie są jakieś dane.
-      json(res, 503, {
-        error: "dostęp dla Claude jest wyłączony — na serwerze nie ustawiono MCP_BEARER_TOKEN",
-      });
-      logAccess(503, req.method ?? "?", null, Date.now() - started);
       return;
     }
 
@@ -483,8 +421,7 @@ server.listen(PORT, () => {
   // bo to jedyne, co właściciel widzi po uruchomieniu.
   process.stdout.write(
     `[${SERVER_NAME}] nasłuchuję na :${PORT}\n` +
-      `[${SERVER_NAME}] interfejs: ${ui ? `http://localhost:${PORT}` : "wyłączony (brak COPILOT_UI_PASSWORD)"}\n` +
-      `[${SERVER_NAME}] dostęp dla Claude: ${MCP_ENABLED ? `włączony, ${probe.toolNames().length} narzędzi` : "wyłączony (brak MCP_BEARER_TOKEN)"}\n` +
+      `[${SERVER_NAME}] narzędzia dla Claude: ${probe.toolNames().length}\n` +
       `[${SERVER_NAME}] tryb: ${app.config.mode}, foldery: ${app.config.copilot.monitorFolders.join(", ")}\n` +
       `[${SERVER_NAME}] monitor w procesie: ${MONITOR_IN_PROCESS ? `tak, pierwszy przebieg za 20 s, potem co ${app.config.copilot.intervalMinutes} min` : "nie"}\n`,
   );
