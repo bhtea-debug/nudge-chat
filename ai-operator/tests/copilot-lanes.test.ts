@@ -138,8 +138,23 @@ describe("grupowanie spraw", () => {
     expect(laneOf(szum)).toBe("prawdopodobnie_nieistotne");
   });
 
-  it("oznaczenie właściciela przenosi sprawę do DECYZJI", () => {
-    expect(laneOf(issue({ status: "waiting_for_owner" }))).toBe("decyzje");
+  it("DECYZJE to kategoria decision, NIE status „czeka na naszą odpowiedź”", () => {
+    // Monitor ustawia waiting_for_owner każdej wiadomości kategorii reply,
+    // w sensie „ktoś czeka na odpowiedź". Gdyby to wpadało do DECYZJI, sekcja
+    // byłaby drugą kopią ODPOWIEDZI — i tak właśnie wylądował tam phishing.
+    expect(laneOf(issue({ status: "waiting_for_owner", category: "reply" }))).toBe("odpowiedzi");
+    expect(laneOf(issue({ category: "decision" }))).toBe("decyzje");
+  });
+
+  it("wysyłka masowa zostaje w szumie także po DRUGIEJ wiadomości", () => {
+    // Phishing i newslettery piszą powtórnie z definicji. Powtórzenie od
+    // nadawcy, do którego nigdy nie pisaliśmy, nie jest dowodem korespondencji.
+    const powtorka = issue({
+      likelyIrrelevant: true,
+      category: "informational",
+      whyListed: "nigdy nie pisaliśmy do wildaction.pt, brak numeru zamówienia i brak wątku",
+    });
+    expect(laneOf(powtorka)).toBe("prawdopodobnie_nieistotne");
   });
 
   it("TERAZ ma pierwszeństwo nad DECYZJAMI", () => {

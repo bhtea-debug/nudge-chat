@@ -310,9 +310,21 @@ export class MailMonitor {
                   ],
                   waitingFor: row.waitingFor ?? match.issue.waitingFor,
                   whyListed: row.whyListed,
-                  // Nowa wiadomość w sprawie unieważnia „prawdopodobnie
-                  // nieistotne": ktoś do niej wrócił, więc jest korespondencją.
-                  likelyIrrelevant: false,
+                  /**
+                   * Przeliczone z NOWEJ wiadomości, nie ustawione na sztywno.
+                   *
+                   * Wcześniej stało tu `false` z uzasadnieniem „ktoś do sprawy
+                   * wrócił, więc jest korespondencją". To rozumowanie zawodzi
+                   * dokładnie tam, gdzie boli: phishing i wysyłki masowe piszą
+                   * powtórnie z definicji. Druga wiadomość od nadawcy, do
+                   * którego nigdy nie pisaliśmy, jest dowodem na to, że
+                   * przyszło więcej tego samego — nie na korespondencję.
+                   *
+                   * Prawdziwy powrót klienta i tak wychodzi z reguł 1–4:
+                   * odpowiedź w wątku albo numer zamówienia daje
+                   * `likelyIrrelevant: false` bez żadnego wyjątku tutaj.
+                   */
+                  likelyIrrelevant: row.likelyIrrelevant,
                   notificationCandidate: row.notify || match.issue.notificationCandidate,
                   notificationReason: row.notifyWhy ?? match.issue.notificationReason,
                 },

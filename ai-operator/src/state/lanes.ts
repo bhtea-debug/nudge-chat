@@ -145,7 +145,20 @@ export function whyNow(issue: Issue): string | null {
 export function laneOf(issue: Issue): Lane {
   if (issue.likelyIrrelevant) return "prawdopodobnie_nieistotne";
   if (isNow(issue)) return "teraz";
-  if (issue.status === "waiting_for_owner" || issue.category === "decision") return "decyzje";
+
+  /**
+   * DECYZJE to wyłącznie kategoria `decision`, a NIE status `waiting_for_owner`.
+   *
+   * Te dwie rzeczy nazywają się podobnie i znaczą co innego. Monitor ustawia
+   * `waiting_for_owner` każdej wiadomości kategorii `reply` — w sensie „ktoś
+   * czeka na naszą odpowiedź". Sekcja DECYZJE ma znaczyć „to wymaga mojego
+   * rozstrzygnięcia", a nie „trzeba odpisać".
+   *
+   * Zlanie ich w jedno robiło z DECYZJI drugą kopię ODPOWIEDZI i wpychało tam
+   * rzeczy, przy których nie ma czego decydować — łącznie z wiadomością
+   * phishingową, która trafiła na szczyt listy.
+   */
+  if (issue.category === "decision") return "decyzje";
   if (issue.category === "reply" || issue.category === "urgent") return "odpowiedzi";
   return "obserwuj";
 }
