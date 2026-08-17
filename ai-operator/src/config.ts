@@ -39,6 +39,12 @@ export interface AppConfig {
     readonly firstRunDays: number;
     readonly maxPerFolder: number;
     readonly maxErpLookups: number;
+    /**
+     * Kto ocenia nową pocztę. `deterministic` (domyślnie) NIE woła modelu
+     * i nie kosztuje nic — fakty zbieramy sami, ocenę robi Claude w momencie
+     * pytania, na subskrypcji właściciela. `model` wymaga kredytów API.
+     */
+    readonly classifier: "deterministic" | "model";
   };
   readonly mail:
     | { readonly kind: "fixture"; readonly filePath: string }
@@ -103,6 +109,7 @@ export function loadConfig(): AppConfig {
       firstRunDays: Math.max(1, Number(opt("MONITOR_FIRST_RUN_DAYS", "3"))),
       maxPerFolder: Math.max(1, Number(opt("MONITOR_MAX_PER_FOLDER", "50"))),
       maxErpLookups: Math.max(0, Number(opt("MONITOR_MAX_ERP_LOOKUPS", "10"))),
+      classifier: opt("MONITOR_CLASSIFIER", "deterministic") === "model" ? "model" : "deterministic",
     },
     mail:
       mode === "live"

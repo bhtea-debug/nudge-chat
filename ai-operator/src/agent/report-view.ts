@@ -1,19 +1,24 @@
-import { TRIAGE_CATEGORIES } from "./prompt.js";
-import type { TriageItem, TriageResult } from "./triage.js";
+import type { FolderCheckpoint, Issue } from "../state/types.js";
+import { OPEN_STATUSES } from "../state/types.js";
 
 /**
- * Panel raportu dziennego. Widok, nie logika — nie wykonuje żadnego wywołania
- * i nie interpretuje danych; pokazuje to, co triage już ustalił.
+ * Panel raportu dziennego — widok pamięci Copilota, nie osobna analiza.
+ *
+ * Zmiana wobec pierwszej wersji: raport rysuje się z LISTY SPRAW, a nie
+ * z własnego przebiegu klasyfikacji przez model. Powód jest zasadniczy, nie
+ * techniczny — właściciel pracuje wyłącznie na subskrypcji Claude, bez kredytów
+ * API, więc raport nie ma prawa wołać modelu po naszej stronie.
+ *
+ * To wyszło na lepsze: raport i odpowiedzi Claude pokazują teraz DOKŁADNIE ten
+ * sam stan. Wcześniej były dwiema niezależnymi analizami tej samej poczty, które
+ * mogły się rozjechać i różnić w liczbach.
  *
  * Kolejność sekcji odpowiada temu, po co właściciel to otwiera:
- *  1. czego NIE MA w systemie, choć przyszło mailem — jedyna rzecz, na którą
+ *  1. numery z poczty, których NIE MA w TeaBrew — jedyne pytanie, na które
  *     żaden inny program w firmie nie odpowiada,
- *  2. co wymaga odpowiedzi,
- *  3. reszta poczty,
- *  4. co dokładnie zostało sprawdzone.
- *
- * Sekcja 4 nie jest ozdobą: raport, którego nie da się zweryfikować, po tygodniu
- * przestaje być czytany.
+ *  2. co czeka na jego ruch,
+ *  3. co obserwujemy,
+ *  4. czego monitor NIE sprawdził — bo cisza nigdy nie znaczy „w porządku".
  */
 
 const esc = (s: string): string =>
@@ -23,55 +28,74 @@ const esc = (s: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 
-const sender = (item: TriageItem): string => {
-  const f = item.message.from;
-  if (!f) return "nieznany nadawca";
-  return f.name?.trim() || f.address;
-};
-
 const when = (iso: string): string => `${iso.slice(8, 10)}.${iso.slice(5, 7)} ${iso.slice(11, 16)}`;
 
-/** Numery, które przyszły mailem, a TeaBrew ich nie zna. Sedno raportu. */
-function missingInErp(result: TriageResult): { item: TriageItem; refs: string[] }[] {
-  return result.items
-    .map((item) => ({ item, refs: item.erp.filter((e) => !e.found).map((e) => e.ref) }))
-    .filter((x) => x.refs.length > 0);
+const hoursSince = (iso: string): number => (Date.now() - new Date(iso).getTime()) / 3_600_000;
+
+const age = (iso: string): string => {
+  const h = hoursSince(iso);
+  if (h < 1) return "teraz";
+  if (h < 48) return `${Math.round(h)} h`;
+  return `${Math.round(h / 24)} dni`;
+};
+
+export interface ReportInput {
+  readonly issues: readonly Issue[];
+  readonly checkpoints: readonly FolderCheckpoint[];
+  readonly integrityWarning: string | null;
 }
 
-/** Numery wymienione w mailu, których NIE sprawdziliśmy — budżet albo kategoria. */
-function unchecked(result: TriageResult): number {
-  return result.items.reduce(
-    (n, i) => n + i.refs.filter((r) => !i.erp.some((e) => e.ref === r)).length,
-    0,
-  );
-}
+/** Sprawy z numerem, o którym TeaBrew mówi, że go nie zna. Sedno raportu. */
+const missingInErp = (issues: readonly Issue[]): Issue[] =>
+  issues.filter((i) => (i.lastErpSummary ?? "").includes("NIE MA"));
+
+const open = (issues: readonly Issue[]): Issue[] =>
+  issues.filter((i) => OPEN_STATUSES.includes(i.status));
 
 /**
  * Jedno zdanie do powiadomienia. Mówi o liczbach, nie o tym, że raport istnieje —
- * „Raport gotowy" nie jest informacją, po której ktokolwiek cokolwiek zrobi.
+ * „raport gotowy" nie jest informacją, po której ktokolwiek cokolwiek zrobi.
  */
-export function summarize(result: TriageResult): string {
-  if (result.total === 0) return "Nowej poczty nie było.";
+export function summarize(input: ReportInput): string {
+  const opened = open(input.issues);
+  const missing = missingInErp(opened);
+  const waiting = opened.filter((i) => i.status === "waiting_for_owner");
+  const fresh = opened.filter((i) => i.lastPresentedAt === null);
+
+  const lastScan = input.checkpoints
+    .map((c) => c.lastOkScanAt)
+    .filter((t): t is string => t !== null)
+    .sort()
+    .at(-1);
+
+  if (!lastScan) {
+    return "Monitor poczty jeszcze nie skanował — nie wiem, co przyszło.";
+  }
 
   const parts: string[] = [];
-  const missing = missingInErp(result).reduce((n, m) => n + m.refs.length, 0);
-  const urgent = result.items.filter((i) => i.category === "Pilne").length;
-  const reply = result.items.filter((i) => i.needsReply).length;
+  if (missing.length > 0) {
+    parts.push(`${missing.length} ${missing.length === 1 ? "numeru nie ma" : "numerów nie ma"} w TeaBrew`);
+  }
+  if (fresh.length > 0) parts.push(`${fresh.length} nowych`);
+  if (waiting.length > 0) parts.push(`${waiting.length} czeka na Ciebie`);
+  if (parts.length === 0) parts.push("nic nowego");
 
-  if (missing > 0) parts.push(`${missing} ${missing === 1 ? "numeru nie ma" : "numerów nie ma"} w TeaBrew`);
-  if (urgent > 0) parts.push(`${urgent} pilne`);
-  if (reply > 0) parts.push(`${reply} do odpowiedzi`);
-  if (parts.length === 0) parts.push("nic nie wymaga reakcji");
-
-  const head = `Poczta: ${result.total}`;
-  const tail = result.mailNote ? " · przegląd niepełny" : "";
-  return `${head} · ${parts.join(" · ")}${tail}`;
+  const stale = hoursSince(lastScan) > 1.5 ? ` · ostatni skan ${age(lastScan)} temu` : "";
+  return `Spraw otwartych: ${opened.length} · ${parts.join(" · ")}${stale}`;
 }
 
-export function renderReportHtml(result: TriageResult, now: Date): string {
-  const missing = missingInErp(result);
-  const notChecked = unchecked(result);
-  const failed = result.evidence.filter((e) => !e.ok);
+export function renderReportHtml(input: ReportInput, now: Date): string {
+  const opened = open(input.issues);
+  const missing = missingInErp(opened);
+  const waiting = opened.filter((i) => i.status === "waiting_for_owner" || i.status === "new");
+  const watching = opened.filter((i) => !waiting.includes(i) && !missing.includes(i));
+
+  const lastScan = input.checkpoints
+    .map((c) => c.lastOkScanAt)
+    .filter((t): t is string => t !== null)
+    .sort()
+    .at(-1);
+  const failedFolders = input.checkpoints.filter((c) => c.lastError !== null);
 
   const date = new Intl.DateTimeFormat("pl-PL", {
     weekday: "long",
@@ -80,81 +104,56 @@ export function renderReportHtml(result: TriageResult, now: Date): string {
   }).format(now);
   const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
-  const window =
-    result.sinceDays === 1 ? "wczoraj i dzisiaj" : `ostatnie ${result.sinceDays} dni`;
-
   const banners: string[] = [];
-  if (result.mailNote) {
+  if (!lastScan) {
     banners.push(
-      `<div class="banner stop"><strong>Przegląd niepełny.</strong> ${esc(result.mailNote)}</div>`,
+      `<div class="banner stop"><strong>Monitor poczty nie wykonał ani jednego udanego skanu.</strong> ` +
+        `Pusta lista NIE znaczy, że nic nie przyszło. Uruchom <code>npm run monitor</code>.</div>`,
+    );
+  } else if (hoursSince(lastScan) > 3) {
+    banners.push(
+      `<div class="banner stop"><strong>Ostatni udany skan poczty ${esc(age(lastScan))} temu.</strong> ` +
+        `Ten raport pokazuje stan z tamtego momentu, nie z teraz.</div>`,
     );
   }
-  if (failed.length > 0) {
+  for (const c of failedFolders) {
     banners.push(
-      `<div class="banner stop"><strong>${failed.length} sprawdzeń się nie udało.</strong> ` +
-        `Te dane NIE zostały sprawdzone: ${failed.map((f) => esc(f.capability)).join(", ")}. ` +
-        `Nie traktuj ich braku w raporcie jako informacji, że nic tam nie ma.</div>`,
+      `<div class="banner warn"><strong>${esc(c.folder)}:</strong> ${esc(c.lastError ?? "")}</div>`,
     );
   }
-  if (notChecked > 0) {
-    banners.push(
-      `<div class="banner warn"><strong>${notChecked} ${notChecked === 1 ? "numer" : "numerów"} bez sprawdzenia w TeaBrew.</strong> ` +
-        `Skończył się budżet zapytań na jeden przebieg. Podnieś go: <code>npm run raport -- --erp 30</code></div>`,
-    );
+  if (input.integrityWarning) {
+    banners.push(`<div class="banner warn"><strong>Pamięć spraw:</strong> ${esc(input.integrityWarning)}</div>`);
   }
 
   const missingHtml =
     missing.length === 0
-      ? `<p class="empty">Wszystkie numery z poczty, które sprawdziłem, są w TeaBrew.</p>`
+      ? `<p class="empty">Każdy numer z poczty, który sprawdziłem, jest w TeaBrew.</p>`
       : missing
           .map(
-            ({ item, refs }) => `
+            (i) => `
         <div class="miss">
-          <div class="miss-refs">${refs.map((r) => `<span class="ref">${esc(r)}</span>`).join("")}</div>
+          <div class="miss-refs">${i.relatedOrderRefs.map((r) => `<span class="ref">${esc(r)}</span>`).join("")}</div>
           <div class="miss-src">
-            <span class="subj">${esc(item.message.subject)}</span>
-            <span class="meta">${esc(sender(item))} · ${when(item.message.date)}</span>
+            <span class="subj">${esc(i.title)}</span>
+            <span class="meta">${esc(i.sourceRefs.at(-1)?.date ? when(i.sourceRefs.at(-1)!.date) : age(i.createdAt))} · ${esc(i.lastErpSummary ?? "")}</span>
           </div>
         </div>`,
           )
           .join("");
 
-  const needsReply = result.items.filter((i) => i.needsReply);
-  const replyHtml =
-    needsReply.length === 0
-      ? `<p class="empty">Nic nie czeka na odpowiedź.</p>`
-      : needsReply.map((i) => card(i)).join("");
+  const card = (i: Issue): string => `
+    <div class="item">
+      <span class="subj">${esc(i.title)}</span>
+      <span class="meta">${esc(i.status)} · ${esc(i.category)}${i.classifier === "deterministic" ? "" : " · ocena modelu"} · zmiana ${esc(age(i.updatedAt))}${i.lastPresentedAt === null ? " · NOWE" : ""}</span>
+      ${i.summary ? `<p class="reason">${esc(i.summary)}</p>` : ""}
+      ${i.waitingFor ? `<div class="erp">czekamy: ${esc(i.waitingFor)}</div>` : ""}
+      ${i.lastErpSummary && !missing.includes(i) ? `<div class="erp">TeaBrew: ${esc(i.lastErpSummary)}</div>` : ""}
+    </div>`;
 
-  const rest = TRIAGE_CATEGORIES.map((cat) => {
-    const inCat = result.items.filter((i) => i.category === cat && !i.needsReply);
-    if (inCat.length === 0) return "";
-    return `
-      <details>
-        <summary>${esc(cat)} <span class="count">${inCat.length}</span></summary>
-        <div class="details-body">${inCat.map((i) => card(i)).join("")}</div>
-      </details>`;
-  }).join("");
-
-  const unclassified =
-    result.unclassified.length === 0
-      ? ""
-      : `<details>
-           <summary>Nieklasyfikowane <span class="count">${result.unclassified.length}</span></summary>
-           <div class="details-body">
-             <p class="empty">Klasyfikacja tych nie objęła. Nie przypisuję im kategorii na siłę.</p>
-             ${result.unclassified
-               .map(
-                 (m) =>
-                   `<div class="item"><span class="subj">${esc(m.subject)}</span><span class="meta">${esc(m.from?.address ?? "nieznany")}</span></div>`,
-               )
-               .join("")}
-           </div>
-         </details>`;
-
-  const evidence = result.evidence
+  const scanned = input.checkpoints
     .map(
-      (e) =>
-        `<tr><td>${esc(e.capability)}</td><td class="${e.ok ? "ok" : "bad"}">${e.ok ? "sprawdzone" : "NIE UDAŁO SIĘ"}</td><td class="num">${e.latencyMs} ms</td><td>${esc(e.detail)}</td></tr>`,
+      (c) =>
+        `<tr><td>${esc(c.folder)}</td><td class="${c.lastError ? "bad" : "ok"}">${c.lastError ? "nieudany" : "ok"}</td><td class="num">${c.messagesSeen}</td><td>${esc(c.lastOkScanAt ? when(c.lastOkScanAt) : "nigdy")}</td></tr>`,
     )
     .join("");
 
@@ -207,13 +206,7 @@ h2{font-family:var(--sans);font-size:.75rem;font-weight:700;letter-spacing:.14em
 .meta{font-family:var(--sans);font-size:.8125rem;color:var(--faint)}
 .reason{font-size:.9375rem;color:var(--soft);margin:.15rem 0 0}
 .erp{font-family:var(--mono);font-size:.8125rem;color:var(--soft);margin:.25rem 0 0}
-.erp .no{color:var(--stop);font-weight:700}
 .empty{font-size:.9375rem;color:var(--faint);font-style:italic;margin:0;padding:.5rem 0}
-details{background:var(--surface);border:1px solid var(--rule)}
-summary{font-family:var(--sans);font-size:.875rem;font-weight:700;padding:.7rem .9rem;cursor:pointer}
-summary::marker{color:var(--accent)}
-.count{font-family:var(--mono);font-weight:400;color:var(--faint)}
-.details-body{padding:.25rem .9rem 1rem;display:flex;flex-direction:column;gap:.5rem;border-top:1px solid var(--rule)}
 .ev-wrap{overflow-x:auto;border:1px solid var(--rule);background:var(--surface)}
 table{width:100%;border-collapse:collapse;font-family:var(--sans);font-size:.8125rem}
 td{padding:.5rem .75rem;border-bottom:1px solid var(--rule);vertical-align:top}
@@ -231,7 +224,7 @@ footer code{font-family:var(--mono)}
 <header>
   <span class="eyebrow">Brown House &amp; Tea · raport dzienny</span>
   <h1>${esc(date)}, ${time}</h1>
-  <p class="verdict">${esc(summarize(result))}</p>
+  <p class="verdict">${esc(summarize(input))}</p>
 </header>
 
 ${banners.length > 0 ? `<div class="banners">${banners.join("")}</div>` : ""}
@@ -242,19 +235,19 @@ ${banners.length > 0 ? `<div class="banners">${banners.join("")}</div>` : ""}
 </section>
 
 <section>
-  <h2>Czeka na odpowiedź</h2>
-  ${replyHtml}
+  <h2>Czeka na Twój ruch</h2>
+  ${waiting.length === 0 ? `<p class="empty">Nic nie czeka na Ciebie.</p>` : waiting.map(card).join("")}
 </section>
 
-${rest || unclassified ? `<section><h2>Reszta poczty — ${esc(window)}</h2>${rest}${unclassified}</section>` : ""}
+${watching.length > 0 ? `<section><h2>Obserwujemy</h2>${watching.map(card).join("")}</section>` : ""}
 
 <section>
-  <h2>Co dokładnie sprawdziłem</h2>
-  <div class="ev-wrap"><table><tbody>${evidence || `<tr><td colspan="4">Brak wywołań.</td></tr>`}</tbody></table></div>
+  <h2>Co monitor sprawdził</h2>
+  <div class="ev-wrap"><table><tbody>${scanned || `<tr><td colspan="4">Żaden folder nie był jeszcze skanowany.</td></tr>`}</tbody></table></div>
 </section>
 
 <footer>
-  <p>Raport powstał z ${result.total} ${result.total === 1 ? "wiadomości" : "wiadomości"} (${esc(window)}). Numer przebiegu: <code>${esc(result.correlationId.slice(0, 8))}</code></p>
+  <p>Sprawy powstają z faktów: nadawca, temat, numery wymienione w wiadomości i odpowiedź TeaBrew. Nic nie jest przeformułowane przez model — ocenę robi Claude, gdy o nią poprosisz.</p>
   <p>Zawiera tematy i nadawców z poczty firmowej. Nie wysyłaj tego pliku dalej.</p>
 </footer>
 
@@ -262,20 +255,4 @@ ${rest || unclassified ? `<section><h2>Reszta poczty — ${esc(window)}</h2>${re
 </body>
 </html>
 `;
-}
-
-function card(item: TriageItem): string {
-  const erp = item.erp
-    .map((e) =>
-      e.found
-        ? `<div class="erp">${esc(e.ref)}: ${esc(e.summary)}</div>`
-        : `<div class="erp"><span class="no">${esc(e.ref)}: ${esc(e.summary)}</span></div>`,
-    )
-    .join("");
-  return `<div class="item">
-    <span class="subj">${esc(item.message.subject)}</span>
-    <span class="meta">${esc(sender(item))} · ${when(item.message.date)} · ${esc(item.category)}</span>
-    ${item.reason ? `<p class="reason">${esc(item.reason)}</p>` : ""}
-    ${erp}
-  </div>`;
 }

@@ -1,141 +1,145 @@
 import { describe, expect, it } from "vitest";
-import { renderReportHtml, summarize } from "../src/agent/report-view.js";
-import type { TriageResult } from "../src/agent/triage.js";
+import { renderReportHtml, summarize, type ReportInput } from "../src/agent/report-view.js";
+import type { FolderCheckpoint, Issue } from "../src/state/types.js";
 
 /**
  * Raport dzienny jest jedyną rzeczą, którą właściciel czyta BEZ zadania pytania.
- * Jeśli przemilczy niepełność albo nieudane sprawdzenie, to nie jest raport —
+ * Jeśli przemilczy niepełny skan albo nieudany folder, to nie jest raport —
  * to jest gorsze niż brak raportu, bo wygląda na komplet.
  */
 
-const msg = (over: Partial<Record<string, unknown>> = {}): any => ({
-  id: "<a@x>",
-  providerRef: "imap:INBOX:1",
-  threadId: "<a@x>",
-  subject: "Zamówienie 2307029",
-  from: { name: "Rossmann", address: "zakupy@rossmann.example" },
-  to: [],
-  cc: [],
-  date: "2026-08-17T09:12:00.000Z",
-  folder: "INBOX",
-  seen: false,
-  answered: false,
-  inReplyTo: null,
-  references: [],
-  attachments: [],
-  snippet: "przesyłamy zamówienie",
+const issue = (over: Partial<Issue> = {}): Issue => ({
+  id: "spr_1",
+  createdAt: "2026-08-18T09:00:00.000Z",
+  updatedAt: "2026-08-18T09:00:00.000Z",
+  source: "mail",
+  sourceRefs: [
+    {
+      kind: "mail",
+      messageId: "<a@rossmann.example>",
+      threadId: null,
+      folder: "INBOX",
+      date: "2026-08-18T09:00:00.000Z",
+      subject: "Zamówienie 2307029",
+      from: "zakupy@rossmann.example",
+    },
+  ],
+  title: "Rossmann — Zamówienie 2307029",
+  summary: "przesyłamy zamówienie w załączeniu",
+  category: "reply",
+  priority: "normal",
+  status: "new",
+  classifier: "deterministic",
+  relatedOrderRefs: ["2307029"],
+  relatedProductRefs: [],
+  lastEvidenceAt: "2026-08-18T09:05:00.000Z",
+  lastErpSummary: "zamówienia 2307029 NIE MA w TeaBrew",
+  waitingFor: "wiadomość bez odpowiedzi z naszej strony",
+  lastPresentedAt: null,
+  notificationCandidate: true,
+  notificationReason: "pisze o zamówieniu, którego nie ma w TeaBrew",
+  history: [],
   ...over,
 });
 
-const base: TriageResult = {
-  sinceDays: 1,
-  total: 2,
-  items: [
-    {
-      category: "Do odpowiedzi",
-      message: msg(),
-      reason: "nowe zamówienie od klienta",
-      needsReply: true,
-      refs: ["2307029"],
-      erp: [{ ref: "2307029", found: false, summary: "nie ma w TeaBrew" }],
-    },
-    {
-      category: "Informacyjne",
-      message: msg({ id: "<b@x>", subject: "Newsletter", from: null }),
-      reason: "",
-      needsReply: false,
-      refs: [],
-      erp: [],
-    },
-  ],
-  unclassified: [],
-  mailNote: null,
-  evidence: [
-    { capability: "mail_list_recent", ok: true, latencyMs: 1840, detail: "count=2" },
-    { capability: "teabrew_get_order_status", ok: true, latencyMs: 220, detail: "matchedBy=none" },
-  ],
-  audit: [],
-  correlationId: "3f2a9c11-1111-4000-8000-000000000001",
-};
+const checkpoint = (over: Partial<FolderCheckpoint> = {}): FolderCheckpoint => ({
+  folder: "INBOX",
+  processedThrough: "2026-08-18T09:00:00.000Z",
+  lastScanAt: new Date().toISOString(),
+  lastOkScanAt: new Date().toISOString(),
+  lastError: null,
+  messagesSeen: 12,
+  ...over,
+});
+
+const input = (over: Partial<ReportInput> = {}): ReportInput => ({
+  issues: [issue()],
+  checkpoints: [checkpoint()],
+  integrityWarning: null,
+  ...over,
+});
 
 describe("podsumowanie do powiadomienia", () => {
   it("mówi o liczbach, nie o tym, że raport istnieje", () => {
-    const s = summarize(base);
+    const s = summarize(input());
     expect(s).toContain("1 numeru nie ma w TeaBrew");
-    expect(s).toContain("1 do odpowiedzi");
+    expect(s).toContain("1 nowych");
     // „Raport gotowy" nie jest informacją, po której ktokolwiek cokolwiek zrobi.
     expect(s.toLowerCase()).not.toContain("gotowy");
   });
 
-  it("przy pustej skrzynce nie udaje, że coś jest", () => {
-    expect(summarize({ ...base, total: 0, items: [] })).toBe("Nowej poczty nie było.");
+  it("bez udanego skanu NIE twierdzi, że nic nie przyszło", () => {
+    const s = summarize(input({ issues: [], checkpoints: [checkpoint({ lastOkScanAt: null })] }));
+    expect(s).toContain("jeszcze nie skanował");
+    expect(s).not.toContain("nic nowego");
   });
 
-  it("dopisuje ostrzeżenie, gdy przegląd był niepełny", () => {
-    expect(summarize({ ...base, mailNote: "Zwrócono 30 z 47…" })).toContain("przegląd niepełny");
+  it("spokojny dzień z działającym monitorem mówi „nic nowego”", () => {
+    const s = summarize(input({ issues: [] }));
+    expect(s).toContain("nic nowego");
   });
 });
 
 describe("panel raportu", () => {
-  it("stawia brakujące numery na pierwszym miejscu i pokazuje ich źródło", () => {
-    const html = renderReportHtml(base, new Date("2026-08-17T09:15:00Z"));
+  it("stawia brakujące numery na pierwszym miejscu", () => {
+    const html = renderReportHtml(input(), new Date("2026-08-18T09:15:00Z"));
     const missing = html.indexOf("Nie ma tego w TeaBrew");
-    const reply = html.indexOf("Czeka na odpowiedź");
+    const waiting = html.indexOf("Czeka na Twój ruch");
     expect(missing).toBeGreaterThan(-1);
-    expect(missing).toBeLessThan(reply);
+    expect(missing).toBeLessThan(waiting);
     expect(html).toContain("2307029");
     expect(html).toContain("Rossmann");
   });
 
-  it("nie przemilcza niepełnego przeglądu", () => {
-    const html = renderReportHtml({ ...base, mailNote: "Zwrócono 30 z 47 pasujących." }, new Date());
-    expect(html).toContain("Przegląd niepełny");
-    expect(html).toContain("30 z 47");
-  });
-
-  it("nieudane sprawdzenie mówi wprost, że danych NIE sprawdzono", () => {
+  it("brak jakiegokolwiek skanu jest widoczny na górze", () => {
     const html = renderReportHtml(
-      {
-        ...base,
-        evidence: [
-          { capability: "teabrew_get_order_status", ok: false, latencyMs: 90_000, detail: "NIE UDAŁO SIĘ" },
-        ],
-      },
+      input({ issues: [], checkpoints: [checkpoint({ lastOkScanAt: null })] }),
       new Date(),
     );
-    expect(html).toContain("sprawdzeń się nie udało");
-    expect(html).toContain("NIE zostały sprawdzone");
+    expect(html).toContain("nie wykonał ani jednego udanego skanu");
+    expect(html).toContain("NIE znaczy");
   });
 
-  it("mówi o numerach, których nie sprawdził z powodu budżetu", () => {
+  it("stary skan mówi, że raport pokazuje stan z tamtego momentu", () => {
+    const old = new Date(Date.now() - 6 * 3_600_000).toISOString();
     const html = renderReportHtml(
-      {
-        ...base,
-        items: [{ ...base.items[0]!, refs: ["2307029", "2306847", "2306848"] }],
-      },
+      input({ checkpoints: [checkpoint({ lastOkScanAt: old, lastScanAt: old })] }),
       new Date(),
     );
-    // Dwa numery wymienione, ale nie sprawdzone — cisza tutaj wyglądałaby jak
-    // „sprawdziłem i są w porządku".
-    expect(html).toContain("2 numerów bez sprawdzenia");
-    expect(html).toContain("--erp 30");
+    expect(html).toContain("Ostatni udany skan");
+    expect(html).toContain("nie z teraz");
+  });
+
+  it("nieudany folder jest wypisany, nie przemilczany", () => {
+    const html = renderReportHtml(
+      input({ checkpoints: [checkpoint({ lastError: "połączenie odrzucone" })] }),
+      new Date(),
+    );
+    expect(html).toContain("połączenie odrzucone");
+  });
+
+  it("uszkodzona pamięć spraw jest zgłoszona", () => {
+    const html = renderReportHtml(input({ integrityWarning: "3 nieczytelnych wpisów" }), new Date());
+    expect(html).toContain("3 nieczytelnych wpisów");
   });
 
   it("gdy wszystko się zgadza, nie straszy", () => {
     const html = renderReportHtml(
-      { ...base, items: [{ ...base.items[0]!, erp: [{ ref: "2307029", found: true, summary: "confirmed" }] }] },
+      input({ issues: [issue({ lastErpSummary: "2307029: confirmed / paid" })] }),
       new Date(),
     );
-    expect(html).toContain("Wszystkie numery z poczty, które sprawdziłem, są w TeaBrew");
+    expect(html).toContain("Każdy numer z poczty, który sprawdziłem, jest w TeaBrew");
     expect(html).not.toContain("banner stop");
+  });
+
+  it("mówi, że sprawy powstają z faktów, a ocenę robi Claude", () => {
+    const html = renderReportHtml(input(), new Date());
+    expect(html).toContain("Nic nie jest przeformułowane przez model");
   });
 
   it("nie wstawia treści poczty do HTML bez ucieczki", () => {
     const html = renderReportHtml(
-      {
-        ...base,
-        items: [{ ...base.items[0]!, message: msg({ subject: '<script>alert("x")</script>' }) }],
-      },
+      input({ issues: [issue({ title: '<script>alert("x")</script>' })] }),
       new Date(),
     );
     expect(html).not.toContain("<script>alert");

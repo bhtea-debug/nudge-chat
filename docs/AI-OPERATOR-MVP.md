@@ -1015,3 +1015,74 @@ MAIL_MONITOR_FOLDERS=INBOX
 **Bez `Blocked`** (zbiornik) i **bez `Archive`** (27911 wiadomości, to miejsce,
 gdzie poczta trafia PO obsłużeniu, nie skąd przychodzi). Jeden folder, ten
 właściwy — a nie dwadzieścia jeden na wszelki wypadek.
+
+---
+
+### 8.16 Copilot bez kredytów API — model wypada ze ścieżki domyślnej
+
+Właściciel: *„ja nie chcę korzystać z kredytów"*, *„tylko z abonamentu Claude"*.
+
+To nie ograniczenie do obejścia, a powrót do zasady, którą sam postawił
+w zadaniu: **„Claude wykonuje reasoning. Nasza infrastruktura NIE wywołuje
+drugiego modelu."** Monitor w tle był jedynym miejscem, które ją naruszało.
+
+#### Co się okazało, gdy się temu przyjrzeć
+
+**Najważniejsza funkcja tego systemu nigdy modelu nie potrzebowała.** „Numery
+zamówień, które przyszły mailem i nie ma ich w TeaBrew" to wyrażenie regularne
+plus zapytanie HTTP. To samo dotyczy odsiewu poczty masowej (nagłówki RFC),
+checkpointów, korelacji wątków (`References`) i delty. Modelu potrzebowała
+**ocena** — czy sprawa jest pilna i jak ją streścić.
+
+Nowy podział obowiązków:
+
+| kto | co robi | koszt |
+| --- | --- | --- |
+| nasza infrastruktura | FAKTY: kto napisał, o czym, jakie numery, co mówi TeaBrew, czy odpowiedzieliśmy | zero |
+| Claude w rozmowie | OCENA: co pilne, co zignorować, jak odpowiedzieć | subskrypcja |
+
+Sprawa niesie `classifier: "deterministic"`, więc Claude wie, że kategoria jest
+słabym sygnałem, a nie werdyktem, i ma prawo ją nadpisać.
+
+Tytuł i streszczenie **nie są generowane**: tytuł to nadawca i temat,
+streszczenie to podgląd, który i tak przyszedł z serwera. Nic nie jest
+przeformułowane, więc nie ma czego zmyślić — zasada „nie zgaduj" jest tu
+spełniona konstrukcyjnie, a nie kontrolą po fakcie.
+
+Raport dzienny rysuje się teraz z **listy spraw**, nie z osobnego przebiegu
+klasyfikacji. Wyszło na plus: raport i odpowiedzi Claude pokazują dokładnie ten
+sam stan, a wcześniej były dwiema niezależnymi analizami tej samej poczty, które
+mogły podawać różne liczby.
+
+#### Cztery fałszywe alarmy, wykryte przez uruchomienie na fiksturach
+
+Pierwszy przebieg deterministyczny natychmiast pokazał, dlaczego to trzeba było
+uruchomić, a nie tylko napisać. Wszystkie cztery to ta sama klasa błędu — sprawa
+z alarmem „numeru X nie ma w TeaBrew", gdzie X nie było numerem zamówienia:
+
+| tekst | wyciągnięty „numer" | dlaczego źle |
+| --- | --- | --- |
+| „rabat 12%, planujemy 1800 kg" | `1800` | tonaż |
+| „targi opakowań w 2026" | `2026` | rok |
+| „Potwierdzenie wysyłki…" | `2026` | słowo `po` z listy kluczy dopasowało się w środku „**Po**twierdzenie" |
+| „partia dostawcy RB-2026-118" | `2026` | przechwytywanie sięgnęło w ŚRODEK numeru dostawcy — sam `\b` nie wystarcza, bo między „-" i „2" granica wyrazu istnieje |
+| „przesyłka 5210000143581001…" | 24 cyfry | numer InPostu; w TeaBrew gwarantowana odpowiedź „nie znam" |
+
+Przyczyna pierwsza i wspólna: przeniosłem wzorzec z triage, gdzie dostawał
+numery **wybrane wcześniej przez model**, do miejsca, które dostaje surowy tekst.
+Komentarz w `correlate.ts` ostrzegał, że dwa różne rozpoznawania numeru się
+rozjadą — i rozjechały się dokładnie tak.
+
+Teraz jest jedno: `src/state/order-refs.ts`. Numer musi mieć POWÓD (prefiks
+literowy, słowo kluczowe obok, albo ≥6 cyfr), krótkie słowa kluczowe muszą być
+całymi wyrazami, cyfry muszą być samodzielnym tokenem, a do TeaBrew idą tylko
+numery o kształcie naszego numeru (4–12 cyfr, bez prefiksu). Numer odrzucony
+z alarmowania **nadal zostaje w sprawie** jako wskaźnik do szukania. 10 testów.
+
+Po poprawce, na tych samych fiksturach: z 7 zapytań do TeaBrew zostały 4, a
+z alarmów tylko jeden — `99999` z tematu „Pilne — status zamówienia 99999",
+czyli prawdziwe trafienie.
+
+Dlaczego to warte tyle uwagi: raport mówiący „3 numerów nie ma w systemie", gdzie
+dwa to rok i tonaż, traci zaufanie w pierwszym dniu. A wtedy przestaje działać
+także w dniu, w którym numer jest prawdziwy.

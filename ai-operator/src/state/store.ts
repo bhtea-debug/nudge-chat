@@ -270,6 +270,7 @@ export class CopilotStore {
     category: IssueCategory;
     priority: IssuePriority;
     status: IssueStatus;
+    classifier?: "deterministic" | "model";
     ref: SourceRef;
     relatedOrderRefs?: readonly string[];
     relatedProductRefs?: readonly string[];
@@ -291,6 +292,7 @@ export class CopilotStore {
       category: input.category,
       priority: input.priority,
       status,
+      classifier: input.classifier ?? "deterministic",
       relatedOrderRefs: [...(input.relatedOrderRefs ?? [])],
       relatedProductRefs: [...(input.relatedProductRefs ?? [])],
       lastEvidenceAt: null,

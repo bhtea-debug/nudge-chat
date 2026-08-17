@@ -5,8 +5,10 @@ import { MemoryAuditSink, newCorrelationId } from "../capability/audit.js";
 import type { ModelLayer } from "../model/roles.js";
 import { MailMessage } from "../mail/types.js";
 import { MONITOR_SYSTEM_PROMPT } from "../agent/prompt.js";
-import { extractOrderRefs, matchIssue } from "./correlate.js";
+import { matchIssue } from "./correlate.js";
+import { extractOrderRefs, isOwnOrderShape } from "./order-refs.js";
 import { splitNoise } from "./noise.js";
+import { classifyDeterministic, deservesIssue } from "./classify-deterministic.js";
 import type { CopilotStore } from "./store.js";
 import { ISSUE_CATEGORIES, ISSUE_PRIORITIES, type IssueStatus, type SourceRef } from "./types.js";
 import { explainModelError } from "../model/errors.js";
@@ -90,6 +92,34 @@ export interface MonitorOptions {
   readonly firstRunDays: number;
   readonly maxPerFolder: number;
   readonly maxErpLookups: number;
+  /**
+   * `deterministic` — bez modelu i bez kosztu. Fakty zbieramy sami, ocenę robi
+   * Claude w momencie pytania, na subskrypcji właściciela. To jest domyślna
+   * i zalecana ścieżka: zgodna z zasadą „nasza infrastruktura nie woła drugiego
+   * modelu", a najważniejsza funkcja (numery z poczty nieobecne w TeaBrew) i tak
+   * modelu nie potrzebuje.
+   *
+   * `model` — ocena po naszej stronie. Wymaga kredytów API.
+   */
+  readonly classifier: "deterministic" | "model";
+  /** Adres własnej skrzynki — do rozpoznania „pisane DO nas" vs „w kopii". */
+  readonly ownAddress?: string | null;
+}
+
+/** Ujednolicony wynik klasyfikacji, niezależnie od tego, kto ją wykonał. */
+interface Verdict {
+  readonly worthIssue: boolean;
+  readonly title: string;
+  readonly summary: string;
+  readonly category: (typeof ISSUE_CATEGORIES)[number];
+  readonly priority: (typeof ISSUE_PRIORITIES)[number];
+  readonly waitingFor: string | null;
+  readonly orderRefs: string[];
+  /** Numery, które wolno sprawdzać w TeaBrew i którymi wolno alarmować. */
+  readonly refsForErp: string[];
+  readonly productRefs: string[];
+  readonly notify: boolean;
+  readonly notifyWhy: string | null;
 }
 
 export class MailMonitor {
@@ -167,32 +197,79 @@ export class MailMonitor {
         toModel = keep.length;
 
         if (keep.length > 0) {
-          const rows = await this.classify(keep, signal);
-          cost = {
-            ...cost,
-            modelCalls: cost.modelCalls + 1,
-            inputTokens: cost.inputTokens + rows.inputTokens,
-            outputTokens: cost.outputTokens + rows.outputTokens,
-          };
+          // Klasyfikacja: deterministyczna (domyślnie, bez kosztu) albo modelem.
+          // `verdicts` ma ten sam kształt w obu ścieżkach, więc reszta pętli nie
+          // wie, kto ocenił — i nie ma jak się rozjechać między trybami.
+          const verdicts = new Map<string, Verdict>();
 
-          const byId = new Map(rows.items.map((r) => [r.id, r]));
+          if (this.opts.classifier === "model") {
+            const rows = await this.classify(keep, signal);
+            cost = {
+              ...cost,
+              modelCalls: cost.modelCalls + 1,
+              inputTokens: cost.inputTokens + rows.inputTokens,
+              outputTokens: cost.outputTokens + rows.outputTokens,
+            };
+            for (const r of rows.items) {
+              verdicts.set(r.id, {
+                worthIssue: r.sprawa,
+                title: r.tytul,
+                summary: r.streszczenie,
+                category: r.kategoria,
+                priority: r.priorytet,
+                waitingFor: r.naCoCzekamy || null,
+                orderRefs: r.numery.map((x) => x.trim()).filter(Boolean),
+                // Model wybrał numery semantycznie, więc wszystkie są mocne.
+                refsForErp: r.numery.map((x) => x.trim()).filter(Boolean),
+                productRefs: r.produkty,
+                notify: r.wartePowiadomienia,
+                notifyWhy: r.powodPowiadomienia || null,
+              });
+            }
+          } else {
+            for (const msg of keep) {
+              const d = classifyDeterministic(msg, {
+                ownAddress: this.opts.ownAddress ?? null,
+              });
+              verdicts.set(msg.id, {
+                worthIssue: deservesIssue(d),
+                title: d.title,
+                summary: d.summary,
+                category: d.category,
+                priority: d.priority,
+                waitingFor: d.waitingFor,
+                orderRefs: d.orderRefs,
+                refsForErp: d.refsForErp,
+                // Nazw produktów nie da się rzetelnie wyciągnąć bez rozumienia
+                // treści, a zgadywanie po słowach dawałoby fałszywe powiązania.
+                productRefs: [],
+                // Powiadomienie ustawia FAKT sprawdzony w TeaBrew (patrz
+                // enrichFromErp), nie wrażenie z tematu.
+                notify: false,
+                notifyWhy: null,
+              });
+            }
+          }
 
           for (const msg of keep) {
-            const row = byId.get(msg.id);
+            const row = verdicts.get(msg.id);
             if (!row) {
               // Model pominął wiadomość. NIE oznaczamy jej jako widzianej —
               // niech wróci w następnym przebiegu, zamiast zniknąć na zawsze.
               continue;
             }
-            if (!row.sprawa) {
+            if (!row.worthIssue) {
               this.opts.store.markMessageSeen(msg.id, folder, null, scanAt);
-              dropped["model uznał, że nie wymaga sprawy"] =
-                (dropped["model uznał, że nie wymaga sprawy"] ?? 0) + 1;
+              const why =
+                this.opts.classifier === "model"
+                  ? "model uznał, że nie wymaga sprawy"
+                  : "ani nie do nas, ani bez numeru zamówienia";
+              dropped[why] = (dropped[why] ?? 0) + 1;
               continue;
             }
 
             const ref = toSourceRef(msg, folder);
-            const orderRefs = mergeRefs(row.numery, msg.subject, msg.snippet);
+            const orderRefs = mergeRefs(row.orderRefs, msg.subject, msg.snippet);
             const match = matchIssue(this.opts.store.all(), {
               ref,
               parentIds: parentIdsOf(msg),
@@ -204,31 +281,23 @@ export class MailMonitor {
               this.opts.store.patchIssue(
                 match.issue.id,
                 {
-                  summary: row.streszczenie || match.issue.summary,
-                  category: row.kategoria,
-                  priority: row.priorytet,
-                  status: nextStatus(match.issue.status, row.kategoria),
+                  summary: row.summary || match.issue.summary,
+                  category: row.category,
+                  priority: row.priority,
+                  status: nextStatus(match.issue.status, row.category),
                   relatedOrderRefs: [...new Set([...match.issue.relatedOrderRefs, ...orderRefs])],
                   relatedProductRefs: [
-                    ...new Set([...match.issue.relatedProductRefs, ...row.produkty]),
+                    ...new Set([...match.issue.relatedProductRefs, ...row.productRefs]),
                   ],
-                  waitingFor: row.naCoCzekamy || match.issue.waitingFor,
-                  notificationCandidate: row.wartePowiadomienia || match.issue.notificationCandidate,
-                  notificationReason:
-                    row.powodPowiadomienia || match.issue.notificationReason,
+                  waitingFor: row.waitingFor ?? match.issue.waitingFor,
+                  notificationCandidate: row.notify || match.issue.notificationCandidate,
+                  notificationReason: row.notifyWhy ?? match.issue.notificationReason,
                 },
-                `status: aktualizacja z nowej wiadomości (${row.kategoria})`,
+                `status: aktualizacja z nowej wiadomości (${row.category})`,
                 scanAt,
               );
               this.opts.store.markMessageSeen(msg.id, folder, match.issue.id, scanAt);
               updated += 1;
-              if (row.wartePowiadomienia) {
-                notifications.push({
-                  id: match.issue.id,
-                  title: match.issue.title,
-                  reason: row.powodPowiadomienia || "nowa wiadomość w ważnej sprawie",
-                });
-              }
               continue;
             }
 
@@ -241,28 +310,22 @@ export class MailMonitor {
                 : "";
 
             const issue = this.opts.store.createIssue({
-              title: row.tytul || msg.subject,
-              summary: (row.streszczenie || msg.snippet) + nearNote,
-              category: row.kategoria,
-              priority: row.priorytet,
-              status: row.kategoria === "monitor" ? "monitoring" : "new",
+              title: row.title || msg.subject,
+              summary: (row.summary || msg.snippet) + nearNote,
+              category: row.category,
+              priority: row.priority,
+              status: row.category === "monitor" ? "monitoring" : "new",
+              classifier: this.opts.classifier,
               ref,
               relatedOrderRefs: orderRefs,
-              relatedProductRefs: row.produkty,
-              waitingFor: row.naCoCzekamy || null,
-              notificationCandidate: row.wartePowiadomienia,
-              notificationReason: row.powodPowiadomienia || null,
+              relatedProductRefs: row.productRefs,
+              waitingFor: row.waitingFor,
+              notificationCandidate: row.notify,
+              notificationReason: row.notifyWhy,
               at: scanAt,
             });
             this.opts.store.markMessageSeen(msg.id, folder, issue.id, scanAt);
             created += 1;
-            if (row.wartePowiadomienia) {
-              notifications.push({
-                id: issue.id,
-                title: issue.title,
-                reason: row.powodPowiadomienia || "nowa ważna sprawa",
-              });
-            }
           }
         }
 
@@ -336,14 +399,20 @@ export class MailMonitor {
     const worth = this.opts.store
       .openIssues()
       .filter((i) => i.relatedOrderRefs.length > 0)
-      .filter((i) => ["urgent", "decision", "reply"].includes(i.category))
+      // Bez modelu kategoria jest słabym sygnałem, więc zawężanie po niej
+      // pomijałoby dokładnie te sprawy, po które ten system istnieje. Budżet
+      // wywołań i tak ogranicza pracę.
+      .filter((i) => this.opts.classifier === "deterministic" || ["urgent", "decision", "reply"].includes(i.category))
       // Nie odpytujemy tego samego zamówienia co przebieg — dopiero gdy sprawa
       // zmieniła się po ostatnim sprawdzeniu.
       .filter((i) => i.lastEvidenceAt === null || i.updatedAt > i.lastEvidenceAt);
 
     for (const issue of worth) {
       if (budget <= 0) break;
-      const ref = issue.relatedOrderRefs[0];
+      // Sprawdzamy tylko numery o KSZTAŁCIE naszego numeru zamówienia.
+      // Numeracja kontrahenta i numery przesyłek gwarantowałyby odpowiedź
+      // „nie znam", czyli fałszywy alarm przy każdym przebiegu.
+      const ref = issue.relatedOrderRefs.find(isOwnOrderShape);
       if (!ref) continue;
       budget -= 1;
       spent(1);
@@ -355,23 +424,28 @@ export class MailMonitor {
         )) as { matchedBy: string; order?: { fulfillmentStatus?: string; paymentStatus?: string } | null };
 
         const missing = out.matchedBy === "none";
+        // Sformułowanie jest CELOWO bez interpretacji. „Prawdopodobnie nie
+        // zostało wprowadzone" byłoby domysłem — numer może też być literówką
+        // klienta albo numerem z innego systemu. Podajemy fakt: nie ma go tam.
         const summary = missing
-          ? `zamówienia ${ref} NIE MA w TeaBrew`
+          ? `numeru ${ref} NIE MA w TeaBrew`
           : `${ref}: ${out.order?.fulfillmentStatus ?? "?"} / ${out.order?.paymentStatus ?? "?"}`;
 
         // Konflikt między obietnicą w mailu a stanem systemu jest dokładnie tym,
         // po co ten system istnieje — i jest kandydatem do powiadomienia.
-        const conflict = missing && ["urgent", "decision", "reply"].includes(issue.category);
-
+        // To jest jedyne miejsce, w którym monitor podnosi priorytet — i robi to
+        // na podstawie FAKTU, nie wrażenia z tematu: ktoś pisze o zamówieniu,
+        // którego w systemie nie ma. Bez modelu, bez interpretacji treści.
         this.opts.store.patchIssue(
           issue.id,
           {
             lastErpSummary: summary,
             lastEvidenceAt: at,
-            ...(conflict
+            ...(missing
               ? {
+                  priority: "high" as const,
                   notificationCandidate: true,
-                  notificationReason: `klient pisze o zamówieniu ${ref}, którego nie ma w TeaBrew`,
+                  notificationReason: `w wiadomości jest numer ${ref}, którego nie ma w TeaBrew`,
                 }
               : {}),
           },

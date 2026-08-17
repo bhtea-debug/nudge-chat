@@ -113,13 +113,10 @@ export function matchIssue(
 }
 
 /**
- * Numery, które warto sprawdzić w ERP. Ten sam wzorzec, co w triage — celowo
- * ten sam, bo dwa różne rozpoznawania numeru zamówienia rozjechałyby się
- * pierwszego dnia.
+ * Rozpoznawanie numerów zamówień mieszka w `order-refs.ts` i jest JEDNO
+ * w całym systemie. Wcześniej stał tu własny wzorzec „każda liczba od czterech
+ * cyfr" — i dokładnie to, przed czym ostrzegał komentarz obok, się stało:
+ * dwa różne rozpoznawania numeru rozjechały się, bo jedno dostawało numery
+ * wybrane wcześniej przez model, a drugie surowy tekst.
  */
-export const ORDER_REF = /\b(?:[A-Z]{1,4}[/-])?\d{4,}(?:[/-]\d+)*\b/g;
-
-export function extractOrderRefs(text: string): string[] {
-  const hits = text.match(ORDER_REF) ?? [];
-  return [...new Set(hits.map((h) => h.trim()))];
-}
+export { extractOrderRefs, findOrderRefs, isOwnOrderShape, looksLikeYear } from "./order-refs.js";

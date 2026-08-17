@@ -91,6 +91,18 @@ export const Issue = z.object({
   category: z.enum(ISSUE_CATEGORIES),
   priority: z.enum(ISSUE_PRIORITIES),
   status: z.enum(ISSUE_STATUSES),
+  /**
+   * Skąd wzięły się kategoria, priorytet i streszczenie.
+   *
+   * `deterministic` = z faktów: nadawca, temat, numery, odpowiedź TeaBrew.
+   * Nic nie zostało przeformułowane, więc nic nie mogło zostać zmyślone — ale
+   * kategoria jest wtedy słabym sygnałem, nie oceną, i Claude ma prawo ją
+   * nadpisać własnym rozumowaniem.
+   *
+   * `model` = ocenione przez model po naszej stronie (wymaga kredytów API,
+   * domyślnie wyłączone).
+   */
+  classifier: z.enum(["deterministic", "model"]).default("deterministic"),
   relatedOrderRefs: z.array(z.string()),
   relatedProductRefs: z.array(z.string()),
   /** Kiedy ostatnio mieliśmy TWARDY dowód (wywołanie capability) w tej sprawie. */

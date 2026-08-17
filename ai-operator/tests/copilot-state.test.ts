@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { CopilotStore } from "../src/state/store.js";
-import { extractOrderRefs, matchIssue } from "../src/state/correlate.js";
+import { extractOrderRefs, findOrderRefs, isOwnOrderShape, matchIssue } from "../src/state/correlate.js";
 import { classifyNoise, splitNoise } from "../src/state/noise.js";
 import { createIssueCapabilities, presentedIds } from "../src/state/capabilities.js";
 import { MemoryAuditSink, newCorrelationId } from "../src/capability/audit.js";
@@ -174,6 +174,7 @@ describe("korelacja — duplikat jest mniej groźny niż scalenie dwóch spraw",
     category: "reply",
     priority: "normal",
     status: "new",
+    classifier: "deterministic",
     relatedOrderRefs: ["2307029"],
     relatedProductRefs: [],
     lastEvidenceAt: null,
@@ -439,5 +440,67 @@ describe("błędy API modelu tłumaczone na komunikat dla człowieka", () => {
 
   it("nie gubi treści przy błędzie, który nie jest Error", () => {
     expect(explainModelError("socket hang up").plain).toContain("socket hang up");
+  });
+});
+
+describe("rozpoznawanie numerów zamówień w surowym tekście", () => {
+  const refs = (text: string): string[] => findOrderRefs(text).map((f) => f.ref);
+
+  it("bierze numer po słowie kluczowym", () => {
+    expect(refs("Pilne - status zamówienia 99999")).toEqual(["99999"]);
+    expect(refs("faktura 12345 do korekty")).toEqual(["12345"]);
+  });
+
+  it("bierze numer z prefiksem literowym", () => {
+    expect(refs("ZP/06/2026/00016 gotowe")).toEqual(["ZP/06/2026/00016"]);
+    expect(refs("nasz nr RB-2026-118")).toContain("RB-2026-118");
+  });
+
+  it("bierze długi numer bez kontekstu", () => {
+    expect(refs("Zamówienie 2307029 - prosimy o potwierdzenie")).toContain("2307029");
+  });
+
+  it("NIE bierze roku", () => {
+    // Realny fałszywy alarm: „Ostatnie dni rejestracji na targi opakowań!"
+    // dawało numer 2026, który potem trafiał do TeaBrew i wracał jako brak.
+    expect(refs("spotkanie w 2026 roku")).toEqual([]);
+    expect(refs("Ostatnie dni rejestracji na targi opakowań w 2026")).toEqual([]);
+  });
+
+  it("NIE bierze tonażu ani procentów", () => {
+    expect(refs("Warunki na Q4 - prośba o rabat 12%, planujemy 1800 kg")).toEqual([]);
+  });
+
+  it("krótkie słowo kluczowe musi być całym wyrazem", () => {
+    // „po" wewnątrz „Potwierdzenie" wyciągało rok jako numer zamówienia.
+    // To był realny błąd na fiksturach.
+    expect(refs("Potwierdzenie wysyłki - rooibos 200 kg z 2026")).toEqual([]);
+  });
+
+  it("nie sięga w ŚRODEK numeru kontrahenta", () => {
+    // Realny tekst z fikstury: „partia dostawcy RB-2026-118". Słowo „partia"
+    // uruchamiało regułę, a przechwytywanie nie było przywiązane do granicy
+    // tokenu — więc wyciągało 2026 ze środka numeru dostawcy. Sam \b nie
+    // wystarcza: między „-" i „2" granica wyrazu istnieje.
+    const found = refs("potwierdzamy wysyłkę 200 kg rooibos, partia dostawcy RB-2026-118.");
+    expect(found).toEqual(["RB-2026-118"]);
+    expect(found).not.toContain("2026");
+  });
+
+  it("odróżnia numer o naszym kształcie od obcego", () => {
+    expect(isOwnOrderShape("2307029")).toBe(true);
+    expect(isOwnOrderShape("99999")).toBe(true);
+    // Numeracja kontrahenta — brak w TeaBrew jest oczekiwany.
+    expect(isOwnOrderShape("RB-2026-118")).toBe(false);
+    // Numer przesyłki InPost — sprawdzanie w TeaBrew to gwarantowany fałszywy alarm.
+    expect(isOwnOrderShape("521000014358100142097412")).toBe(false);
+  });
+
+  it("numer przesyłki nadal jest zapamiętany jako wskaźnik", () => {
+    // Odrzucamy go z alarmowania, nie z pamięci — po numerze przesyłki
+    // właściciel może chcieć szukać.
+    expect(refs("przesyłka 521000014358100142097412 uszkodzona")).toContain(
+      "521000014358100142097412",
+    );
   });
 });

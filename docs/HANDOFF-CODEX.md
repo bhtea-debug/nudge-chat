@@ -22,7 +22,7 @@ powtarzać ani „dokańczać".
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
 | raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
-| testy | **116**, bez sieci i bez klucza API | — |
+| testy | **139**, bez sieci i bez klucza API | — |
 | BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 9 |
 
 Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
@@ -261,6 +261,54 @@ Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
   sprawdza, czy każdy import z `src/` ma swój plik W COMMICIE, i uruchamia na tym
   typecheck oraz testy. Weryfikacja samej kontroli: usunięcie jednego pliku
   z rozpakowanego drzewa daje 4 zgłoszone zepsute importy.
+
+### Kredyty API — Copilot ich NIE UŻYWA
+
+**Decyzja właściciela (17.08.2026): tylko subskrypcja Claude, zero kredytów API.**
+
+Monitor w tle był jedynym miejscem, które wołało model po naszej stronie — i to
+naruszało zasadę z jego własnego zadania („Claude wykonuje reasoning, nasza
+infrastruktura NIE wywołuje drugiego modelu"). Teraz:
+
+- `MONITOR_CLASSIFIER=deterministic` (domyślnie) — sprawa powstaje z FAKTÓW:
+  nadawca, temat, numery wymienione w wiadomości, odpowiedź TeaBrew, czy
+  odpowiedzieliśmy (`\Answered`). Tytuł i streszczenie NIE są generowane —
+  tytuł to nadawca i temat, streszczenie to podgląd z serwera. Nic nie jest
+  przeformułowane, więc nie ma czego zmyślić.
+- Sprawa niesie `classifier: "deterministic"`, żeby Claude wiedział, że kategoria
+  jest słabym sygnałem, nie oceną, i mógł ją nadpisać.
+- Raport dzienny rysuje się z LISTY SPRAW, nie z osobnego przebiegu triage.
+  Skutek uboczny na plus: raport i odpowiedzi Claude pokazują ten sam stan
+  i nie mogą się rozjechać w liczbach.
+- `ask` i `triage` zostają i nadal wołają model — są opcjonalne i płatne.
+  `install-schedule.sh` NIE wymaga już klucza.
+
+**Nie przywracaj modelu do ścieżki domyślnej.**
+
+### Rozpoznawanie numerów zamówień — cztery kolejne wpadki w jednym miejscu
+
+`src/state/order-refs.ts` jest JEDYNYM miejscem rozpoznającym numer zamówienia.
+Powstało po serii błędów, każdy wykryty na prawdziwych danych i każdy tej samej
+klasy — fałszywy alarm „numeru X nie ma w TeaBrew":
+
+1. **„każda liczba od 4 cyfr"** — wzorzec działał w triage, bo tam dostawał
+   numery, które model już WYBRAŁ semantycznie. Na surowym tekście dawał `1800`
+   (tonaż) i `2026` (rok).
+2. **`po` bez granic wyrazu** — dopasowywało się w „**Po**twierdzenie".
+3. **przechwytywanie cyfr bez granicy tokenu** — „partia dostawcy RB-2026-118"
+   dawało `2026` ze ŚRODKA numeru dostawcy. Sam `\b` nie wystarcza: między „-"
+   i „2" granica wyrazu istnieje. Potrzebne `(?<![\w/-])`.
+4. **numer przesyłki** (24 cyfry, InPost) sprawdzany w TeaBrew gwarantował
+   odpowiedź „nie znam", czyli fałszywy alarm przy każdym przebiegu.
+
+Reguły: numer musi mieć POWÓD (prefiks literowy, słowo kluczowe obok, albo ≥6
+cyfr), a do TeaBrew idą tylko numery o KSZTAŁCIE naszego numeru
+(`isOwnOrderShape`: 4–12 cyfr, bez prefiksu). Numer odrzucony z alarmowania
+NADAL zostaje w sprawie jako wskaźnik. 10 testów.
+
+Dlaczego to tyle uwagi: raport mówiący „3 numerów nie ma w systemie", gdzie dwa
+to rok i tonaż, traci zaufanie w pierwszym dniu — a wtedy przestaje działać także
+w dniu, w którym numer jest prawdziwy.
 
 ### Poczta — zakres folderów (ROZSTRZYGNIĘTE)
 

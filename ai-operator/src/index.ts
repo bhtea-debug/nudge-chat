@@ -112,7 +112,11 @@ export function createApp(config: AppConfig = loadConfig()): App {
     get monitor() {
       return (monitor ??= new MailMonitor({
         registry,
-        models: getModels(),
+        // Warstwa modelu jest LENIWA i w trybie deterministycznym nigdy nie
+        // powstaje — dlatego monitor bez kredytów API startuje bez problemu.
+        get models() {
+          return getModels();
+        },
         scopes: AGENT_SCOPES,
         store: getStore(),
         auditFile: config.auditFile,
@@ -120,6 +124,8 @@ export function createApp(config: AppConfig = loadConfig()): App {
         firstRunDays: config.copilot.firstRunDays,
         maxPerFolder: config.copilot.maxPerFolder,
         maxErpLookups: config.copilot.maxErpLookups,
+        classifier: config.copilot.classifier,
+        ownAddress: config.mail.kind === "imap" ? config.mail.user : null,
       }));
     },
     get models() {

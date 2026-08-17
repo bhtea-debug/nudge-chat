@@ -65,10 +65,13 @@ case "$MINUTE" in ''|*[!0-9]*) die "Minuta \"$MINUTE\" nie jest liczbą." ;; esa
 NODE="$(command -v node || true)"
 [ -n "$NODE" ] || die "Nie znalazłem node w PATH."
 
-# Raport woła model, więc bez klucza API nie ma o czym mówić. Sprawdzamy
-# obecność zmiennej, NIE jej wartość — i nigdy jej nie wypisujemy.
-if ! grep -q '^ANTHROPIC_API_KEY=.\+' "$DIR/.env"; then
-  die "W $DIR/.env nie ma wypełnionego ANTHROPIC_API_KEY. Raport dzienny woła model po naszej stronie, więc klucz jest wymagany (inaczej niż w trybie MCP)."
+# Klucz API NIE jest wymagany. Raport i monitor pracują deterministycznie:
+# zbierają fakty z poczty i TeaBrew, a ocenę robi Claude w rozmowie, na
+# subskrypcji właściciela. Klucz jest potrzebny tylko przy świadomym włączeniu
+# MONITOR_CLASSIFIER=model, i wtedy brak klucza zgłosi sam przebieg.
+if grep -q '^MONITOR_CLASSIFIER=model' "$DIR/.env" 2>/dev/null &&
+   ! grep -q '^ANTHROPIC_API_KEY=.\+' "$DIR/.env"; then
+  die "W .env jest MONITOR_CLASSIFIER=model, ale nie ma ANTHROPIC_API_KEY. Albo uzupełnij klucz, albo usuń tę linię — tryb domyślny (deterministyczny) klucza nie potrzebuje."
 fi
 
 chmod +x "$RUNNER"

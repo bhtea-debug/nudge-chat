@@ -25,6 +25,8 @@ import { join } from "node:path";
 import { createApp } from "../index.js";
 import { fromPackageRoot } from "../paths.js";
 import { renderReportHtml, summarize } from "../agent/report-view.js";
+import { renderRun } from "../state/report.js";
+import { OPEN_STATUSES } from "../state/types.js";
 import { formatModelError } from "../model/errors.js";
 
 const argv = process.argv.slice(2);
@@ -40,18 +42,23 @@ async function main(): Promise<number> {
   const dir = fromPackageRoot("raporty");
 
   try {
-    const result = await app.triage.run({
-      sinceDays: num("--dni", 1),
-      limit: num("--limit", 50),
-      // Budżet wywołań ERP wyższy niż w podglądzie interaktywnym: w raporcie
-      // dziennym luka poczta ↔ system jest głównym pytaniem, nie dodatkiem.
-      maxErpLookups: num("--erp", 15),
-      checkAllRefs: true,
-    });
+    // Raport = przebieg monitora (bez modelu, bez kosztu) plus widok pamięci
+    // spraw. Nie osobna analiza: dzięki temu raport i odpowiedzi Claude pokazują
+    // DOKŁADNIE ten sam stan i nie mogą się rozjechać w liczbach.
+    if (!argv.includes("--bez-skanu")) {
+      const run = await app.monitor.runOnce();
+      process.stderr.write(renderRun(run) + "\n");
+    }
+
+    const input = {
+      issues: app.store.all(),
+      checkpoints: app.store.checkpoints(),
+      integrityWarning: app.store.integrityWarning(),
+    };
 
     const now = new Date();
     const stamp = now.toISOString().slice(0, 10);
-    const html = renderReportHtml(result, now);
+    const html = renderReportHtml(input, now);
 
     mkdirSync(dir, { recursive: true });
     const latest = join(dir, "dzisiaj.html");
@@ -59,24 +66,26 @@ async function main(): Promise<number> {
     writeFileSync(join(dir, `${stamp}.html`), html, "utf8");
 
     // Jedna linia dla powiadomienia. Reszta jest w panelu.
-    process.stdout.write(summarize(result) + "\n");
+    process.stdout.write(summarize(input) + "\n");
     process.stderr.write(`panel: ${latest}\n`);
 
     // Panel sam wchodzi na ekran tylko wtedy, gdy jest po co. Codzienne otwieranie
     // okna „nic się nie stało" uczy zamykać je bez czytania — a wtedy przestaje
     // działać także w dniu, w którym coś się stało.
     const worthOpening =
-      result.items.some((i) => i.erp.some((e) => !e.found)) ||
-      result.items.some((i) => i.category === "Pilne") ||
-      result.evidence.some((e) => !e.ok);
+      input.issues.some((i) => (i.lastErpSummary ?? "").includes("NIE MA")) ||
+      input.issues.some((i) => i.priority === "high" && OPEN_STATUSES.includes(i.status)) ||
+      input.checkpoints.some((c) => c.lastError !== null) ||
+      input.issues.some((i) => i.lastPresentedAt === null && OPEN_STATUSES.includes(i.status));
 
     if (argv.includes("--otworz") || (argv.includes("--otworz-jesli-wazne") && worthOpening)) {
       const { spawn } = await import("node:child_process");
       spawn("open", [latest], { stdio: "ignore", detached: true }).unref();
     }
 
-    // Kontrola dowodów działa w tym trybie — i ma być widoczna.
-    return result.evidence.some((e) => e.ok === false) ? 3 : 0;
+    // Nieudany skan folderu to dziura w danych, nie „spokojna skrzynka" —
+    // kod wyjścia to odzwierciedla, żeby harmonogram mógł o tym powiedzieć.
+    return input.checkpoints.some((c) => c.lastError !== null) ? 3 : 0;
   } catch (err) {
     // Ten sam komunikat co w monitorze — właściciel widzi go w powiadomieniu
     // macOS, więc surowy JSON z API byłby tam całkowicie bezużyteczny.
