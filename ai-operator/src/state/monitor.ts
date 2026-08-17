@@ -9,7 +9,7 @@ import { matchIssue } from "./correlate.js";
 import { extractOrderRefs, isOwnOrderShape } from "./order-refs.js";
 import { OrderResponse } from "../teabrew/contract.js";
 import { splitNoise } from "./noise.js";
-import { classifyDeterministic, deservesIssue } from "./classify-deterministic.js";
+import { classifyDeterministic, deservesIssue, domainOf } from "./classify-deterministic.js";
 import type { CopilotStore } from "./store.js";
 import { ISSUE_CATEGORIES, ISSUE_PRIORITIES, type IssueStatus, type SourceRef } from "./types.js";
 import { explainModelError } from "../model/errors.js";
@@ -105,6 +105,8 @@ export interface MonitorOptions {
   readonly classifier: "deterministic" | "model";
   /** Adres własnej skrzynki — do rozpoznania „pisane DO nas" vs „w kopii". */
   readonly ownAddress?: string | null;
+  /** Folder wysłanych. `null` = sygnał „znany kontrahent" niedostępny. */
+  readonly sentFolder?: string | null;
 }
 
 /** Ujednolicony wynik klasyfikacji, niezależnie od tego, kto ją wykonał. */
@@ -121,7 +123,12 @@ interface Verdict {
   readonly productRefs: string[];
   readonly notify: boolean;
   readonly notifyWhy: string | null;
+  readonly whyListed: string;
+  readonly likelyIrrelevant: boolean;
 }
+
+/** Jak często odświeżamy listę domen z folderu wysłanych. */
+const KNOWN_DOMAINS_TTL_HOURS = 24;
 
 export class MailMonitor {
   constructor(private readonly opts: MonitorOptions) {}
@@ -154,6 +161,10 @@ export class MailMonitor {
       issuesUpdated: 0,
     };
     let erpBudget = this.opts.maxErpLookups;
+
+    // Lista „z kim korespondujemy" — raz na dobę, bo zmienia się wolno,
+    // a każdy skan to dodatkowe zapytanie do serwera poczty.
+    await this.refreshKnownDomains(ctx);
 
     for (const folder of this.opts.folders) {
       const cp = this.opts.store.checkpoint(folder);
@@ -225,12 +236,17 @@ export class MailMonitor {
                 productRefs: r.produkty,
                 notify: r.wartePowiadomienia,
                 notifyWhy: r.powodPowiadomienia || null,
+                whyListed: `ocena modelu: ${r.kategoria}/${r.priorytet}`,
+                likelyIrrelevant: false,
               });
             }
           } else {
             for (const msg of keep) {
               const d = classifyDeterministic(msg, {
                 ownAddress: this.opts.ownAddress ?? null,
+                isKnownDomain: this.opts.sentFolder
+                  ? (dom) => this.opts.store.isKnownDomain(dom)
+                  : null,
               });
               verdicts.set(msg.id, {
                 worthIssue: deservesIssue(d),
@@ -248,6 +264,8 @@ export class MailMonitor {
                 // enrichFromErp), nie wrażenie z tematu.
                 notify: false,
                 notifyWhy: null,
+                whyListed: d.whyListed,
+                likelyIrrelevant: d.likelyIrrelevant,
               });
             }
           }
@@ -291,6 +309,10 @@ export class MailMonitor {
                     ...new Set([...match.issue.relatedProductRefs, ...row.productRefs]),
                   ],
                   waitingFor: row.waitingFor ?? match.issue.waitingFor,
+                  whyListed: row.whyListed,
+                  // Nowa wiadomość w sprawie unieważnia „prawdopodobnie
+                  // nieistotne": ktoś do niej wrócił, więc jest korespondencją.
+                  likelyIrrelevant: false,
                   notificationCandidate: row.notify || match.issue.notificationCandidate,
                   notificationReason: row.notifyWhy ?? match.issue.notificationReason,
                 },
@@ -317,6 +339,8 @@ export class MailMonitor {
               priority: row.priority,
               status: row.category === "monitor" ? "monitoring" : "new",
               classifier: this.opts.classifier,
+              whyListed: row.whyListed,
+              likelyIrrelevant: row.likelyIrrelevant,
               ref,
               relatedOrderRefs: orderRefs,
               relatedProductRefs: row.productRefs,
@@ -384,6 +408,45 @@ export class MailMonitor {
       droppedReasons: dropped,
       notificationCandidates: notifications,
     };
+  }
+
+  /**
+   * Odświeża listę domen, do których faktycznie pisaliśmy — z folderu wysłanych.
+   *
+   * To najmocniejszy sygnał „kontrahent, a nie wysyłka masowa" dostępny bez
+   * modelu, bo wynika z NASZEGO działania. Newsletter nie może go podrobić.
+   *
+   * Raz na dobę, bo relacje handlowe zmieniają się wolno, a każdy skan to
+   * dodatkowe zapytanie do serwera poczty. Nazwa folderu MUSI przyjść
+   * z konfiguracji — zgadywanie jej jest w tym projekcie zakazane.
+   */
+  private async refreshKnownDomains(ctx: CapabilityContext): Promise<void> {
+    const folder = this.opts.sentFolder;
+    if (!folder) return;
+
+    const last = this.opts.store.knownDomainsRefreshedAt();
+    if (last && hoursSince(last) < KNOWN_DOMAINS_TTL_HOURS) return;
+
+    try {
+      const sent = (await this.opts.registry.invoke(
+        "mail_list_recent",
+        { sinceDays: 30, limit: 50, unreadOnly: false, folder },
+        ctx,
+      )) as { messages: z.infer<typeof MailMessage>[] };
+
+      const domains = new Set<string>();
+      for (const m of sent.messages) {
+        for (const a of [...m.to, ...m.cc]) {
+          const d = domainOf(a.address);
+          if (d) domains.add(d);
+        }
+      }
+      this.opts.store.rememberKnownDomains([...domains]);
+    } catch {
+      // Nieudany skan wysłanych nie może przewrócić przebiegu. Skutek jest
+      // widoczny: sprawy powiedzą, że nie umieją ocenić nadawcy, zamiast
+      // po cichu uznać każdego za nieznanego.
+    }
   }
 
   /**
@@ -555,6 +618,10 @@ function mergeRefs(fromModel: readonly string[], subject: string, snippet: strin
 
 function daysSince(iso: string): number {
   return (Date.now() - new Date(iso).getTime()) / 86_400_000;
+}
+
+function hoursSince(iso: string): number {
+  return (Date.now() - new Date(iso).getTime()) / 3_600_000;
 }
 
 /** Model potrafi owinąć JSON w blok markdown albo dodać zdanie wstępu. */

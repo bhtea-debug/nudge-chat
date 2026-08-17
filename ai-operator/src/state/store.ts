@@ -53,6 +53,9 @@ export class CopilotStore {
   private issues = new Map<string, Issue>();
   private seen = new Map<string, SeenEntry>();
   private folders = new Map<string, FolderCheckpoint>();
+  /** Domeny, do których kiedykolwiek pisaliśmy. Z folderu wysłanych. */
+  private knownDomains = new Set<string>();
+  private knownDomainsAt: string | null = null;
   private eventCount = 0;
   /** Niepuste, gdy dziennik miał linie, których nie dało się odczytać. */
   private readonly damaged: string[] = [];
@@ -91,6 +94,12 @@ export class CopilotStore {
         this.issues = new Map(ev.issues.map((i) => [i.id, i]));
         this.seen = new Map(ev.seen);
         this.folders = new Map(ev.folders.map((f) => [f.folder, f]));
+        this.knownDomains = new Set(ev.knownDomains ?? []);
+        this.knownDomainsAt = ev.knownDomainsAt ?? null;
+        return;
+      case "known_domains":
+        for (const d of ev.domains) this.knownDomains.add(d);
+        this.knownDomainsAt = ev.at;
         return;
       case "issue_created":
         this.issues.set(ev.issue.id, ev.issue);
@@ -179,6 +188,27 @@ export class CopilotStore {
         messagesSeen: 0,
       }
     );
+  }
+
+  /** Czy pisaliśmy kiedykolwiek do tej domeny. */
+  isKnownDomain(domain: string | null): boolean {
+    return domain !== null && this.knownDomains.has(domain.toLowerCase());
+  }
+
+  knownDomainCount(): number {
+    return this.knownDomains.size;
+  }
+
+  /** Kiedy ostatnio odświeżyliśmy listę z folderu wysłanych. */
+  knownDomainsRefreshedAt(): string | null {
+    return this.knownDomainsAt;
+  }
+
+  rememberKnownDomains(domains: readonly string[], at?: string): void {
+    const fresh = domains.map((d) => d.toLowerCase()).filter((d) => d && !this.knownDomains.has(d));
+    // Zapisujemy tylko NOWE domeny — inaczej dziennik rósłby o kilkaset wpisów
+    // przy każdym odświeżeniu, nic nie zmieniając.
+    this.write({ t: "known_domains", at: at ?? new Date().toISOString(), domains: fresh });
   }
 
   checkpoints(): FolderCheckpoint[] {
@@ -271,6 +301,8 @@ export class CopilotStore {
     priority: IssuePriority;
     status: IssueStatus;
     classifier?: "deterministic" | "model";
+    whyListed?: string;
+    likelyIrrelevant?: boolean;
     ref: SourceRef;
     relatedOrderRefs?: readonly string[];
     relatedProductRefs?: readonly string[];
@@ -293,6 +325,8 @@ export class CopilotStore {
       priority: input.priority,
       status,
       classifier: input.classifier ?? "deterministic",
+      whyListed: input.whyListed ?? "",
+      likelyIrrelevant: input.likelyIrrelevant ?? false,
       relatedOrderRefs: [...(input.relatedOrderRefs ?? [])],
       relatedProductRefs: [...(input.relatedProductRefs ?? [])],
       lastEvidenceAt: null,
@@ -406,6 +440,8 @@ export class CopilotStore {
       issues: this.all(),
       seen: [...this.seen.entries()],
       folders: this.checkpoints(),
+      knownDomains: [...this.knownDomains],
+      knownDomainsAt: this.knownDomainsAt,
     };
     const tmp = `${this.logPath}.tmp`;
     writeFileSync(tmp, JSON.stringify(snapshot) + "\n", "utf8");

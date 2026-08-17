@@ -30,6 +30,8 @@ const issue = (over: Partial<Issue> = {}): Issue => ({
   priority: "normal",
   status: "new",
   classifier: "deterministic",
+  whyListed: "nadawca znany, brak odpowiedzi z naszej strony",
+  likelyIrrelevant: false,
   relatedOrderRefs: ["2307029"],
   relatedProductRefs: [],
   lastEvidenceAt: "2026-08-18T09:05:00.000Z",
@@ -84,7 +86,7 @@ describe("panel raportu", () => {
   it("stawia brakujące numery na pierwszym miejscu", () => {
     const html = renderReportHtml(input(), new Date("2026-08-18T09:15:00Z"));
     const missing = html.indexOf("Nie ma tego w TeaBrew");
-    const waiting = html.indexOf("Czeka na Twój ruch");
+    const waiting = html.indexOf("Korespondencja");
     expect(missing).toBeGreaterThan(-1);
     expect(missing).toBeLessThan(waiting);
     expect(html).toContain("2307029");
@@ -132,9 +134,47 @@ describe("panel raportu", () => {
     expect(html).not.toContain("banner stop");
   });
 
-  it("mówi, że sprawy powstają z faktów, a ocenę robi Claude", () => {
+  it("mówi, skąd bierze się priorytet i podział", () => {
     const html = renderReportHtml(input(), new Date());
-    expect(html).toContain("Nic nie jest przeformułowane przez model");
+    expect(html).toContain("wynikają z FAKTÓW");
+    expect(html).toContain("nic nie jest przeformułowane");
+  });
+
+  it("rozdziela prawdopodobnie nieistotne do osobnej, zwiniętej sekcji", () => {
+    // Zarzut właściciela: „nie rozdziela spamu od wiadomości". Rozdzielenie
+    // musi być widoczne w strukturze, nie tylko w danych.
+    const html = renderReportHtml(
+      input({
+        issues: [
+          issue({ id: "spr_ok", likelyIrrelevant: false, lastErpSummary: null }),
+          issue({
+            id: "spr_szum",
+            title: "PsiBufet — Złap podwójną zniżkę",
+            likelyIrrelevant: true,
+            priority: "low",
+            whyListed: "nigdy nie pisaliśmy do psibufet.example, brak numeru i brak wątku",
+            lastErpSummary: null,
+            relatedOrderRefs: [],
+          }),
+        ],
+      }),
+      new Date(),
+    );
+    expect(html).toContain("Prawdopodobnie nieistotne");
+    expect(html).toContain("nigdy nie pisaliśmy do psibufet.example");
+    // Sekcja jest ZWINIĘTA, ale sprawa nadal w dokumencie — nie usuwamy jej.
+    expect(html).toContain("<details>");
+    expect(html).toContain("PsiBufet");
+  });
+
+  it("każda pozycja niesie priorytet i powód, dla którego tu jest", () => {
+    const html = renderReportHtml(
+      input({ issues: [issue({ priority: "high", whyListed: "w wiadomości jest numer zamówienia 2307029" })] }),
+      new Date(),
+    );
+    expect(html).toContain("w wiadomości jest numer zamówienia 2307029");
+    expect(html).toContain("prio-high");
+    expect(html).toContain("wysoki");
   });
 
   it("nie wstawia treści poczty do HTML bez ucieczki", () => {

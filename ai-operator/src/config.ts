@@ -45,6 +45,18 @@ export interface AppConfig {
      * pytania, na subskrypcji właściciela. `model` wymaga kredytów API.
      */
     readonly classifier: "deterministic" | "model";
+    /**
+     * Folder wysłanych — do zbudowania listy „z kim faktycznie korespondujemy".
+     * To najmocniejszy dostępny bez modelu sygnał „kontrahent, nie wysyłka
+     * masowa", bo wynika z naszego własnego działania.
+     *
+     * NIE MA WARTOŚCI DOMYŚLNEJ i to jest celowe: nazwy folderu wysłanych nie
+     * wolno zgadywać (u różnych dostawców to „Sent", „Sent Items", „INBOX.Sent"
+     * albo nazwa zlokalizowana). Właściwą nazwę wypisuje `npm run check:mail`,
+     * który czyta ją z atrybutu IMAP SPECIAL-USE. Bez tej zmiennej sygnał jest
+     * niedostępny i sprawy mówią o tym wprost, zamiast udawać ocenę.
+     */
+    readonly sentFolder: string | null;
   };
   readonly mail:
     | { readonly kind: "fixture"; readonly filePath: string }
@@ -110,6 +122,7 @@ export function loadConfig(): AppConfig {
       maxPerFolder: Math.max(1, Number(opt("MONITOR_MAX_PER_FOLDER", "50"))),
       maxErpLookups: Math.max(0, Number(opt("MONITOR_MAX_ERP_LOOKUPS", "10"))),
       classifier: opt("MONITOR_CLASSIFIER", "deterministic") === "model" ? "model" : "deterministic",
+      sentFolder: process.env["MAIL_SENT_FOLDER"]?.trim() || null,
     },
     mail:
       mode === "live"

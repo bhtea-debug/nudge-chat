@@ -103,6 +103,22 @@ export const Issue = z.object({
    * domyślnie wyłączone).
    */
   classifier: z.enum(["deterministic", "model"]).default("deterministic"),
+  /**
+   * DLACZEGO ta sprawa jest na liście i dlaczego ma taki priorytet — zdanie
+   * z faktów, nie z oceny modelu.
+   *
+   * Powstało po uwadze właściciela, że raport „nie rozdziela spamu od
+   * wiadomości, nie ma priorytetów ani wyjaśnienia". Lista bez uzasadnienia
+   * zmusza go do otwarcia każdej pozycji, czyli do wykonania tej pracy, którą
+   * miał zdjąć z siebie.
+   */
+  whyListed: z.string().default(""),
+  /**
+   * true = prawdopodobnie NIE korespondencja: nieznany nadawca, brak numeru
+   * i brak wątku. Nie usuwamy takiej sprawy — pokazujemy ją osobno i zwiniętą,
+   * bo pomyłka w tę stronę oznaczałaby ukrycie pierwszego maila od klienta.
+   */
+  likelyIrrelevant: z.boolean().default(false),
   relatedOrderRefs: z.array(z.string()),
   relatedProductRefs: z.array(z.string()),
   /** Kiedy ostatnio mieliśmy TWARDY dowód (wywołanie capability) w tej sprawie. */
@@ -136,6 +152,8 @@ export type IssuePatch = Partial<
     | "waitingFor"
     | "notificationCandidate"
     | "notificationReason"
+    | "whyListed"
+    | "likelyIrrelevant"
   >
 >;
 
@@ -165,7 +183,21 @@ export type FolderCheckpoint = z.infer<typeof FolderCheckpoint>;
  * „dlaczego ta sprawa tak wygląda", którego snapshot sam nie odpowie.
  */
 export type StateEvent =
-  | { t: "snapshot"; at: string; issues: Issue[]; seen: [string, SeenEntry][]; folders: FolderCheckpoint[] }
+  | {
+      t: "snapshot";
+      at: string;
+      issues: Issue[];
+      seen: [string, SeenEntry][];
+      folders: FolderCheckpoint[];
+      knownDomains?: string[];
+      knownDomainsAt?: string | null;
+    }
+  /**
+   * Domeny, z którymi FAKTYCZNIE korespondowaliśmy — zebrane z folderu
+   * wysłanych. To najmocniejszy dostępny bez modelu sygnał „to jest kontrahent,
+   * a nie wysyłka masowa", bo wynika z naszego własnego działania.
+   */
+  | { t: "known_domains"; at: string; domains: string[] }
   | { t: "issue_created"; at: string; issue: Issue }
   | { t: "issue_patched"; at: string; id: string; patch: IssuePatch; why: string; by: string }
   | { t: "issue_source_added"; at: string; id: string; ref: SourceRef; why: string }

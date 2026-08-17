@@ -126,6 +126,7 @@ export function createApp(config: AppConfig = loadConfig()): App {
         maxErpLookups: config.copilot.maxErpLookups,
         classifier: config.copilot.classifier,
         ownAddress: config.mail.kind === "imap" ? config.mail.user : null,
+        sentFolder: config.copilot.sentFolder,
       }));
     },
     get models() {

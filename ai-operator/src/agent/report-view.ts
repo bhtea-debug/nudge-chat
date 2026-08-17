@@ -52,6 +52,13 @@ const missingInErp = (issues: readonly Issue[]): Issue[] =>
 const open = (issues: readonly Issue[]): Issue[] =>
   issues.filter((i) => OPEN_STATUSES.includes(i.status));
 
+const PRIO_ORDER = ["high", "normal", "low"];
+const byPriority = (a: Issue, b: Issue): number =>
+  PRIO_ORDER.indexOf(a.priority) - PRIO_ORDER.indexOf(b.priority) ||
+  b.updatedAt.localeCompare(a.updatedAt);
+
+const PRIO_LABEL: Record<string, string> = { high: "wysoki", normal: "zwykły", low: "niski" };
+
 /**
  * Jedno zdanie do powiadomienia. Mówi o liczbach, nie o tym, że raport istnieje —
  * „raport gotowy" nie jest informacją, po której ktokolwiek cokolwiek zrobi.
@@ -86,9 +93,13 @@ export function summarize(input: ReportInput): string {
 
 export function renderReportHtml(input: ReportInput, now: Date): string {
   const opened = open(input.issues);
-  const missing = missingInErp(opened);
-  const waiting = opened.filter((i) => i.status === "waiting_for_owner" || i.status === "new");
-  const watching = opened.filter((i) => !waiting.includes(i) && !missing.includes(i));
+  const missing = missingInErp(opened).sort(byPriority);
+  // Trzy kubełki, rozłączne. Rozdzielenie „prawdopodobnie nieistotne" jest tu
+  // najważniejsze: bez niego lista faktów zmusza właściciela do otwierania
+  // każdej pozycji, czyli do wykonania tej pracy, którą miał zdjąć z siebie.
+  const rest = opened.filter((i) => !missing.includes(i));
+  const real = rest.filter((i) => !i.likelyIrrelevant).sort(byPriority);
+  const irrelevant = rest.filter((i) => i.likelyIrrelevant).sort(byPriority);
 
   const lastScan = input.checkpoints
     .map((c) => c.lastOkScanAt)
@@ -125,6 +136,23 @@ export function renderReportHtml(input: ReportInput, now: Date): string {
     banners.push(`<div class="banner warn"><strong>Pamięć spraw:</strong> ${esc(input.integrityWarning)}</div>`);
   }
 
+  const card = (i: Issue): string => `
+    <div class="item prio-${esc(i.priority)}">
+      <div class="head">
+        <span class="subj">${esc(i.title)}</span>
+        <span class="pill p-${esc(i.priority)}">${esc(PRIO_LABEL[i.priority] ?? i.priority)}</span>
+      </div>
+      ${i.whyListed ? `<p class="why">${esc(i.whyListed)}</p>` : ""}
+      ${i.summary ? `<p class="reason">${esc(i.summary)}</p>` : ""}
+      <span class="meta">${esc(i.sourceRefs.at(-1)?.from ?? "?")} · ${esc(i.sourceRefs.at(-1)?.date ? when(i.sourceRefs.at(-1)!.date) : age(i.createdAt))}${i.sourceRefs.length > 1 ? ` · ${i.sourceRefs.length} wiadomości` : ""}${i.lastPresentedAt === null ? " · NOWE" : ""}</span>
+      ${i.waitingFor ? `<div class="erp">czekamy: ${esc(i.waitingFor)}</div>` : ""}
+      ${i.lastErpSummary && !missing.includes(i) ? `<div class="erp">TeaBrew: ${esc(i.lastErpSummary)}</div>` : ""}
+    </div>`;
+
+  // Sekcja „nie ma w TeaBrew" używa TEGO SAMEGO kafla co reszta, plus numery
+  // na wierzchu. Wcześniej miała własny render bez priorytetu i bez powodu —
+  // czyli najważniejsza sekcja raportu była jedyną, która nie mówiła, dlaczego
+  // dana pozycja jest na liście.
   const missingHtml =
     missing.length === 0
       ? `<p class="empty">Każdy numer z poczty, który sprawdziłem, jest w TeaBrew.</p>`
@@ -132,23 +160,14 @@ export function renderReportHtml(input: ReportInput, now: Date): string {
           .map(
             (i) => `
         <div class="miss">
-          <div class="miss-refs">${i.relatedOrderRefs.map((r) => `<span class="ref">${esc(r)}</span>`).join("")}</div>
-          <div class="miss-src">
-            <span class="subj">${esc(i.title)}</span>
-            <span class="meta">${esc(i.sourceRefs.at(-1)?.date ? when(i.sourceRefs.at(-1)!.date) : age(i.createdAt))} · ${esc(i.lastErpSummary ?? "")}</span>
-          </div>
+          <div class="miss-refs">${i.relatedOrderRefs
+            .filter((r) => (i.lastErpSummary ?? "").includes(r))
+            .map((r) => `<span class="ref">${esc(r)}</span>`)
+            .join("")}</div>
+          ${card(i)}
         </div>`,
           )
           .join("");
-
-  const card = (i: Issue): string => `
-    <div class="item">
-      <span class="subj">${esc(i.title)}</span>
-      <span class="meta">${esc(i.status)} · ${esc(i.category)}${i.classifier === "deterministic" ? "" : " · ocena modelu"} · zmiana ${esc(age(i.updatedAt))}${i.lastPresentedAt === null ? " · NOWE" : ""}</span>
-      ${i.summary ? `<p class="reason">${esc(i.summary)}</p>` : ""}
-      ${i.waitingFor ? `<div class="erp">czekamy: ${esc(i.waitingFor)}</div>` : ""}
-      ${i.lastErpSummary && !missing.includes(i) ? `<div class="erp">TeaBrew: ${esc(i.lastErpSummary)}</div>` : ""}
-    </div>`;
 
   const scanned = input.checkpoints
     .map(
@@ -197,11 +216,27 @@ h2{font-family:var(--sans);font-size:.75rem;font-weight:700;letter-spacing:.14em
 .banner.warn{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
 .banner code{font-family:var(--mono);font-size:.8125rem}
 .banners{display:flex;flex-direction:column;gap:.5rem}
-.miss{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--stop);padding:.875rem 1rem;display:flex;flex-direction:column;gap:.5rem}
+.miss{display:flex;flex-direction:column;gap:.35rem}
+.miss .item{border-left-color:var(--stop)}
 .miss-refs{display:flex;flex-wrap:wrap;gap:.35rem}
 .ref{font-family:var(--mono);font-size:.9375rem;font-weight:700;color:var(--stop);background:var(--stop-soft);padding:.15rem .45rem;border-radius:2px}
-.miss-src{display:flex;flex-direction:column;gap:.1rem}
-.item{background:var(--surface);border:1px solid var(--rule);padding:.75rem .9rem;display:flex;flex-direction:column;gap:.25rem}
+
+.item{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--rule-2);padding:.75rem .9rem;display:flex;flex-direction:column;gap:.3rem}
+.item.prio-high{border-left-color:var(--stop)}
+.item.prio-normal{border-left-color:var(--accent)}
+.item.prio-low{border-left-color:var(--rule-2)}
+.head{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem}
+.pill{font-family:var(--sans);font-size:.625rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:.15rem .4rem;border-radius:2px;white-space:nowrap}
+.p-high{color:var(--stop);background:var(--stop-soft)}
+.p-normal{color:var(--accent);background:var(--accent-soft)}
+.p-low{color:var(--faint);background:var(--sunk)}
+.why{font-family:var(--sans);font-size:.8125rem;color:var(--accent);margin:0}
+.item.prio-low .why{color:var(--faint)}
+.count{font-family:var(--mono);font-weight:400;color:var(--faint)}
+details{background:var(--surface);border:1px solid var(--rule)}
+summary{font-family:var(--sans);font-size:.875rem;font-weight:700;padding:.7rem .9rem;cursor:pointer}
+summary::marker{color:var(--accent)}
+.details-body{padding:.25rem .9rem 1rem;display:flex;flex-direction:column;gap:.5rem;border-top:1px solid var(--rule)}
 .subj{font-family:var(--sans);font-size:.9375rem;font-weight:700;line-height:1.35}
 .meta{font-family:var(--sans);font-size:.8125rem;color:var(--faint)}
 .reason{font-size:.9375rem;color:var(--soft);margin:.15rem 0 0}
@@ -235,11 +270,23 @@ ${banners.length > 0 ? `<div class="banners">${banners.join("")}</div>` : ""}
 </section>
 
 <section>
-  <h2>Czeka na Twój ruch</h2>
-  ${waiting.length === 0 ? `<p class="empty">Nic nie czeka na Ciebie.</p>` : waiting.map(card).join("")}
+  <h2>Korespondencja <span class="count">${real.length}</span></h2>
+  ${real.length === 0 ? `<p class="empty">Nic nie czeka na Ciebie.</p>` : real.map(card).join("")}
 </section>
 
-${watching.length > 0 ? `<section><h2>Obserwujemy</h2>${watching.map(card).join("")}</section>` : ""}
+${
+  irrelevant.length > 0
+    ? `<section>
+        <details>
+          <summary>Prawdopodobnie nieistotne <span class="count">${irrelevant.length}</span></summary>
+          <div class="details-body">
+            <p class="empty">Nieznany nadawca, brak numeru zamówienia i brak wątku. Nie usuwam ich — jeśli któraś okaże się ważna, powiedz, i poprawię regułę.</p>
+            ${irrelevant.map(card).join("")}
+          </div>
+        </details>
+      </section>`
+    : ""
+}
 
 <section>
   <h2>Co monitor sprawdził</h2>
@@ -247,7 +294,8 @@ ${watching.length > 0 ? `<section><h2>Obserwujemy</h2>${watching.map(card).join(
 </section>
 
 <footer>
-  <p>Sprawy powstają z faktów: nadawca, temat, numery wymienione w wiadomości i odpowiedź TeaBrew. Nic nie jest przeformułowane przez model — ocenę robi Claude, gdy o nią poprosisz.</p>
+  <p>Priorytet i podział wynikają z FAKTÓW, nie z oceny modelu: czy pisaliśmy kiedyś do tego nadawcy, czy to odpowiedź w wątku, czy jest numer zamówienia i co o nim mówi TeaBrew. Przy każdej pozycji widzisz, która reguła ją tu wstawiła.</p>
+  <p>Opis to podgląd treści dosłownie z serwera — nic nie jest przeformułowane, więc nic nie mogło zostać zmyślone. Streszczenia własnymi słowami wymagałyby modelu.</p>
   <p>Zawiera tematy i nadawców z poczty firmowej. Nie wysyłaj tego pliku dalej.</p>
 </footer>
 
