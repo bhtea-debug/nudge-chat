@@ -1,4 +1,4 @@
-import { isOwnOrderShape } from "./order-refs.js";
+import { findOrderRefs, isOwnOrderShape } from "./order-refs.js";
 import type { Issue } from "./types.js";
 
 /**
@@ -38,15 +38,46 @@ export type Lane = "teraz" | "decyzje" | "odpowiedzi" | "obserwuj" | "prawdopodo
  * i NIP-em w temacie wylądowało jako najpilniejsza sprawa w firmie, długo po
  * tym, jak oba te fałszywe alarmy zostały naprawione w `order-refs.ts`.
  *
- * Dlatego twierdzenie „nie ma tego w TeaBrew" musi być poparte AKTUALNYM
- * numerem o kształcie naszego numeru zamówienia. Bez niego jest to zdanie
- * o czymś, o co dziś w ogóle byśmy nie zapytali — i nie ma prawa windować
- * priorytetu. Ta sama zasada, co w kontroli dowodów: twierdzenie bez pokrycia
- * jest gorsze niż brak twierdzenia.
+ * Dlatego twierdzenie „nie ma tego w TeaBrew" musi być poparte numerem, który
+ * DZISIEJSZE reguły znajdują w tekście tej sprawy — patrz `currentOwnOrderRefs`.
+ * Bez niego jest to zdanie o czymś, o co dziś w ogóle byśmy nie zapytali,
+ * i nie ma prawa windować priorytetu. Ta sama zasada, co w kontroli dowodów:
+ * twierdzenie bez pokrycia jest gorsze niż brak twierdzenia.
  */
 export function missingInErp(issue: Issue): boolean {
   if (!/NIE MA w TeaBrew/i.test(issue.lastErpSummary ?? "")) return false;
-  return issue.relatedOrderRefs.some(isOwnOrderShape);
+  return currentOwnOrderRefs(issue).length > 0;
+}
+
+/**
+ * Numery zamówień policzone OD NOWA, dzisiejszymi regułami, z tekstu sprawy.
+ *
+ * Świadomie NIE patrzymy na `relatedOrderRefs`. Pierwsza wersja tej kontroli
+ * sprawdzała kształt zapisanych numerów i nie zadziałała — bo w tej samej
+ * sprawie z awizem InPostu siedział NIP `8842745578`, a dziesięć cyfr to
+ * poprawny kształt naszego numeru zamówienia. Kontrola kształtu nie odróżni
+ * numeru, którego dziś byśmy nie wyciągnęli, od takiego, który byśmy wyciągnęli.
+ *
+ * Odróżnia to dopiero ponowne rozpoznanie: dzisiejszy `findOrderRefs` odrzuca
+ * NIP po sąsiadującym słowie kluczowym, a numer przesyłki po długości. Jeśli na
+ * tym samym tekście nie znajduje dziś nic naszego, to znaczy, że twierdzenie
+ * TeaBrew dotyczyło czegoś, o co byśmy dziś nie zapytali.
+ *
+ * Tekst bierzemy z `title` i `summary`, bo to dokładnie to samo, na czym
+ * pracował monitor przy zakładaniu sprawy (nadawca + temat, podgląd treści).
+ * Dzięki temu stan leczy się sam przy każdej poprawce rozpoznawania numerów,
+ * bez migracji dziennika.
+ */
+export function currentOwnOrderRefs(issue: Issue): string[] {
+  const znalezione = [...findOrderRefs(issue.title), ...findOrderRefs(issue.summary)];
+  return [
+    ...new Set(
+      znalezione
+        .filter((f) => f.why !== "prefiks")
+        .map((f) => f.ref)
+        .filter(isOwnOrderShape),
+    ),
+  ];
 }
 
 /**

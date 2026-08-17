@@ -107,10 +107,19 @@ describe("grupowanie spraw", () => {
     // długo po tym, jak oba te fałszywe alarmy naprawiono w order-refs.
     // Zdanie zapisane przez starszą wersję nikogo już nie obchodzi, ale nic
     // go nie unieważniało, więc sprawa siedziała w TERAZ bez końca.
+    // DOKŁADNIE ten przypadek z prawdziwej skrzynki. Uwaga na NIP: dziesięć
+    // cyfr to poprawny KSZTAŁT naszego numeru zamówienia, więc kontrola samego
+    // kształtu zapisanych numerów tego nie łapie — i pierwsza wersja poprawki
+    // faktycznie nie zadziałała. Odrzuca to dopiero ponowne rozpoznanie.
     const przeterminowana = issue({
-      lastErpSummary: "zamówienia 521000014358100142097412 NIE MA w TeaBrew",
-      relatedOrderRefs: ["521000014358100142097412"], // 24 cyfry — nie nasz kształt
+      title: "Wsparcie Handlowe — NIP: 8842745578 / 521000014358100142097412",
+      summary:
+        "Dzień dobry, przesyłka 521000014358100142097412 jest przesyłką niezgodną " +
+        "z regulaminem InPost. Proszę o odebranie przesyłki z oddziału.",
+      lastErpSummary: "zamówienia 8842745578 NIE MA w TeaBrew",
+      relatedOrderRefs: ["8842745578", "521000014358100142097412"],
     });
+    expect(przeterminowana.relatedOrderRefs.some((r) => /^\d{4,12}$/.test(r))).toBe(true);
     expect(missingInErp(przeterminowana)).toBe(false);
     expect(laneOf(przeterminowana)).not.toBe("teraz");
 
