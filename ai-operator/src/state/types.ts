@@ -57,10 +57,25 @@ export const OPEN_STATUSES: readonly IssueStatus[] = [
 export const OWNER_ONLY_STATUSES: readonly IssueStatus[] = ["resolved"];
 
 /**
+ * Skąd sprawa się dowiedziała o świecie. Właściciela to nie interesuje w UI —
+ * interesuje go, co się dzieje. Ale system musi wiedzieć, bo od źródła zależy,
+ * czym dociągnąć treść i czego NIE wolno twierdzić.
+ */
+export const SOURCE_KINDS = ["mail", "connecteam"] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
+
+/**
  * Referencja do źródła. Nigdy treść — sam wskaźnik plus tyle metadanych, żeby
  * człowiek i model wiedzieli, o którą wiadomość chodzi, bez otwierania poczty.
+ *
+ * Pole `messageId` jest wspólne dla wszystkich źródeł i jest KANONICZNĄ
+ * tożsamością wiadomości w całym systemie: na nim stoi odsiewanie duplikatów
+ * (`seen`), scalanie źródeł w sprawie i idempotencja webhooka. Dla poczty to RFC
+ * Message-ID. Dla Connecteam to `ct:<konwersacja>:<wiadomość>` — prefiks jest
+ * konieczny, bo identyfikatory z dwóch różnych systemów mogą się zderzyć, a
+ * zderzenie oznaczałoby ciche zgubienie jednej z wiadomości.
  */
-export const SourceRef = z.object({
+const MailRef = z.object({
   kind: z.literal("mail"),
   /** RFC Message-ID — kanoniczny identyfikator w całym systemie. */
   messageId: z.string(),
@@ -70,7 +85,32 @@ export const SourceRef = z.object({
   subject: z.string(),
   from: z.string().nullable(),
 });
+
+/**
+ * Wiadomość z Connecteam. `conversationId` jest tu tym, czym `threadId` w
+ * poczcie — najmocniejszym sygnałem „to ta sama rozmowa".
+ *
+ * Zakres tego, co faktycznie wolno nam odczytać, jest ograniczony po stronie
+ * dostawcy i opisany w `docs/DECYZJA-CONNECTEAM.md`. Schemat jest gotowy na
+ * treść, ale kod NIE zakłada, że ją dostanie.
+ */
+const ConnecteamRef = z.object({
+  kind: z.literal("connecteam"),
+  messageId: z.string(),
+  conversationId: z.string(),
+  /** Nazwa czatu/kanału, jeśli dostawca ją podał. Nie zgadujemy. */
+  conversationName: z.string().nullable(),
+  date: z.string(),
+  /** Kto napisał — nazwa widoczna w Connecteam, nie identyfikator. */
+  authorName: z.string().nullable(),
+  /** Podgląd treści, jeśli dostawca ją zwrócił. Puste = mamy tylko fakt zdarzenia. */
+  preview: z.string(),
+});
+
+export const SourceRef = z.discriminatedUnion("kind", [MailRef, ConnecteamRef]);
 export type SourceRef = z.infer<typeof SourceRef>;
+export type MailSourceRef = z.infer<typeof MailRef>;
+export type ConnecteamSourceRef = z.infer<typeof ConnecteamRef>;
 
 /** Wpis historii. Odpowiada na „co się z tą sprawą działo", bez treści maili. */
 export const IssueChange = z.object({
@@ -84,7 +124,13 @@ export const Issue = z.object({
   id: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
-  source: z.literal("mail"),
+  /**
+   * Skąd sprawa POWSTAŁA. Nie jest to lista jej źródeł — te są w `sourceRefs`
+   * i mogą pochodzić z różnych systemów. Trzymamy to osobno, bo „przyszło
+   * mailem, potem produkcja dopisała w Connecteam" i „zaczęło się w Connecteam"
+   * to dwie różne historie tej samej sprawy.
+   */
+  source: z.enum(SOURCE_KINDS),
   sourceRefs: z.array(SourceRef),
   title: z.string(),
   summary: z.string(),

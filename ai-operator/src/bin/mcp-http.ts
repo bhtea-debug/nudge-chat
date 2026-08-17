@@ -7,6 +7,10 @@ import { newCorrelationId } from "../capability/audit.js";
 import { renderRun, costLine } from "../state/report.js";
 import { appendFileSync } from "node:fs";
 import { fromPackageRoot } from "../paths.js";
+import { handleUi } from "../ui/server.js";
+import { ephemeralSigningKey, MIN_PASSWORD_LENGTH, UiAuth } from "../ui/auth.js";
+import type { SyncState } from "../ui/views.js";
+import { eventTypeOf, ingestChatMessage, messageFromWebhook, verifySignature } from "../connecteam/ingest.js";
 
 /**
  * Remote MCP — ten sam serwer, transport HTTP, dostępny także z telefonu.
@@ -48,6 +52,49 @@ if (TOKEN.length < MIN_TOKEN_LENGTH) {
       "Serwer nie wstaje — nie wystawię poczty bez uwierzytelnienia.\n",
   );
   process.exit(1);
+}
+
+// ── interfejs właściciela ─────────────────────────────────────────────────────
+/**
+ * UI jest opcjonalny i sam się włącza, gdy jest hasło. Bez hasła serwer wstaje
+ * dalej — Remote MCP działa niezależnie i nie ma powodu, żeby brak jednej
+ * zmiennej odbierał Claude dostęp do poczty.
+ */
+const ui = app.config.ui.enabled
+  ? (() => {
+      if (app.config.ui.password.length < MIN_PASSWORD_LENGTH) {
+        process.stderr.write(
+          `[${SERVER_NAME}] COPILOT_UI_PASSWORD jest krótsze niż ${MIN_PASSWORD_LENGTH} znaków — UI NIE wstaje.\n` +
+            "To jedyna brama między internetem a pocztą firmy. Wygeneruj: openssl rand -base64 24\n",
+        );
+        return null;
+      }
+      const signingKey = app.config.ui.signingKey ?? ephemeralSigningKey();
+      if (!app.config.ui.signingKey) {
+        process.stdout.write(
+          `[${SERVER_NAME}] COPILOT_UI_SIGNING_KEY nie ustawiony — sesje nie przeżyją restartu procesu.\n`,
+        );
+      }
+      return new UiAuth({
+        password: app.config.ui.password,
+        signingKey,
+        secureCookie: app.config.ui.secureCookie,
+      });
+    })()
+  : null;
+
+function syncState(): SyncState {
+  try {
+    return {
+      lastOkScanAt: app.store.lastOkScanAt(),
+      checkpoints: app.store.checkpoints(),
+      integrityWarning: app.store.integrityWarning(),
+    };
+  } catch {
+    // Awaria stanu nie może zabrać całego ekranu — właściciel ma zobaczyć
+    // stronę mówiącą „nie wiem", a nie błąd serwera.
+    return { lastOkScanAt: null, checkpoints: [], integrityWarning: null };
+  }
 }
 
 // ── limit żądań ───────────────────────────────────────────────────────────────
@@ -178,6 +225,25 @@ const server = createServer((req, res) => {
       return;
     }
 
+    // Webhook Connecteam. Uwierzytelnia się PODPISEM ładunku, nie tokenem MCP
+    // i nie ciasteczkiem sesji — po drugiej stronie stoi serwer dostawcy, który
+    // nie ma ani jednego, ani drugiego.
+    if (url.pathname === "/webhook/connecteam") {
+      const status = await handleConnecteamWebhook(req, res);
+      logAccess(status, "webhook", "connecteam", Date.now() - started);
+      return;
+    }
+
+    if (ui && (await handleUi(req, res, url, {
+      store: app.store,
+      auth: ui,
+      sync: syncState,
+      claudeUrl: app.config.ui.claudeUrl,
+    }))) {
+      logAccess(res.statusCode, req.method ?? "?", "ui", Date.now() - started);
+      return;
+    }
+
     if (url.pathname !== "/mcp") {
       json(res, 404, { error: "nieznana ścieżka; MCP jest pod /mcp" });
       logAccess(404, req.method ?? "?", null, Date.now() - started);
@@ -261,6 +327,86 @@ const server = createServer((req, res) => {
     process.stderr.write(`[${SERVER_NAME}] ${err instanceof Error ? err.stack : String(err)}\n`);
   });
 });
+
+/**
+ * Webhook Connecteam (§11).
+ *
+ * Trzy rzeczy, które ta funkcja musi robić dobrze:
+ *
+ *  1. **Odpowiedzieć szybko i zawsze 200 przy poprawnym podpisie.** Dostawca
+ *     webhooków traktuje kod błędu jako sygnał do ponowienia; zwrócenie 500 na
+ *     ładunek, którego po prostu nie rozumiemy, wywołałoby retry w pętli.
+ *     Dlatego „nie rozumiem tego ładunku" to 200 z wyjaśnieniem, a nie 4xx.
+ *  2. **Nie przyjąć niczego bez weryfikacji, gdy sekret JEST ustawiony.**
+ *  3. **Nie logować treści.** W logu ląduje wynik i identyfikator konwersacji,
+ *     nigdy tekst wiadomości pracownika.
+ */
+async function handleConnecteamWebhook(req: IncomingMessage, res: ServerResponse): Promise<number> {
+  if (req.method !== "POST") {
+    json(res, 405, { error: "użyj POST" });
+    return 405;
+  }
+
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch {
+    json(res, 413, { error: "ładunek za duży" });
+    return 413;
+  }
+
+  const secret = app.config.connecteam.webhookSecret;
+  const header =
+    (req.headers["x-connecteam-signature"] as string | undefined) ??
+    (req.headers["x-signature"] as string | undefined) ??
+    null;
+  const verdict = verifySignature(raw, header ?? null, secret);
+
+  if (verdict === false) {
+    json(res, 401, { error: "unauthorized" });
+    process.stderr.write("[connecteam] odrzucony webhook: podpis się nie zgadza\n");
+    return 401;
+  }
+  if (verdict === null) {
+    // Brak sekretu to świadomy wybór właściciela, ale musi być widoczny za
+    // każdym razem — inaczej „tymczasowo bez podpisu" zostaje na zawsze.
+    process.stderr.write(
+      "[connecteam] UWAGA: przyjmuję webhook BEZ weryfikacji podpisu (CONNECTEAM_WEBHOOK_SECRET nie ustawiony)\n",
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    json(res, 200, { accepted: false, why: "ładunek nie jest poprawnym JSON-em" });
+    return 200;
+  }
+
+  const parsed = messageFromWebhook(payload);
+  if ("error" in parsed) {
+    json(res, 200, { accepted: false, why: parsed.error });
+    process.stdout.write(`[connecteam] pominięty ładunek: ${parsed.error}\n`);
+    return 200;
+  }
+
+  try {
+    const out = ingestChatMessage(app.store, parsed, eventTypeOf(payload) ?? "message_created");
+    json(res, 200, { accepted: out.accepted, outcome: out.outcome, issueId: out.issueId });
+    process.stdout.write(
+      `[connecteam] ${out.outcome} konwersacja=${parsed.conversationId} sprawa=${out.issueId ?? "-"}\n`,
+    );
+    return 200;
+  } catch (err) {
+    // Awaria naszego stanu przy pojedynczej wiadomości nie może wyglądać dla
+    // dostawcy jak awaria trwała — inaczej wyłączy webhooka.
+    process.stderr.write(
+      `[connecteam] błąd wchłaniania: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    json(res, 200, { accepted: false, why: "błąd po naszej stronie — zapisany w logu" });
+    return 200;
+  }
+}
 
 function safeLastScan(): string | null {
   try {

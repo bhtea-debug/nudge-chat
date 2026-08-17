@@ -17,6 +17,8 @@
     "mail:foldery": "tsx --env-file-if-exists=.env src/bin/mail-folders.ts",
     "mcp": "tsx --env-file-if-exists=.env src/bin/mcp.ts",
     "mcp:http": "tsx --env-file-if-exists=.env src/bin/mcp-http.ts",
+    "copilot": "tsx --env-file-if-exists=.env src/bin/mcp-http.ts",
+    "check:connecteam": "tsx --env-file-if-exists=.env src/bin/check-connecteam.ts",
     "audit": "tsx --env-file-if-exists=.env src/bin/audit.ts",
     "check:mail": "tsx --env-file-if-exists=.env src/bin/check-mail.ts",
     "verify:teabrew": "tsx --env-file-if-exists=.env src/bin/verify-teabrew.ts",

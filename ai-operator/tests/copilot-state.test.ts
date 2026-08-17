@@ -9,7 +9,7 @@ import { createIssueCapabilities, presentedIds } from "../src/state/capabilities
 import { MemoryAuditSink, newCorrelationId } from "../src/capability/audit.js";
 import { CapabilityRegistry } from "../src/capability/registry.js";
 import { AGENT_SCOPES } from "../src/index.js";
-import type { Issue, SourceRef } from "../src/state/types.js";
+import type { ConnecteamSourceRef, Issue, MailSourceRef } from "../src/state/types.js";
 import type { MailMessage } from "../src/mail/types.js";
 import { judge } from "../src/mail/folder-verdict.js";
 import type { FolderStat } from "../src/mail/imap.js";
@@ -17,7 +17,7 @@ import { explainModelError } from "../src/model/errors.js";
 
 const fresh = (): string => mkdtempSync(join(tmpdir(), "bht-state-"));
 
-const ref = (over: Partial<SourceRef> = {}): SourceRef => ({
+const ref = (over: Partial<MailSourceRef> = {}): MailSourceRef => ({
   kind: "mail",
   messageId: "<a@klient.example>",
   threadId: null,
@@ -25,6 +25,18 @@ const ref = (over: Partial<SourceRef> = {}): SourceRef => ({
   date: "2026-08-18T09:00:00.000Z",
   subject: "Zamówienie 2307029",
   from: "zakupy@klient.example",
+  ...over,
+});
+
+/** Wiadomość z Connecteam — drugie źródło tej samej pamięci spraw. */
+const chatRef = (over: Partial<ConnecteamSourceRef> = {}): ConnecteamSourceRef => ({
+  kind: "connecteam",
+  messageId: "ct:kanal-produkcja:m1",
+  conversationId: "kanal-produkcja",
+  conversationName: "Produkcja",
+  date: "2026-08-18T09:32:00.000Z",
+  authorName: "Ania z produkcji",
+  preview: "nie mamy etykiet do tego Rossmanna",
   ...over,
 });
 

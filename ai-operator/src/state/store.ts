@@ -13,6 +13,7 @@ import {
   type IssuePriority,
   type IssueStatus,
   type SeenEntry,
+  type SourceKind,
   type SourceRef,
   type StateEvent,
 } from "./types.js";
@@ -304,6 +305,8 @@ export class CopilotStore {
     whyListed?: string;
     likelyIrrelevant?: boolean;
     ref: SourceRef;
+    /** Skąd sprawa powstała. Domyślnie bierzemy to z rodzaju referencji. */
+    source?: SourceKind;
     relatedOrderRefs?: readonly string[];
     relatedProductRefs?: readonly string[];
     waitingFor?: string | null;
@@ -317,7 +320,7 @@ export class CopilotStore {
       id: `spr_${randomUUID().slice(0, 8)}`,
       createdAt: at,
       updatedAt: at,
-      source: "mail",
+      source: input.source ?? input.ref.kind,
       sourceRefs: [input.ref],
       title: input.title,
       summary: input.summary,
@@ -401,13 +404,31 @@ export class CopilotStore {
    * Operator w tle tej drogi nie ma — patrz guardStatus.
    */
   ownerResolve(id: string, note: string, at?: string): boolean {
+    return this.ownerAction(id, { status: "resolved" }, `zamknięta przez właściciela${note ? ` — ${note}` : ""}`, at);
+  }
+
+  /**
+   * Zmiana wykonana świadomie przez właściciela z UI.
+   *
+   * Osobna droga od `patchIssue`, mimo podobnego kształtu, i to jest celowe:
+   * wpis nosi aktora `wlasciciel`, więc omija `guardStatus` — a to znaczy, że
+   * jedyna funkcja zdolna nadać status `resolved` jest wywoływana wyłącznie
+   * z miejsc, gdzie po drugiej stronie naprawdę siedział człowiek. Gdyby monitor
+   * albo capability mogły tu trafić, ograniczenie „model nie zamyka spraw"
+   * przestałoby cokolwiek znaczyć.
+   *
+   * Uwaga: to nadal zapis do NASZEJ pamięci, nie do systemu źródłowego. Poczta,
+   * Connecteam i TeaBrew pozostają nietknięte — zamknięcie sprawy nie oznacza,
+   * że komukolwiek odpisaliśmy.
+   */
+  ownerAction(id: string, patch: IssuePatch, why: string, at?: string): boolean {
     if (!this.issues.has(id)) return false;
     this.write({
       t: "issue_patched",
       at: at ?? new Date().toISOString(),
       id,
-      patch: { status: "resolved" },
-      why: `status: zamknięta przez właściciela${note ? ` — ${note}` : ""}`,
+      patch,
+      why: patch.status ? `status: ${why}` : why,
       by: "wlasciciel",
     });
     return true;

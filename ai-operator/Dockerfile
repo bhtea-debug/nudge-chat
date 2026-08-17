@@ -1,4 +1,12 @@
-# Remote MCP dla BHT Copilot. Jeden proces: endpoint MCP + monitor poczty.
+# BHT Copilot. JEDEN proces obsługuje trzy rzeczy:
+#   /            interfejs właściciela (przeglądarka, telefon)
+#   /mcp         Remote MCP dla Claude
+#   /webhook/…   wejście dla Connecteam
+# plus monitor poczty w tle.
+#
+# Jedno wdrożenie, jeden wolumen ze stanem, jedno miejsce awarii. Rozdzielenie
+# tego na dwie usługi wymagałoby albo dwóch kopii stanu spraw, albo bazy do ich
+# uzgadniania — czyli nowej infrastruktury dla problemu, którego nie mamy.
 #
 # Celowo bez etapu budowania: `tsx` uruchamia TypeScript wprost, a to pozwala
 # trzymać obraz i konfigurację w jednym pliku bez artefaktów pośrednich.

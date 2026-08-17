@@ -1,5 +1,10 @@
 /**
- * Sprawy — podgląd i jedyna droga do zamknięcia sprawy.
+ * Sprawy — podgląd i droga do zamknięcia sprawy z terminala.
+ *
+ * Uwaga po dodaniu UI: to NIE jest już jedyna droga. Właściciel zamyka sprawy
+ * z ekranu sprawy w BHT Copilocie, a ten plik zostaje dla diagnostyki
+ * i administracji (§22). Ograniczenie „model nie zamyka spraw" jest niezmienione
+ * i wymuszone tam, gdzie było: w `store.guardStatus`.
  *
  *   npm run sprawy                        # otwarte sprawy
  *   npm run sprawy -- --wszystkie
@@ -13,6 +18,7 @@
  */
 import { createApp } from "../index.js";
 import { CopilotStore } from "../state/store.js";
+import { viewRef } from "../state/source-ref.js";
 import { OPEN_STATUSES, type Issue } from "../state/types.js";
 
 const argv = process.argv.slice(2);
@@ -60,7 +66,10 @@ function detail(i: Issue): string {
     i.sourceRefs
       .slice()
       .sort((a, b) => a.date.localeCompare(b.date))
-      .map((r) => `  ${r.date.slice(0, 16).replace("T", " ")}  ${r.from ?? "?"}  ${r.subject}`)
+      .map((r) => {
+        const v = viewRef(r);
+        return `  ${v.date.slice(0, 16).replace("T", " ")}  [${v.kind}]  ${v.author ?? "?"}  ${v.heading}`;
+      })
       .join("\n") +
     `\n\nHistoria:\n` +
     i.history.map((h) => `  ${h.at.slice(0, 16).replace("T", " ")}  ${h.what}  [${h.by}]`).join("\n") +

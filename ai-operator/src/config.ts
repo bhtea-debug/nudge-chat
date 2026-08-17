@@ -58,6 +58,36 @@ export interface AppConfig {
      */
     readonly sentFolder: string | null;
   };
+  /**
+   * Interfejs BHT Copilota. Zero wartości domyślnych dla sekretów: bez hasła UI
+   * po prostu nie wstaje, bo strona z pocztą firmy w internecie bez bramy nie
+   * jest funkcją, tylko wyciekiem.
+   */
+  readonly ui: {
+    readonly enabled: boolean;
+    readonly password: string;
+    /**
+     * Klucz podpisujący ciasteczka sesji. Gdy go nie ma, generujemy losowy na
+     * czas życia procesu — sesje przeżyją wtedy dzień pracy, ale nie restart
+     * kontenera. To akceptowalny domyślny; wymuszanie kolejnego sekretu na
+     * starcie zwiększyłoby szansę, że właściciel nie wdroży tego wcale.
+     */
+    readonly signingKey: string | null;
+    /** `false` wyłącza flagę Secure na ciasteczku — WYŁĄCZNIE do testów po HTTP. */
+    readonly secureCookie: boolean;
+    /** Adres, pod którym otwiera się nowa rozmowa w Claude. */
+    readonly claudeUrl: string | null;
+  };
+  /**
+   * Connecteam jako drugie źródło komunikacji. Wszystko opcjonalne: brak klucza
+   * znaczy „nie podłączony" i tak też to wygląda w UI — nie udajemy, że
+   * czytamy kanał, którego nie czytamy.
+   */
+  readonly connecteam: {
+    readonly apiKey: string | null;
+    /** Sekret do weryfikacji podpisu webhooka. Brak = webhook przyjmuje bez podpisu. */
+    readonly webhookSecret: string | null;
+  };
   readonly mail:
     | { readonly kind: "fixture"; readonly filePath: string }
     | {
@@ -123,6 +153,19 @@ export function loadConfig(): AppConfig {
       maxErpLookups: Math.max(0, Number(opt("MONITOR_MAX_ERP_LOOKUPS", "10"))),
       classifier: opt("MONITOR_CLASSIFIER", "deterministic") === "model" ? "model" : "deterministic",
       sentFolder: process.env["MAIL_SENT_FOLDER"]?.trim() || null,
+    },
+    ui: {
+      // UI włącza się samo, gdy jest hasło. Osobna flaga „włącz UI" byłaby
+      // drugim miejscem prawdy i pierwszą rzeczą, o której ktoś zapomni.
+      enabled: (process.env["COPILOT_UI_PASSWORD"]?.trim() ?? "").length > 0,
+      password: process.env["COPILOT_UI_PASSWORD"]?.trim() ?? "",
+      signingKey: process.env["COPILOT_UI_SIGNING_KEY"]?.trim() || null,
+      secureCookie: opt("COPILOT_UI_INSECURE_COOKIE", "0") !== "1",
+      claudeUrl: process.env["COPILOT_CLAUDE_URL"]?.trim() || null,
+    },
+    connecteam: {
+      apiKey: process.env["CONNECTEAM_API_KEY"]?.trim() || null,
+      webhookSecret: process.env["CONNECTEAM_WEBHOOK_SECRET"]?.trim() || null,
     },
     mail:
       mode === "live"

@@ -1,5 +1,12 @@
 import type { FolderCheckpoint, Issue } from "../state/types.js";
 import { OPEN_STATUSES } from "../state/types.js";
+import { viewRef } from "../state/source-ref.js";
+
+/** Autor ostatniej wiadomości w sprawie — niezależnie od tego, z jakiego źródła. */
+const lastAuthor = (i: Issue): string | null => {
+  const last = i.sourceRefs.at(-1);
+  return last ? viewRef(last).author : null;
+};
 
 /**
  * Panel raportu dziennego — widok pamięci Copilota, nie osobna analiza.
@@ -144,7 +151,7 @@ export function renderReportHtml(input: ReportInput, now: Date): string {
       </div>
       ${i.whyListed ? `<p class="why">${esc(i.whyListed)}</p>` : ""}
       ${i.summary ? `<p class="reason">${esc(i.summary)}</p>` : ""}
-      <span class="meta">${esc(i.sourceRefs.at(-1)?.from ?? "?")} · ${esc(i.sourceRefs.at(-1)?.date ? when(i.sourceRefs.at(-1)!.date) : age(i.createdAt))}${i.sourceRefs.length > 1 ? ` · ${i.sourceRefs.length} wiadomości` : ""}${i.lastPresentedAt === null ? " · NOWE" : ""}</span>
+      <span class="meta">${esc(lastAuthor(i) ?? "?")} · ${esc(i.sourceRefs.at(-1)?.date ? when(i.sourceRefs.at(-1)!.date) : age(i.createdAt))}${i.sourceRefs.length > 1 ? ` · ${i.sourceRefs.length} wiadomości` : ""}${i.lastPresentedAt === null ? " · NOWE" : ""}</span>
       ${i.waitingFor ? `<div class="erp">czekamy: ${esc(i.waitingFor)}</div>` : ""}
       ${i.lastErpSummary && !missing.includes(i) ? `<div class="erp">TeaBrew: ${esc(i.lastErpSummary)}</div>` : ""}
     </div>`;

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AnyCapability, Capability } from "../capability/types.js";
 import { ISSUE_CATEGORIES, ISSUE_PRIORITIES, ISSUE_STATUSES, OPEN_STATUSES } from "./types.js";
 import type { CopilotStore, } from "./store.js";
+import { searchableText, viewRef } from "./source-ref.js";
 import type { Issue } from "./types.js";
 
 /**
@@ -134,10 +135,16 @@ const IssueOutput = z.object({
   messages: z.array(
     z.object({
       messageId: z.string(),
+      /**
+       * Z którego systemu. Claude MUSI to widzieć, bo od tego zależy, czym
+       * dociągnąć treść: `mail` → mail_get_thread, `connecteam` → treści nie
+       * dociągnie wcale i nie wolno mu jej wymyślić.
+       */
+      source: z.enum(["mail", "connecteam"]),
       subject: z.string(),
       from: z.string().nullable(),
       date: z.string(),
-      folder: z.string(),
+      folder: z.string().nullable(),
     }),
   ),
   nextStep: z.string(),
@@ -287,13 +294,17 @@ export function createIssueCapabilities(store: () => CopilotStore): AnyCapabilit
         issue: brief(issue),
         history: [...issue.history],
         messages: issue.sourceRefs
-          .map((r) => ({
-            messageId: r.messageId,
-            subject: r.subject,
-            from: r.from,
-            date: r.date,
-            folder: r.folder,
-          }))
+          .map((r) => {
+            const v = viewRef(r);
+            return {
+              messageId: v.messageId,
+              source: v.kind,
+              subject: v.heading,
+              from: v.author,
+              date: v.date,
+              folder: v.location,
+            };
+          })
           .sort((a, b) => a.date.localeCompare(b.date)),
         nextStep:
           issue.waitingFor ??
@@ -328,7 +339,7 @@ export function createIssueCapabilities(store: () => CopilotStore): AnyCapabilit
             i.summary,
             ...i.relatedOrderRefs,
             ...i.relatedProductRefs,
-            ...i.sourceRefs.map((r) => `${r.subject} ${r.from ?? ""}`),
+            ...i.sourceRefs.map(searchableText),
           ]
             .join("\n")
             .toLowerCase()
