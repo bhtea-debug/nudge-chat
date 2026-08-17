@@ -2,8 +2,15 @@ node_modules/
 .env
 .env.*
 !.env.example
-.audit/
 *.log
 openapi.json
-raporty/
-state/
+
+# Katalogi danych z czasu działania — ZAKOTWICZONE ukośnikiem na początku.
+#
+# Bez ukośnika wzorzec dopasowuje się na KAŻDYM poziomie drzewa, więc `state/`
+# ukryło także `src/state/` i siedem plików źródłowych nie trafiło do commita.
+# `git add -A` pominął je bez słowa, a typecheck i testy przeszły, bo pliki
+# leżały w katalogu roboczym. Zepsute było dopiero to, co wypchnięte.
+/.audit/
+/raporty/
+/state/
