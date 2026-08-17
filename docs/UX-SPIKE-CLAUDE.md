@@ -5,16 +5,71 @@ o konkretnej sprawie, bez kopiowania, wklejania i pamiętania identyfikatorów.
 
 ---
 
-## Wynik
+# WERDYKT KOŃCOWY: **A — Claude nadaje się na interfejs, na Macu i na telefonie**
+
+**Ale nie tą drogą, którą zakładało pytanie.** Wersja „powiadomienie → jedno
+kliknięcie → rozmowa o sprawie" jest martwa i trzeba ją wykreślić z wymagań.
+To, co działa, jest prostsze od tego, co budowaliśmy: **otwierasz Claude
+i pytasz normalnym zdaniem.**
+
+Sprawdzone 17.08 wieczorem na iPhonie właściciela, na prawdziwej skrzynce,
+po wdrożeniu Remote MCP na Railway:
+
+| Droga na iPhonie | Czynności | Zadziałało? |
+| --- | --- | --- |
+| **Otwórz Claude, zapytaj słowami** — „Co mam obecnie otwartego w BHT Copilot?" | **2** (+ zgoda na narzędzie) | **TAK.** Wypisał 14 spraw, ponumerowane, pierwsza zgodna z serwerem |
+| **Deep link do konkretnej sprawy** | **5**, w tym logowanie w przeglądarce | Odpowiedź przyszła i była poprawna, ale **nie w zakładanej formie** |
+
+Odpowiedź „14 spraw" jest twardym dowodem, a nie wrażeniem: dokładnie tyle
+zwrócił w tej samej minucie serwer, a tych danych nie ma nigdzie poza nim.
+**To zamyka pytanie otwarte z poprzedniej wersji tego dokumentu — konektor MCP
+DZIAŁA w aplikacji mobilnej.**
+
+Deep link **doszedł do końca** — właściciel dostał przeanalizowaną odpowiedź
+o sprawie. Rozstrzyga go nie brak wyniku, tylko droga do niego. Pełny przebieg,
+krok po kroku, tak jak go przeszedł:
+
+1. wklejony adres Safari potraktowało najpierw jak frazę do **wyszukania
+   w Google**,
+2. przejście pod adres otworzyło Claude **w przeglądarce, nie w natywnej
+   aplikacji**,
+3. przeglądarka wymagała **zalogowania się** — natywna aplikacja jest zalogowana
+   z góry i tego kroku by nie było,
+4. polecenie **nie wysłało się samo** — czekało w polu na „wyślij"
+   (to zakaz platformy, opisany niżej, nie nasza niedoróbka),
+5. przed pobraniem sprawy Claude **zapytał o pozwolenie**,
+6. odpowiedź przyszła — poprawna i przeanalizowana.
+
+Krok 5 jest przy okazji dowodem, że narzędzie naprawdę zostało wywołane.
+Krok 3 jest tym, który najbardziej boli i którego nie da się usunąć naszym
+kodem: link `https://claude.ai/…` prowadzi do przeglądarki, a nie do aplikacji,
+więc trafia się na sesję bez logowania.
+
+**Wniosek, który zmienia plan:** inżynierowana droga jest dłuższa i bardziej
+zawodna niż droga zwykła. Zbudowaliśmy generator linków (`npm run pilne`), żeby
+skrócić dojście do sprawy, a wychodzi, że dojście po ludzku — otwórz i zapytaj —
+jest krótsze. Deep link zostaje jako narzędzie diagnostyczne, nie jako pomysł
+na produkt.
+
+**Co z tego wynika dla powiadomień.** Push nie może być linkiem, który otwiera
+gotową rozmowę, bo platforma na to nie pozwoli. Może być zwykłym
+powiadomieniem, po którym właściciel sam otwiera Claude i pyta. Wartość
+powiadomienia leży więc **wyłącznie w tym, że jest trafne** — a to jest
+dokładnie ten obszar, w którym spike znalazł sześć usterek (niżej) i w którym
+tego samego wieczoru znalazł siódmą: na szczyt „🔴 Teraz" wszedł **podpis
+mailowy samego właściciela**, bo numer telefonu ze stopki (`732 958 000`) ma
+kształt numeru zamówienia i nie ma go w TeaBrew. Ten sam mechanizm co przy
+NIP-ie, inny rodzaj liczby.
+
+---
+
+## Wynik pomiarów
 
 | Platforma | Czynności | MCP | Wynik |
 | --- | --- | --- | --- |
 | **Mac** (Claude Desktop) | **2**: klik w link + wyślij | **działa** — potwierdzone na prawdziwych danych (Etap A) | **AKCEPTOWALNE** |
-| **iPhone** (Claude Mobile) | **do zmierzenia** — jedno dotknięcie rozstrzyga | **NIE działa** — brak wdrożenia Remote MCP | **FAIL dzisiaj** |
-
-Wiersz iPhone'a jest FAIL **nie z powodu UX**, tylko dlatego, że aplikacja
-mobilna nie ma dziś dostępu do spraw. Nawet idealny link otworzyłby rozmowę,
-w której Claude nie ma czym pobrać sprawy.
+| **iPhone** — pytanie słowami | **2** + zgoda na narzędzie | **działa** — 14 spraw, zgodne z serwerem co do jednej | **DOBRE** |
+| **iPhone** — deep link | **5**: wklejenie (raz w Google), przeglądarka zamiast aplikacji, logowanie, wyślij, zgoda | działa — odpowiedź poprawna i przeanalizowana | **ODRZUCONE jako droga produktowa** — działa, ale dłużej niż zapytanie słowami |
 
 ---
 
@@ -92,19 +147,17 @@ która powiadomienie wysłała. Adres jest więc wypisany w terminalu i to jego 
 klika. Obejście istnieje (`terminal-notifier -open <url>`), ale to dodatkowa
 zależność, a spike nie ma budować systemu powiadomień.
 
-**3. Telefon nie ma dziś dostępu do spraw.** Claude Mobile potrzebuje Remote MCP
-pod publicznym adresem. Kod jest gotowy, wdrożenie czeka na konto właściciela.
+**3. ~~Telefon nie ma dziś dostępu do spraw.~~ ZAŁATWIONE 17.08 wieczorem.**
+Remote MCP stoi na Railwayu, konektor podłączony przez OAuth, telefon pobiera
+sprawy. Droga do tego zajęła cztery rundy i wszystkie były usterkami po naszej
+stronie — spis w sekcji „Co kosztowało podłączenie".
 
-**4. Deep link mobilny — niepotwierdzony.** Dokumentacja mówi, że aplikacje
-iOS i Android odpowiadają na schemat `claude://` i potrafią wypełnić pole nowej
-sesji. Ale **większość opisanych tras dotyczy zakładki Claude Code**, a jedno
-źródło zaznacza, że takie linki wymagają dostępu do Claude Code na koncie.
-Czy `claude://claude.ai/new?q=` — czyli ZWYKŁY czat — zadziała na iPhonie,
-**nie jest przez mnie potwierdzone**. Autorytatywna strona pomocy
-(`support.claude.com`) jest zablokowana przez politykę sieci mojej sesji.
-
-To rozstrzyga jedno dotknięcie na Twoim telefonie i nie da się tego zastąpić
-czytaniem.
+**4. ~~Deep link mobilny — niepotwierdzony.~~ SPRAWDZONY, wynik negatywny dla
+produktu.** Adres `https://claude.ai/new?q=…` otwiera **przeglądarkę, nie
+natywną aplikację**, więc dochodzi logowanie. Wariantu `claude://` nie
+testowaliśmy — po wyniku powyżej przestał mieć znaczenie: nawet gdyby otwierał
+aplikację, zostaje zakaz auto-wysyłania z punktu 1, a droga „otwórz i zapytaj"
+i tak jest krótsza.
 
 ---
 
@@ -119,9 +172,12 @@ Nie tknąłem Connecteam, zgodnie z zakresem spike'a.
 
 ---
 
-## Rekomendacja
+## Rekomendacja sprzed testu na telefonie — NIEAKTUALNA
 
-### **B — Claude nadaje się na desktopie; telefon nierozstrzygnięty**
+> Zostawiona, bo pokazuje, co było wiadomo przed wieczorem 17.08 i czego nie
+> dało się wtedy rozstrzygnąć. Obowiązuje **werdykt A** na górze dokumentu.
+
+### ~~B — Claude nadaje się na desktopie; telefon nierozstrzygnięty~~
 
 Uzasadnienie, bez zaokrąglania:
 
@@ -142,21 +198,34 @@ mobilnego i trzeba szukać czegoś innego.
 
 ---
 
-## Jak dokończyć ten spike
+## Co kosztowało podłączenie telefonu
 
-Dwie czynności, w tej kolejności:
+Cztery rundy, wszystkie z winy naszego kodu albo naszych narzędzi. Zapisane,
+bo każda była niewidoczna w testach i każda wyglądała dla właściciela identycznie:
+„nie łączy się i nie mówi dlaczego".
 
-1. **Wdróż Remote MCP** — `npm run wdroz`, potem podłącz konektor w Claude.
-   Bez tego telefon nie ma czego pobrać i test nie odpowie na nic.
-2. **Uruchom `npm run pilne`** i dotknij adresu na telefonie oraz kliknij go na
-   Macu. Policz czynności do momentu, w którym Claude mówi o tej jednej sprawie.
+| # | Objaw | Przyczyna | Naprawa |
+| --- | --- | --- | --- |
+| 1 | okno konektora nie ma pola na token | serwer bronił się statycznym tokenem, którego ten klient nie umie podać | OAuth 2.1 z rejestracją dynamiczną i ekranem zgody na hasło |
+| 2 | „Couldn't register with sign-in service" | `OPTIONS` na końcówki OAuth zwracało 404, więc preflight przeglądarki blokował żądanie **zanim wyszło** — u nas nie było nawet wpisu w logu | odpowiedź na preflight + nagłówki CORS |
+| 3 | wdrożenie meldowało sukces ze starym kodem | skrypt wysyła katalog **lokalny**, a kopia właściciela była starsza o dwa commity; sprawdzenie po wdrożeniu pytało tylko „czy `/health` odpowiada", a odpowiadał poprzedni kontener | porównanie z `origin` przed wysłaniem + czekanie na **zmianę** `startedAt` |
+| 4 | „nowa wersja nie wstała w 4 minuty" | wstała po ~5,5 minuty — okno było zgadywane, bo pełnego cyklu nigdy nie zmierzyliśmy | okno 9 minut i wypisywanie zmierzonego czasu |
 
-Do zmierzenia przy każdym kliknięciu:
+Wniosek narzędziowy: **„gotowe" musi znaczyć „nowa wersja odpowiada", nie
+„cokolwiek odpowiada"**. Trzecia runda kosztowała najwięcej i była w całości
+usterką skryptu, nie produktu.
 
-- ile czynności od kliknięcia do rozmowy,
-- czy polecenie wysyła się samo, czy trzeba nacisnąć wyślij,
-- czy Claude sięgnął po sprawę przez MCP, czy zaczął zgadywać z samego numeru.
+---
 
-Trzecie jest najważniejsze: jeśli Claude odpowie sensownie **bez** wywołania
-narzędzia, to znaczy, że zmyślił, i wynik testu jest negatywny mimo dobrego
-wrażenia.
+## Co dalej — decyzje dla właściciela
+
+1. **Wykreślić „jedno kliknięcie" z wymagań.** Platforma nigdy nie wyśle
+   polecenia z zewnętrznego linku bez potwierdzenia człowieka i nie należy tego
+   obchodzić. Wejściem do Copilota jest otwarcie Claude i zapytanie słowami.
+2. **Powiadomienia mają sens tylko wtedy, gdy są trafne.** Skoro push nie może
+   otworzyć rozmowy, jego jedyną wartością jest treść. Siódma usterka doboru
+   (podpis mailowy właściciela na szczycie „Teraz") mówi, że tam jest dziś
+   ryzyko produktu — nie w dostarczaniu.
+3. **Dodać wolumen na Railwayu** (panel → usługa `bht-copilot` → Settings →
+   Volumes → `/data`). Bez niego sprawy nie przeżyją restartu kontenera. CLI
+   Railwaya wywraca się na tym błędem własnego narzędzia; panel działa.
