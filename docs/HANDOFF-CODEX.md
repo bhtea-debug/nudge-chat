@@ -25,7 +25,7 @@ powtarzać ani „dokańczać".
 | testy | **142**, bez sieci i bez klucza API | — |
 | BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 9 |
 
-Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
+Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 
 1. **Uruchomienie live odbywa się na maszynie właściciela, nie w środowisku
    agentowym.** Polityka egress typowej sesji w chmurze nie przepuszcza ani
@@ -48,7 +48,7 @@ Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
    **nadal otwarty**, a jego merge domyka rozjazd: gdyby ktoś zbudował produkcję
    z `main`, trasy zniknęłyby. Szczegóły i ocena ryzyka w 8.9 i w komentarzu na PR.
 
-3. **Tryb MCP nie potrzebuje `ANTHROPIC_API_KEY`.** Modelem jest Claude po
+4. **Tryb MCP nie potrzebuje `ANTHROPIC_API_KEY`.** Modelem jest Claude po
    stronie klienta. Jeśli zobaczysz, że `npm run mcp` domaga się klucza — to
    regresja, bo warstwa modelu jest celowo leniwa.
 
