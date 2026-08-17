@@ -29,7 +29,8 @@
     "mcp:doctor": "node scripts/mcp-doctor.mjs",
     "raport:zaplanuj": "bash scripts/install-schedule.sh",
     "wdroz": "bash scripts/deploy-railway.sh",
-    "pilne": "tsx --env-file-if-exists=.env src/bin/pilne.ts"
+    "pilne": "tsx --env-file-if-exists=.env src/bin/pilne.ts",
+    "push:test": "node scripts/push-test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

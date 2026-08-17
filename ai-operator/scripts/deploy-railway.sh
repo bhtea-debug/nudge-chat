@@ -367,6 +367,17 @@ if [ -n "$ADRES" ]; then
   PRZED="$(curl -fsS --max-time 8 "https://$ADRES/health" 2>/dev/null | grep -oE '"startedAt":"[^"]*"' || true)"
 fi
 
+# Znacznik wersji WJEŻDŻA DO OBRAZU razem ze źródłami.
+#
+# Bez niego „nowa wersja odpowiedziała" znaczyło tylko „odpowiedział nowy
+# PROCES" — a ustawienie zmiennych środowiskowych restartuje kontener ze starym
+# obrazem. Wdrożenie meldowało wtedy sukces po piętnastu sekundach, choć
+# budowanie obrazu tyle nie trwa. Stary kontener nie może udawać nowego, jeżeli
+# rozpoznajemy go po KODZIE, a nie po czasie startu.
+WERSJA="$(git rev-parse --short HEAD 2>/dev/null || echo 'bez-gita')"
+printf '{"commit":"%s"}\n' "$WERSJA" > src/wersja.json
+ok "znacznik wersji: $WERSJA"
+
 printf '  Buduję obraz z Dockerfile i wysyłam. Potrwa 1–3 minuty…\n'
 zservice up --detach || {
   zle "Wdrożenie nie przeszło."
@@ -390,6 +401,16 @@ if [ -z "$ADRES" ]; then
 fi
 ok "https://$ADRES"
 
+# Zapisujemy adres lokalnie, żeby `npm run push:test` nie wymagał od właściciela
+# wklejania go za każdym razem. To nie jest sekret — trafia do .env wyłącznie
+# dlatego, że tam już mieszka reszta konfiguracji tej instalacji.
+if ! grep -q "^COPILOT_PUBLIC_URL=https://$ADRES$" "$ENV_FILE" 2>/dev/null; then
+  grep -v '^COPILOT_PUBLIC_URL=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
+  printf 'COPILOT_PUBLIC_URL=https://%s\n' "$ADRES" >> "$ENV_FILE.tmp"
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+fi
+
 # Czekamy na ZMIANĘ `startedAt`, nie na samą odpowiedź. Odpowiedź daje też stary
 # kontener, który jeszcze nie zszedł — i właśnie na tym raz się przejechaliśmy.
 # Ile realnie trwa wdrożenie, nie wiedzieliśmy: poprzednie sprawdzenie zaliczała
@@ -404,7 +425,11 @@ PROBY=$((CZEKAM_MINUT * 12))
 for I in $(seq 1 "$PROBY"); do
   ODP="$(curl -fsS --max-time 8 "https://$ADRES/health" 2>/dev/null || true)"
   TERAZ="$(printf '%s' "$ODP" | grep -oE '"startedAt":"[^"]*"' || true)"
-  if printf '%s' "$ODP" | grep -q '"ok":true' && [ -n "$TERAZ" ] && [ "$TERAZ" != "$PRZED" ]; then
+  # Dwa warunki naraz i oba są konieczne: właściwy KOD (znacznik z obrazu)
+  # oraz nowy PROCES. Sam znacznik nie wystarczy przy ponownym wdrożeniu tego
+  # samego commita, sam czas startu — przy restarcie po zmianie zmiennych.
+  if printf '%s' "$ODP" | grep -q "\"commit\":\"$WERSJA\"" &&
+     printf '%s' "$ODP" | grep -q '"ok":true' && [ -n "$TERAZ" ] && [ "$TERAZ" != "$PRZED" ]; then
     ZDROWY=1
     NARZEDZIA="$(printf '%s' "$ODP" | grep -oE '"tools":[0-9]+' | cut -d: -f2)"
     OAUTH="$(printf '%s' "$ODP" | grep -oE '"oauth":(true|false)' | cut -d: -f2)"
@@ -435,7 +460,14 @@ if [ "${OAUTH:-}" != "true" ]; then
   printf '  Znaczy to, że COPILOT_AUTH_PASSWORD nie dojechało do usługi.\n'
   exit 1
 fi
-ok "nowa wersja stoi, OAuth włączony"
+
+PUSH_STAN="$(printf '%s' "$ODP" | grep -oE '"push":(true|false)' | cut -d: -f2)"
+if [ "${PUSH_STAN:-}" != "true" ]; then
+  zle "Serwer wstał, ale POWIADOMIENIA są wyłączone (brak kluczy VAPID na usłudze)."
+  printf '  Test pusha nie ruszy. Reszta produktu działa normalnie.\n'
+  exit 1
+fi
+ok "nowa wersja stoi ($WERSJA), OAuth i powiadomienia włączone"
 
 OSTRZEZENIE_WOLUMEN=""
 if [ "$BEZ_WOLUMENU" = "1" ]; then
@@ -462,4 +494,16 @@ $OSTRZEZENIE_WOLUMEN
   Po kliknięciu „Add" Claude otworzy stronę zgody i poprosi o hasło.
   To jest to hasło, które wypisałem wyżej (albo masz je w .env pod
   COPILOT_AUTH_PASSWORD).
+
+  POWIADOMIENIA NA IPHONE — jednorazowo, w Safari na telefonie:
+
+    https://$ADRES/push
+
+    1. Udostępnij → Dodaj do ekranu początkowego.
+    2. Otwórz NOWĄ ikonę (nie kartę Safari — ta nigdy nie dostanie pusha).
+    3. Wpisz hasło, naciśnij „Włącz powiadomienia", zezwól.
+
+  Potem test wysyłasz stąd, z Maca:
+
+    npm run push:test
 PODSUMOWANIE

@@ -14,3 +14,8 @@ openapi.json
 /.audit/
 /raporty/
 /state/
+
+# Znacznik wersji wstrzykiwany przez skrypt wdrożeniowy tuż przed wysłaniem.
+# Jest w kontekście budowania (i w obrazie), ale NIE w repozytorium — to on
+# pozwala odróżnić „odpowiada nowy kontener" od „odpowiada nowy KOD".
+src/wersja.json

@@ -186,3 +186,48 @@ describe("wysyłka testowa", () => {
     expect(wynik.bledy.length).toBeGreaterThan(0);
   }, 20_000);
 });
+
+describe("generator kluczy VAPID", () => {
+  /**
+   * Ten test istnieje, bo pierwsza wersja generatora importowała `web-push`
+   * i wywróciła wdrożenie na maszynie właściciela: `git pull` przynosi
+   * package.json, ale nie instaluje paczek. Uruchamiamy skrypt w katalogu BEZ
+   * node_modules — dokładnie w warunkach, w których padł.
+   */
+  it("działa bez ani jednej zainstalowanej zależności i daje klucze, które web-push przyjmuje", async () => {
+    const { mkdtempSync, mkdirSync, copyFileSync, readFileSync } = await import("node:fs");
+    const katalog = mkdtempSync(join(tmpdir(), "bht-vapid-"));
+    mkdirSync(join(katalog, "scripts"));
+    copyFileSync(
+      fileURLToPath(new URL("../scripts/generuj-vapid.mjs", import.meta.url)),
+      join(katalog, "scripts", "generuj-vapid.mjs"),
+    );
+
+    const kod = await new Promise<number | null>((resolve) => {
+      const p = spawn(process.execPath, ["scripts/generuj-vapid.mjs"], {
+        cwd: katalog,
+        // Środowisko bez niczego z tego projektu.
+        env: { PATH: process.env["PATH"] ?? "", HOME: katalog },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let wyjscie = "";
+      p.stdout.on("data", (d: Buffer) => (wyjscie += d.toString()));
+      p.stderr.on("data", (d: Buffer) => (wyjscie += d.toString()));
+      p.on("exit", (c) => {
+        // Sekret nie ma prawa pojawić się na ekranie — stamtąd trafia do rozmowy.
+        expect(wyjscie).not.toMatch(/[A-Za-z0-9_-]{40,}/);
+        resolve(c);
+      });
+    });
+    expect(kod).toBe(0);
+
+    const env = readFileSync(join(katalog, ".env"), "utf8");
+    const pub = /^VAPID_PUBLIC_KEY=(.+)$/m.exec(env)?.[1] ?? "";
+    const priv = /^VAPID_PRIVATE_KEY=(.+)$/m.exec(env)?.[1] ?? "";
+
+    // Kształt wymagany przez Web Push: nieskompresowany punkt P-256 i skalar.
+    expect(Buffer.from(pub, "base64url")).toHaveLength(65);
+    expect(Buffer.from(priv, "base64url")).toHaveLength(32);
+    expect(() => webpush.setVapidDetails("mailto:x@y.pl", pub, priv)).not.toThrow();
+  }, 20_000);
+});

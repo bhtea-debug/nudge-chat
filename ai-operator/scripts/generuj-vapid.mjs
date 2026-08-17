@@ -1,18 +1,26 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, chmodSync } from "node:fs";
-import webpush from "web-push";
+import { generateKeyPairSync } from "node:crypto";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * Klucze VAPID — tożsamość naszego serwera wobec bramki push.
  *
- * Generowane RAZ i zapisywane do `.env`, nigdy nie wypisywane na ekran. Powód
- * jest ten sam co przy haśle i tokenie: każdy sekret, który pokazał się
- * w terminalu, prędzej czy później ląduje wklejony w rozmowie.
+ * ── Dlaczego bez biblioteki ───────────────────────────────────────────────────
+ * Pierwsza wersja importowała `web-push` i wywróciła się na maszynie właściciela:
+ * `git pull` przynosi package.json, ale nie instaluje paczek, więc skrypt
+ * wdrożeniowy padał na module, którego jeszcze nie ma. Kazanie właścicielowi
+ * uruchomić `npm install` byłoby przerzuceniem mojego problemu na niego.
  *
- * **Rotacja unieważnia wszystkie subskrypcje.** Bramka push wiąże subskrypcję
- * urządzenia z konkretnym kluczem publicznym; po zmianie klucza stare
- * subskrypcje przestają przyjmować nasze wysyłki i właściciel musi włączyć
- * powiadomienia ponownie. Dlatego istniejących kluczy NIE nadpisujemy.
+ * Klucz VAPID to zwyczajna para kluczy P-256, a Node ma to wbudowane:
+ *  - publiczny  = nieskompresowany punkt krzywej (0x04 ‖ X ‖ Y), 65 bajtów,
+ *  - prywatny   = skalar, 32 bajty,
+ * oba zapisane w base64url. Dokładnie tego oczekuje biblioteka wysyłająca.
+ *
+ * ── Czego ten skrypt nie robi ─────────────────────────────────────────────────
+ * Nie wypisuje żadnej wartości. Nie nadpisuje istniejących kluczy — rotacja
+ * unieważnia WSZYSTKIE subskrypcje, bo bramka wiąże subskrypcję urządzenia
+ * z konkretnym kluczem publicznym. Właściciel musiałby wtedy włączyć
+ * powiadomienia od nowa na każdym urządzeniu.
  */
 
 const PLIK = new URL("../.env", import.meta.url).pathname;
@@ -31,7 +39,18 @@ if (ma("VAPID_PUBLIC_KEY") && ma("VAPID_PRIVATE_KEY")) {
   process.exit(0);
 }
 
-const { publicKey, privateKey } = webpush.generateVAPIDKeys();
+const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const pub = publicKey.export({ format: "jwk" });
+const priv = privateKey.export({ format: "jwk" });
+
+/** Współrzędne krzywej P-256 mają dokładnie 32 bajty; dopełniamy z lewej. */
+const na32 = (b64url) => {
+  const b = Buffer.from(b64url, "base64url");
+  return b.length === 32 ? b : Buffer.concat([Buffer.alloc(32 - b.length), b]);
+};
+
+const publiczny = Buffer.concat([Buffer.from([0x04]), na32(pub.x), na32(pub.y)]).toString("base64url");
+const prywatny = na32(priv.d).toString("base64url");
 
 const bez = env
   .split("\n")
@@ -39,12 +58,10 @@ const bez = env
   .join("\n")
   .replace(/\n+$/, "");
 
-writeFileSync(
-  PLIK,
-  `${bez}\nVAPID_PUBLIC_KEY=${publicKey}\nVAPID_PRIVATE_KEY=${privateKey}\n`,
-  { encoding: "utf8", mode: 0o600 },
-);
+writeFileSync(PLIK, `${bez}\nVAPID_PUBLIC_KEY=${publiczny}\nVAPID_PRIVATE_KEY=${prywatny}\n`, {
+  encoding: "utf8",
+  mode: 0o600,
+});
 chmodSync(PLIK, 0o600);
 
-// Ani jednej wartości na ekranie.
 process.stdout.write("wygenerowane i zapisane w .env (wartości nigdzie nie wypisane)\n");

@@ -5,7 +5,7 @@ import { createApp } from "../index.js";
 import { createMcpCore, SERVER_NAME, SERVER_VERSION, SUPPORTED_PROTOCOLS, type JsonRpcRequest } from "../mcp/core.js";
 import { newCorrelationId } from "../capability/audit.js";
 import { renderRun, costLine } from "../state/report.js";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { fromPackageRoot } from "../paths.js";
 import { eventTypeOf, ingestChatMessage, messageFromWebhook, verifySignature } from "../connecteam/ingest.js";
 import {
@@ -60,6 +60,31 @@ const PORT = Number(process.env["PORT"] ?? 8787);
  * wartości, a nie na samą odpowiedź.
  */
 const STARTED_AT = new Date().toISOString();
+
+/**
+ * Który KOD tu stoi.
+ *
+ * `startedAt` odróżnia procesy, ale nie odróżnia wersji — a to są dwie różne
+ * rzeczy i pomyliliśmy je już raz, kosztem całej rundy. Ustawienie zmiennych
+ * środowiskowych restartuje kontener ze STARYM obrazem: proces jest nowy,
+ * kod ten sam. Sprawdzenie po wdrożeniu zaliczało wtedy sukces po piętnastu
+ * sekundach, choć budowanie obrazu tyle nie trwa.
+ *
+ * Znacznik wjeżdża do obrazu razem ze źródłami (skrypt wdrożeniowy zapisuje go
+ * tuż przed wysłaniem), więc stary kontener nie może udawać nowego niezależnie
+ * od tego, ile razy go zrestartujemy. Jego brak jest normalny przy uruchomieniu
+ * z repozytorium i nie jest błędem.
+ */
+const WERSJA_KODU: string | null = (() => {
+  try {
+    const j = JSON.parse(readFileSync(fromPackageRoot("src/wersja.json"), "utf8")) as {
+      commit?: unknown;
+    };
+    return typeof j.commit === "string" ? j.commit : null;
+  } catch {
+    return null;
+  }
+})();
 const TOKEN = (process.env["MCP_BEARER_TOKEN"] ?? "").trim();
 const MONITOR_IN_PROCESS = (process.env["MONITOR_IN_PROCESS"] ?? "1") !== "0";
 const COST_LOG = fromPackageRoot(process.env["COST_LOG"] ?? "state/koszty.jsonl");
@@ -315,6 +340,7 @@ const server = createServer((req, res) => {
         monitorInProcess: MONITOR_IN_PROCESS,
         lastMailScanAt: safeLastScan(),
         startedAt: STARTED_AT,
+        commit: WERSJA_KODU,
         // Dwie rzeczy, bez których nie da się z zewnątrz odpowiedzieć na pytanie
         // „dlaczego Claude się nie łączy". Żadna z nich nie jest sekretem:
         //  - `oauth` mówi tylko, CZY hasło zgody jest ustawione, nie jakie,
