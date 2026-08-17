@@ -377,27 +377,34 @@ ok "https://$ADRES"
 
 # Czekamy na ZMIANĘ `startedAt`, nie na samą odpowiedź. Odpowiedź daje też stary
 # kontener, który jeszcze nie zszedł — i właśnie na tym raz się przejechaliśmy.
-printf '  Czekam, aż wstanie NOWY kontener (do 4 minut). Każda kropka to jedna próba:\n  '
+# Ile realnie trwa wdrożenie, nie wiedzieliśmy: poprzednie sprawdzenie zaliczała
+# natychmiast odpowiedź STAREGO kontenera, więc nigdy go nie zmierzyliśmy.
+# W obrazie jest `npm ci` plus doinstalowanie tsx i typescript, potem wypchnięcie
+# warstw i start — dziewięć minut to zapas, a nie oczekiwana wartość. Licznik
+# minut jest po to, żeby ta wartość przestała być zgadywana.
+CZEKAM_MINUT=9
+printf '  Czekam, aż wstanie NOWY kontener (do %s minut):\n  ' "$CZEKAM_MINUT"
 ZDROWY=0
-for _ in $(seq 1 48); do
+PROBY=$((CZEKAM_MINUT * 12))
+for I in $(seq 1 "$PROBY"); do
   ODP="$(curl -fsS --max-time 8 "https://$ADRES/health" 2>/dev/null || true)"
   TERAZ="$(printf '%s' "$ODP" | grep -oE '"startedAt":"[^"]*"' || true)"
   if printf '%s' "$ODP" | grep -q '"ok":true' && [ -n "$TERAZ" ] && [ "$TERAZ" != "$PRZED" ]; then
     ZDROWY=1
     NARZEDZIA="$(printf '%s' "$ODP" | grep -oE '"tools":[0-9]+' | cut -d: -f2)"
     OAUTH="$(printf '%s' "$ODP" | grep -oE '"oauth":(true|false)' | cut -d: -f2)"
-    printf '\n'
+    printf '\n  (nowa wersja odpowiedziała po ~%s s)\n' "$((I * 5))"
     break
   fi
-  # Kropka po każdej próbie: bez niej cztery minuty ciszy wyglądają jak
-  # zawieszenie i człowiek przerywa skrypt w połowie budowania obrazu.
-  printf '.'
+  # Znak po każdej próbie: bez niego kilka minut ciszy wygląda jak zawieszenie
+  # i człowiek przerywa skrypt w połowie budowania obrazu.
+  if [ $((I % 12)) -eq 0 ]; then printf '%sm' "$((I / 12))"; else printf '.'; fi
   sleep 5
 done
 
 if [ "$ZDROWY" -ne 1 ]; then
   printf '\n'
-  zle "Nowa wersja nie odpowiedziała na /health w ciągu 4 minut."
+  zle "Nowa wersja nie odpowiedziała na /health w ciągu $CZEKAM_MINUT minut."
   printf '\n  Stary serwer mógł dalej działać — to NIE znaczy, że wdrożenie przeszło.\n'
   printf '  Zajrzyj w Build Logs (adres wypisany wyżej przy „wysłane"): tam widać,\n'
   printf '  czy obraz się zbudował.\n\n'
