@@ -32,6 +32,12 @@ MOUNT="/data"
 # i właśnie na tym stanęła.
 SERVICE="bht-copilot"
 
+# Ustawiane na 1, gdy wolumenu nie udało się dodać. Wdrożenie idzie dalej —
+# trwały dysk jest wymagany do codziennej pracy, ale NIE do rozstrzygnięcia,
+# czy Claude na telefonie pobiera sprawę przez MCP. Blokowanie testu na rzeczy
+# opcjonalnej byłoby moim błędem, nie ostrożnością.
+BEZ_WOLUMENU=0
+
 kropka() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 ok()     { printf '  ✓ %s\n' "$1"; }
 zle()    { printf '  ✗ %s\n' "$1" >&2; }
@@ -217,15 +223,21 @@ else
     zle "Nie umiem dodać wolumenu."
     printf '\n  Co powiedziało CLI:\n\n'
     sed 's/^/    /' /tmp/bht-vol
-    printf '\n  ZRÓB TO RĘCZNIE, to jedna rzecz i zajmie 20 sekund:\n'
-    printf '    panel Railway → usługa %s → Settings → Volumes → New Volume\n' "$SERVICE"
-    printf '    punkt montowania: %s\n' "$MOUNT"
-    printf '\n  Potem uruchom ten skrypt ponownie — pominie kroki, które już przeszły.\n'
+    printf '\n  IDĘ DALEJ BEZ WOLUMENU — to NIE blokuje testu.\n\n'
+    printf '  Co to znaczy w praktyce:\n'
+    printf '    · serwer, poczta, TeaBrew i MCP działają normalnie,\n'
+    printf '    · sprawy przeżyją bieżące uruchomienie, ale NIE restart kontenera,\n'
+    printf '    · po restarcie monitor odtworzy je ze skrzynki przy pierwszym skanie.\n\n'
+    printf '  Do codziennej pracy wolumen trzeba dodać. Do odpowiedzi na pytanie\n'
+    printf '  „czy Claude na telefonie pobiera sprawę przez MCP" — nie jest potrzebny.\n\n'
+    printf '  Kiedy będziesz mieć chwilę: panel Railway → usługa %s →\n' "$SERVICE"
+    printf '  Settings → Volumes → New Volume → punkt montowania %s\n' "$MOUNT"
+    BEZ_WOLUMENU=1
     if grep -q "panicked" /tmp/bht-vol; then
       printf '\n  To jest BŁĄD W NARZĘDZIU Railwaya (panika Rusta), nie w konfiguracji.\n'
       printf '  Nie da się go obejść z wiersza poleceń — panel działa normalnie.\n'
     fi
-    exit 1
+
   fi
 fi
 
@@ -331,9 +343,16 @@ if [ "$ZDROWY" -ne 1 ]; then
   exit 1
 fi
 
+OSTRZEZENIE_WOLUMEN=""
+if [ "$BEZ_WOLUMENU" = "1" ]; then
+  OSTRZEZENIE_WOLUMEN="  UWAGA: bez trwałego wolumenu — sprawy nie przeżyją restartu kontenera.
+  Do testu to wystarcza; do codziennej pracy dodaj wolumen w panelu."
+fi
+
 kropka "GOTOWE po mojej stronie"
 cat <<PODSUMOWANIE
   Serwer działa: https://$ADRES
+$OSTRZEZENIE_WOLUMEN
   Narzędzia dla Claude: ${NARZEDZIA:-?}
   Stan spraw: trwały wolumen $MOUNT
   Poczta i TeaBrew: read-only, jak dotychczas
