@@ -7,6 +7,7 @@ import { MailMessage } from "../mail/types.js";
 import { MONITOR_SYSTEM_PROMPT } from "../agent/prompt.js";
 import { matchIssue } from "./correlate.js";
 import { extractOrderRefs, isOwnOrderShape } from "./order-refs.js";
+import { OrderResponse } from "../teabrew/contract.js";
 import { splitNoise } from "./noise.js";
 import { classifyDeterministic, deservesIssue } from "./classify-deterministic.js";
 import type { CopilotStore } from "./store.js";
@@ -417,19 +418,30 @@ export class MailMonitor {
       budget -= 1;
       spent(1);
       try {
+        // Typ z KONTRAKTU, nie doraźne rzutowanie. Pierwsza wersja rzutowała na
+        // `{ order?: { fulfillmentStatus } }` — pola, którego w odpowiedzi NIE MA
+        // (jest tablica `orders`). Skutek: w sprawie widniało „2307348: ? / ?"
+        // przy poprawnie znalezionym zamówieniu. Rzutowanie na wymyślony kształt
+        // zabiera kompilatorowi możliwość złapania takiej pomyłki.
         const out = (await this.opts.registry.invoke(
           "teabrew_get_order_status",
           { ref },
           ctx,
-        )) as { matchedBy: string; order?: { fulfillmentStatus?: string; paymentStatus?: string } | null };
+        )) as z.infer<typeof OrderResponse>["data"];
 
         const missing = out.matchedBy === "none";
+        const first = out.orders[0];
         // Sformułowanie jest CELOWO bez interpretacji. „Prawdopodobnie nie
         // zostało wprowadzone" byłoby domysłem — numer może też być literówką
         // klienta albo numerem z innego systemu. Podajemy fakt: nie ma go tam.
         const summary = missing
           ? `numeru ${ref} NIE MA w TeaBrew`
-          : `${ref}: ${out.order?.fulfillmentStatus ?? "?"} / ${out.order?.paymentStatus ?? "?"}`;
+          : first
+            ? `${ref}: realizacja ${first.fulfillmentStatus}` +
+              `${first.paymentStatus ? `, płatność ${first.paymentStatus}` : ""}` +
+              `${first.customerName ? ` (${first.customerName})` : ""}` +
+              `${first.production.length > 0 ? `, zleceń produkcyjnych: ${first.production.length}` : ""}`
+            : `${ref}: dopasowane po ${out.matchedBy}, ale odpowiedź nie zawiera zamówienia`;
 
         // Konflikt między obietnicą w mailu a stanem systemu jest dokładnie tym,
         // po co ten system istnieje — i jest kandydatem do powiadomienia.

@@ -487,6 +487,24 @@ describe("rozpoznawanie numerów zamówień w surowym tekście", () => {
     expect(found).not.toContain("2026");
   });
 
+  it("NIP i REGON nie są numerami zamówień", () => {
+    // Realny temat ze skrzynki: „NIP: 8842745578 / 5210000143581…". NIP ma
+    // dziesięć cyfr, więc przechodził jako „długi numer", trafiał do TeaBrew,
+    // wracał jako brak i sprawa dostawała WYSOKI priorytet z alarmem.
+    // Kontekst rozstrzyga to pewniej niż długość: numer zamówienia może mieć
+    // dziesięć cyfr, ale nigdy nie stoi po słowie „NIP".
+    expect(refs("NIP: 8842745578 / 521000014358100142097412")).not.toContain("8842745578");
+    expect(refs("REGON 380806690 do faktury")).toEqual([]);
+    expect(refs("nr rachunku 12345678901234567890")).not.toContain("12345678901234567890".slice(0, 10));
+  });
+
+  it("numer przesyłki z tego samego tematu zostaje jako wskaźnik", () => {
+    // Odrzucamy z ALARMOWANIA, nie z pamięci.
+    const found = refs("NIP: 8842745578 / 521000014358100142097412");
+    expect(found).toContain("521000014358100142097412");
+    expect(isOwnOrderShape("521000014358100142097412")).toBe(false);
+  });
+
   it("odróżnia numer o naszym kształcie od obcego", () => {
     expect(isOwnOrderShape("2307029")).toBe(true);
     expect(isOwnOrderShape("99999")).toBe(true);

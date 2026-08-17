@@ -57,6 +57,38 @@ const STEMS = [
 /** Krótkie i wieloznaczne — dopasowujemy WYŁĄCZNIE jako całe wyrazy. */
 const WHOLE_WORDS = ["nr", "wz", "zk", "zp"];
 
+/**
+ * Słowa, po których liczba JEST identyfikatorem, ale NIE numerem zamówienia.
+ *
+ * Znalezione na prawdziwej poczcie: temat „NIP: 8842745578 / 5210000143581…"
+ * dawał NIP jako numer zamówienia, bo ma dziesięć cyfr. Trafiał do TeaBrew,
+ * wracał jako brak i sprawa dostawała wysoki priorytet z alarmem.
+ *
+ * Kontekst rozstrzyga to pewniej niż długość: numer zamówienia może mieć
+ * dziesięć cyfr, ale nigdy nie stoi po słowie „NIP".
+ */
+const NOT_ORDER = [
+  "nip",
+  "regon",
+  "krs",
+  "pesel",
+  "iban",
+  "vat",
+  "konto",
+  "rachunek",
+  "tel",
+  "telefon",
+  "kod",
+  "pin",
+];
+
+/** Czy tuż przed tym numerem stoi słowo mówiące, że to NIE numer zamówienia. */
+function precededByNonOrder(text: string, index: number): boolean {
+  // Patrzymy na ~16 znaków wstecz: „NIP: ", „NIP ", „nr rachunku ".
+  const before = text.slice(Math.max(0, index - 16), index).toLowerCase();
+  return NOT_ORDER.some((w) => new RegExp(`\\b${w}\\b[^\\p{L}\\d]{0,6}$`, "u").test(before));
+}
+
 /** Liczba z prefiksem literowym: RB-2026-118, ZP/06/2026/00016, ZK/123. */
 const PREFIXED = /\b[A-Z]{2,4}[/-]\d{1,6}(?:[/-]\d{1,6}){0,3}\b/g;
 
@@ -118,6 +150,8 @@ export function findOrderRefs(text: string): FoundRef[] {
 
   for (const m of text.matchAll(LONG_DIGITS)) {
     const ref = m[0].trim();
+    // NIP, REGON, numer konta — identyfikatory, ale nie zamówienia.
+    if (m.index !== undefined && precededByNonOrder(text, m.index)) continue;
     if (!out.has(ref)) out.set(ref, { ref, why: "długi numer" });
   }
 
@@ -130,6 +164,7 @@ export function findOrderRefs(text: string): FoundRef[] {
     if (looksLikeYear(ref) && /\bnr[^\d\n]{0,4}$/i.test(m[0].slice(0, m[0].length - ref.length))) {
       continue;
     }
+    if (m.index !== undefined && precededByNonOrder(text, m.index + m[0].indexOf(ref))) continue;
     if (!out.has(ref)) out.set(ref, { ref, why: "słowo kluczowe" });
   }
 
