@@ -1,10 +1,17 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
-Dokument przekazania. Czytaj razem z `docs/AI-OPERATOR-MVP.md` (pełny opis,
-w szczególności **sekcja 8 — Live validation**), `docs/ARCHITEKTURA-AI-2026.md`
-(dlaczego to wygląda tak, a nie inaczej) oraz
-`docs/AI-OPERATOR-CODZIENNIE.md` (jak właściciel tego używa na co dzień —
-tam jest opisana **różnica gwarancji** między trybem MCP i `npm run ask`).
+Dokument przekazania. Stan na **17.08.2026**, gałąź
+`claude/ai-company-architecture-mvy1uv`, ostatni commit `2d22ed9`.
+
+Czytaj razem z:
+
+| dokument | do czego |
+| --- | --- |
+| `docs/AI-OPERATOR-MVP.md` | pełny opis, w szczególności **sekcja 8 — Live validation** (dowody z prawdziwych danych) |
+| `docs/ARCHITEKTURA-AI-2026.md` | dlaczego to wygląda tak, a nie inaczej |
+| `docs/AI-OPERATOR-CODZIENNIE.md` | jak właściciel tego używa na co dzień — tam jest **różnica gwarancji** między trybem MCP i `npm run ask` |
+| `docs/DECYZJA-REMOTE-MCP.md` | wybór hostingu zdalnego MCP, spisany **przed** wdrożeniem |
+| `docs/CLAUDE-COPILOT-INSTRUCTIONS.md` | instrukcja do wklejenia w Claude Project |
 
 **Nie rozszerzaj zakresu i nie projektuj niczego od nowa.**
 
@@ -21,9 +28,11 @@ powtarzać ani „dokańczać".
 | `check:mail` | **11/11** na prawdziwej skrzynce (okno 7 dni) | 8.11 |
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
+| monitor deterministyczny | **przebiegł na prawdziwej poczcie**: 20 nowych → 11 odsianych → 9 spraw, **0 wywołań modelu** | 4, „Kredyty API" |
 | raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
-| testy | **142**, bez sieci i bez klucza API | — |
-| BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 9 |
+| capability | **11**, zapisujących **0** (`npm run caps`) | 5 |
+| testy | **146**, bez sieci i bez klucza API | 6 |
+| BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 10 |
 
 Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 
@@ -73,8 +82,8 @@ Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 | co | gdzie |
 | --- | --- |
 | kod agenta | `bhtea-debug/nudge-chat`, gałąź `claude/ai-company-architecture-mvy1uv`, katalog `ai-operator/` |
-| łatka ERP | `bhtea-debug/teabrew-v2`, gałąź `claude/ai-operator-read-only-endpoints`, baza `b777d4d` |
-| PR do merge | `teabrew-v2#27` — `mergeable_state: clean`, brak GitHub Actions; jedyny automat to preview Vercela (i to on wdrożył funkcje) |
+| łatka ERP | `bhtea-debug/teabrew-v2` — **PR #27 ZMERGOWANY** do `main` (`d950b97`), trasy odtwarza każdy build produkcyjny |
+| wdrożenie Convex | `calm-porpoise-426` — to samo dla buildów preview i produkcyjnych (ustalone, patrz sekcja 0 punkt 2) |
 | klon roboczy właściciela | `~/nudge-chat-live/ai-operator` na jego Macu, z wypełnionym `.env` |
 
 ---
@@ -202,6 +211,14 @@ Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
   w `convex/_generated/api.d.ts` dodawane **ręcznie**, w formie generowanej
   przez codegen. Wdrożenie tylko przez `npm run convex:live:deploy --
   --confirm=<wdrożenie>`. Przed edycją wykonaj kroki z `AGENTS.md` tamtego repo.
+- **Nie rzutuj odpowiedzi TeaBrew na własny kształt — użyj typu z KONTRAKTU.**
+  W monitorze rzutowałem wynik na `{ order?: { fulfillmentStatus, paymentStatus } }`.
+  Kontrakt ma `orders: Order[]`. TypeScript nic nie zgłosił (rzutowanie wyłącza
+  kontrolę), pola były `undefined`, i raport na prawdziwych danych napisał
+  `2307348: ? / ?` przy zamówieniu, które w systemie JEST i ma status.
+  Poprawnie: `z.infer<typeof OrderResponse>["data"]`, potem `out.orders[0]`.
+  Każde `as` na odpowiedzi HTTP to miejsce, w którym schemat i kod mogą się
+  rozjechać bez ostrzeżenia.
 
 ### Poczta
 
@@ -305,6 +322,51 @@ infrastruktura NIE wywołuje drugiego modelu"). Teraz:
 
 **Nie przywracaj modelu do ścieżki domyślnej.**
 
+### Raport bez modelu: lista faktów NIE JEST raportem
+
+Pierwsza wersja raportu deterministycznego zbierała fakty i na tym poprzestawała.
+Ocena właściciela, dosłownie: **„mało potrzebny ten raport, nie rozdziela spamu od
+wiadomości, nie ma priorytetów, opisów, wyjaśnienia"**. Miał rację i warto
+rozumieć, dlaczego, bo to jest pułapka wpisana w usunięcie modelu: przenosząc
+ocenę do „spytaj Claude'a", zdjąłem ją z jedynej rzeczy, którą właściciel czyta
+**bez zadawania pytania**.
+
+Trzy z czterech zarzutów da się naprawić bez modelu i są naprawione
+(`classify-deterministic.ts`, `report-view.ts`):
+
+- **priorytety** — pięć uporządkowanych reguł w `judge()`, pierwsza pasująca
+  wygrywa. Każda opiera się na fakcie, nie na wyczuciu.
+- **rozdzielenie** — trzy ROZŁĄCZNE sekcje panelu: brakujące w TeaBrew →
+  korespondencja → prawdopodobnie nieistotne (w `<details>`, zwinięte).
+- **wyjaśnienie** — `whyListed`, jedno zdanie przy KAŻDEJ pozycji („w wiadomości
+  jest numer zamówienia 2307029", „nigdy nie pisaliśmy do psibufet.example, brak
+  numeru i brak wątku"). Cel: żeby właściciel mógł odrzucić konkretną regułę,
+  a nie cały mechanizm.
+
+**Czwartego zarzutu nie da się naprawić bez modelu i nie udawaj, że się da.**
+Opis to podgląd treści z serwera, dosłownie, przycięty do 400 znaków. Nie ma
+streszczenia własnymi słowami. Zaleta: nie ma czego zmyślić. Wada: nie ma skrótu.
+Otwarta propozycja dla właściciela — **jedno** wywołanie modelu na dobę, tylko do
+raportu (~30× taniej niż monitor co 15 minut, który odrzucił). To jego decyzja.
+
+Dwie rzeczy w tym mechanizmie, których nie ruszaj:
+
+- **Bez skanu folderu wysłanych NIE WOLNO twierdzić „nieznany nadawca".**
+  `Signals.senderHistoryAvailable` rozdziela „nie pisaliśmy do tej domeny" od
+  „nie wiem, czy pisaliśmy". Reguła 4 w `judge()` obsługuje drugi przypadek i
+  mówi o tym wprost w `whyListed`. Ukrycie pierwszego maila od nowego klienta
+  byłoby najgorszą możliwą pomyłką tego systemu.
+- **`deservesIssue` zwraca zawsze `true`.** Rozdzielenie robi flaga
+  `likelyIrrelevant`, NIE odrzucenie na wejściu. Różnica jest praktyczna: sprawa
+  oznaczona jako nieistotna nadal jest w pamięci i znajdzie ją
+  `copilot_search_issues`; wiadomość odrzucona na wejściu przestaje istnieć dla
+  całego systemu. Nie „optymalizuj" tego z powrotem.
+
+`MAIL_SENT_FOLDER` **nie ma wartości domyślnej** — patrz zasada „nie zgaduj
+nazwy folderu wysłanych" wyżej. Lista znanych domen jest odświeżana raz na 24 h
+(`KNOWN_DOMAINS_TTL_HOURS`) i zapisana w dzienniku jako zdarzenie
+`known_domains`, żeby nie skanować przy każdym przebiegu.
+
 ### `mailparser` grupuje nagłówki `List-*` pod kluczem `list`
 
 **Nie ma klucza `list-unsubscribe`.** `List-Unsubscribe: <https://…>` staje się
@@ -321,7 +383,7 @@ Rozstrzygnięte przez przepuszczenie prawdziwego nagłówka RFC822 przez
 (`List-Unsubscribe`, `List-Id`, `Precedence: bulk`, `Auto-Submitted`) plus
 `Auto-Submitted: no`, które znaczy „to napisał człowiek".
 
-### Rozpoznawanie numerów zamówień — cztery kolejne wpadki w jednym miejscu
+### Rozpoznawanie numerów zamówień — sześć kolejnych wpadek w jednym miejscu
 
 `src/state/order-refs.ts` jest JEDYNYM miejscem rozpoznającym numer zamówienia.
 Powstało po serii błędów, każdy wykryty na prawdziwych danych i każdy tej samej
@@ -340,11 +402,18 @@ klasy — fałszywy alarm „numeru X nie ma w TeaBrew":
    logowania") trafiał do TeaBrew. Prawdziwe numery tej firmy mają SIEDEM cyfr
    (`2307029`, `2271126`, `2307348`), więc próg to 7. Numery 4–6-cyfrowe nadal
    są łapane, ale tylko ze słowem kluczowym obok.
+6. **NIP wyglądał jak numer zamówienia.** `8842745578` (10 cyfr) przeszło próg
+   długości i poszło do TeaBrew, gwarantując „tego numeru nie ma w systemie" —
+   przy każdym mailu z podpisem firmowym, czyli praktycznie zawsze. Lista
+   `NOT_ORDER` (`nip`, `regon`, `krs`, `pesel`, `iban`, `vat`, `konto`,
+   `rachunek`, `tel`, `kod`, `pin`) odrzuca liczbę, jeśli w pobliżu stoi jedno
+   z tych słów. Górna granica `isOwnOrderShape` to 12 cyfr — nie „dowolnie
+   długa liczba".
 
-Reguły: numer musi mieć POWÓD (prefiks literowy, słowo kluczowe obok, albo ≥6
+Reguły: numer musi mieć POWÓD (prefiks literowy, słowo kluczowe obok, albo ≥7
 cyfr), a do TeaBrew idą tylko numery o KSZTAŁCIE naszego numeru
 (`isOwnOrderShape`: 4–12 cyfr, bez prefiksu). Numer odrzucony z alarmowania
-NADAL zostaje w sprawie jako wskaźnik. 10 testów.
+NADAL zostaje w sprawie jako wskaźnik.
 
 Dlaczego to tyle uwagi: raport mówiący „3 numerów nie ma w systemie", gdzie dwa
 to rok i tonaż, traci zaufanie w pierwszym dniu — a wtedy przestaje działać także
@@ -387,23 +456,40 @@ na wyczucie.
 
 ```
 ai-operator/
+  src/paths.ts       fromPackageRoot — ścieżki od katalogu PAKIETU, nie od cwd
   src/capability/    rejestr (wymusza read), typy, audyt, projekcje
                      projections.ts: JSON Schema + OpenAPI + MCP z JEDNEJ definicji
   src/mail/          types.ts (MailProvider — brak metod zapisu)
-                     imap.ts (adapter, readOnly, limity czasu, SEARCH OR)
-                     fixture.ts, folders.ts (SPECIAL-USE), thread.ts, text.ts
+                     imap.ts (adapter, readOnly, limity czasu, SEARCH OR, isBulk)
+                     fixture.ts, folders.ts (SPECIAL-USE), thread.ts, text.ts,
+                     folder-verdict.ts (ocena „monitorować czy nie" — testowalna)
   src/teabrew/       contract.ts (zod, JEDNO źródło prawdy), client.ts (HTTP + fixture)
   src/model/         roles.ts — fast / reason, zero ID modeli w logice, LENIWA
-  src/agent/         operator.ts, triage.ts, prompt.ts, evidence.ts
-  src/bin/           ask, triage, caps, openapi, mcp, check-mail, verify-teabrew,
-                     probe-thread, audit (podgląd logu — w trybie MCP JEDYNY dowód),
-                     report (raport dzienny, panel HTML, jedna linia na powiadomienie)
+                     errors.ts — błąd API na komunikat, z którego wynika co zrobić
+  src/state/         PAMIĘĆ COPILOTA (7 plików, patrz sekcja 10)
+                     store.ts (dziennik JSONL, replay, guardStatus)
+                     types.ts (Issue, StateEvent), monitor.ts (przebieg w tle)
+                     classify-deterministic.ts (Signals + judge — priorytety)
+                     order-refs.ts (JEDYNE rozpoznawanie numerów), correlate.ts,
+                     noise.ts, capabilities.ts (4 capability copilot_*), report.ts
+  src/mcp/core.ts    JEDYNA implementacja JSON-RPC dla OBU transportów
+  src/agent/         operator.ts, triage.ts, prompt.ts, evidence.ts,
+                     report-view.ts (panel HTML: 3 sekcje, plakietki, whyListed)
+  src/bin/           ask, triage, caps, openapi, check-mail, verify-teabrew,
+                     probe-thread, mail-folders (inwentaryzacja), monitor, issues,
+                     mcp (stdio) i mcp-http (zdalnie) — cienkie transporty,
+                     audit (podgląd logu — w trybie MCP JEDYNY dowód),
+                     report (raport dzienny, panel HTML, linia na powiadomienie)
   scripts/           live-setup.sh (uruchomienie live), install-claude-desktop-config.mjs,
-                     mcp-doctor.mjs (diagnostyka startu serwera MCP)
-  teabrew-patch/     źródło kontraktu ERP (założone jako PR #27)
+                     mcp-doctor.mjs (diagnostyka startu serwera MCP),
+                     install-schedule.sh (launchd), daily-report.sh,
+                     verify-clone.sh (weryfikacja TREŚCI commita — patrz „Git")
+  Dockerfile         obraz dla Remote MCP (Railway) — patrz DECYZJA-REMOTE-MCP.md
+  teabrew-patch/     źródło kontraktu ERP (zmergowane jako PR #27, d950b97)
   fixtures/          poczta (INBOX + Sent) i dane ERP — PRAWDZIWE enumy
-  tests/             81 testów: scenariusze, jednostkowe, bezpieczeństwo łatki,
-                     integralność adaptera MCP, start serwera MCP
+  tests/             146 testów w 6 plikach: scenarios (19), copilot-state (52),
+                     units (32), patch-security (27), report-view (13),
+                     mcp-startup (3 — uruchamiają PRAWDZIWY serwer)
   claude-desktop.example.json   konfiguracja MCP dla Claude Desktop
 ```
 
@@ -411,23 +497,28 @@ ai-operator/
 function callingu, OpenAPI i lista narzędzi MCP. Dodając capability, dodaj ją
 **tylko** w rejestrze.
 
-MCP (`src/bin/mcp.ts`) jest **adapterem**: nie definiuje capability, nie dodaje
-zależności (JSON-RPC po stdio), nie woła modelu po naszej stronie. Skasowanie go
-nie psuje agenta. Sześć testów pilnuje, żeby nie stał się drugim systemem.
+MCP jest **adapterem**: nie definiuje capability, nie dodaje zależności, nie woła
+modelu po naszej stronie. Skasowanie go nie psuje agenta. Testy pilnują, żeby nie
+stał się drugim systemem — w szczególności, żeby `bin/mcp.ts` ani `bin/mcp-http.ts`
+nie budowały własnej listy narzędzi i nie wołały rejestru wprost.
 
 ---
 
 ## 6. Testowanie bez sekretów
 
-Wszystkie 68 testów działają **bez sieci i bez klucza API** — model jest atrapą
+Wszystkie **146** testów działa **bez sieci i bez klucza API** — model jest atrapą
 (`tests/helpers.ts`, `scriptedModel`), dane z fikstur.
 
 ```bash
 cd ai-operator && npm install
-npm run typecheck && npm test
-npm run check:mail        # 11 sprawdzeń poczty na fiksturach, 11/11
-npm run caps             # 7 capability, 0 zapisujących
+npm run preflight        # typecheck + test + verify:clone — TO uruchamiaj przed pushem
+npm run check:mail       # 11 sprawdzeń poczty na fiksturach, 11/11
+npm run caps             # 11 capability, 0 zapisujących
 ```
+
+`preflight` zawiera `verify:clone`, i to nie jest ozdoba: dwa razy w tym projekcie
+„u mnie przechodzi" znaczyło coś innego niż „przechodzi to, co wypchnięte"
+(patrz „Git" w sekcji 4).
 
 Fikstury mają dwie właściwości, których nie psuj:
 
@@ -441,49 +532,58 @@ Fikstury mają dwie właściwości, których nie psuj:
 
 ## 7. Co zostało do zrobienia
 
-### Etap A — do potwierdzenia przez właściciela
+### Etap A — ZALICZONY, nie powtarzaj
 
-Konfiguracja MCP jest gotowa (`claude-desktop.example.json`). Właściciel wkleja
-wpis do `~/Library/Application Support/Claude/claude_desktop_config.json`,
-restartuje Claude Desktop i wykonuje testy z punktu 7 zadania: poczta,
-zamówienie, mail+TeaBrew, produkt, nieistniejące zamówienie.
+Claude Desktop odpowiedział na wszystkie cztery testy na prawdziwych danych
+(8.12, 8.13): zamówienie `2271126` (anulowane, nieopłacone), stan Japan Matcha,
+korelacja poczta↔TeaBrew (trzy zamówienia Rossmanna, `matchedBy: none`) oraz
+nieistniejące `99999888` — z odpowiedzią „nie istnieje w TeaBrew, nie zgaduję
+statusu", czyli dokładnie tak, jak ma działać.
 
-**Nie zaczynaj Etapu B, dopóki A nie jest potwierdzone.**
+Jedna rzecz z tych testów jest ważniejsza niż sam wynik: Claude napisał wtedy
+„pobrałem **pełne** 30 wiadomości z 7 dni". To było nieprawdziwe twierdzenie
+o KOMPLETNOŚCI, którego kontrola dowodów nie łapie. Stąd `MailListResult.matched`
+i `truncated` — patrz sekcja 4, „Poczta".
 
-### Etap B — dostęp zdalny, DECYZJA WŁAŚCICIELA
+### Etap B — dostęp zdalny, DECYZJA PODJĘTA (Railway)
 
-Rekomendacja: **nie budować własnego hostingu.** Najprostsza bezpieczna droga to
-Convex jako broker MCP — to samo wdrożenie, które już trzyma token TeaBrew.
-Jedna trasa `POST /mcp` po Streamable HTTP, autoryzowana osobnym tokenem per
-urządzenie. HTTPS z pudełka, zero nowej infrastruktury, credentiale zostają
-serwerowe, odebranie dostępu = usunięcie jednej zmiennej.
+**Nie planuj tego od nowa. Decyzja i jej uzasadnienie są w
+`docs/DECYZJA-REMOTE-MCP.md`, spisane PRZED wdrożeniem, celowo.**
 
-**Twardy problem: Convex nie ma dostępu do IMAP-a.** Z telefonu działałby więc
-tylko TeaBrew. Stąd dwie opcje, wymagające wyboru właściciela:
+Skrót, żebyś nie musiał otwierać: rozważane były Convex (odpada — **nie ma
+dostępu do IMAP-a**, a właściciel wprost odrzucił wariant „mobilnie tylko
+TeaBrew"), Mac właściciela z tunelem (odpada — dostępność zależy od tego, czy
+laptop jest otwarty), VPS (odpada — więcej administrowania niż wartości).
+Wybrane: **Railway**, jeden kontener z `Dockerfile`, jeden wolumen na
+`COPILOT_STATE_DIR`, `MCP_BEARER_TOKEN` w zmiennych środowiskowych.
 
-- **B1 — tylko TeaBrew zdalnie.** Mała, oczywista zmiana w istniejącym
-  wdrożeniu. Poczta zostaje lokalna.
-- **B2 — pełny zakres.** Wymaga procesu z wyjściem na `imap.zenbox.pl`, czyli
-  **pierwszej nowej usługi** w tym projekcie — wbrew dotychczasowej zasadzie.
-  Wymaga jawnej zgody, nie domysłu.
+Stan kodu: **gotowy i przetestowany lokalnie** — 401 bez tokenu, 11 narzędzi po
+autoryzacji, zero sekretów w logu. **Niewdrożony**, bo wymaga konta właściciela.
 
-Nie wybieraj za właściciela.
+**Otwarte pytanie, którego NIE DA SIĘ rozstrzygnąć z tej strony:** czego Claude
+wymaga w dialogu „dodaj własny konektor" — samego URL-a, pary OAuth
+client id/secret, czy pola na nagłówek. Musi to sprawdzić właściciel, bo dialog
+jest w jego kliencie. Nie zgaduj i nie buduj OAuth „na wszelki wypadek".
 
 ---
 
 ## 8. Otwarte obserwacje operacyjne
 
-**Zasięg agenta w poczcie.** Pierwszy `triage` na prawdziwej skrzynce zwrócił
-2 wiadomości z 24 godzin, obie niebiznesowe (automat rezerwacyjny i „wróciłem
-z urlopu"). Skrzynka ma jednak **21 folderów**, w tym `FAKTURY`, `ROSSMANN`,
-`NPD`, `INBOX.WHITE LABEL.*`. Jeśli reguły serwerowe przenoszą korespondencję
-z klientami do podfolderów, agent czytający tylko `INBOX` będzie odpowiadał
-prawdziwie, ale bezużytecznie.
+**Zasięg agenta w poczcie — ROZSTRZYGNIĘTE, patrz sekcja 4.** Obawa o podfoldery
+była nieuzasadniona; inwentaryzacja 21 folderów pokazała, że biznesowe są martwe
+(`FAKTURY` 761 dni, `ROSSMANN` 885 dni). `MAIL_MONITOR_FOLDERS=INBOX`.
 
-To **decyzja właściciela** i dotyczy konfiguracji (`MAIL_FOLDER`), nie kodu.
-Rozstrzygnie ją tydzień używania: jeśli odpowiedzi będą regularnie pomijać
-sprawy, o których właściciel wie, że przyszły — wtedy wiadomo, które foldery
-dołożyć i dlaczego. Nie rozszerzaj zasięgu bez tego dowodu.
+**Pięć automatów nadal zakłada sprawy.** Filtr poczty masowej stoi na nagłówkach
+RFC, a te wiadomości **nie mają** `List-Unsubscribe` ani `Precedence: bulk` —
+więc przechodzą. Trafiają do sekcji „prawdopodobnie nieistotne" (reguła 5
+w `judge()`), czyli nie zaśmiecają góry raportu, ale są. Nie „napraw" tego listą
+nadawców: `noreply@` to także potwierdzenia zamówień i awizo kurierskie.
+
+**Rozjazd w liczbach dostępności na BHTJM, NIEROZSTRZYGNIĘTY.** Rano ten sam SKU
+raportował `1896 dostępne, 0 rezerwacji`, a po południu `104 dostępne, 1792
+zarezerwowane`. Nie umiem stwierdzić, która liczba była prawdziwa — nie mam
+historii stanów i nie wolno mi tego dopisać do wniosków. Jeśli będziesz nad tym
+pracował: to pytanie do TeaBrew, nie do agenta.
 
 **`shipmentReservationUncovered` niezerowe na realnym SKU.** Istnieją aktywne
 rezerwacje wysyłkowe wskazujące partie wykluczone z profilu. Helper
@@ -500,19 +600,29 @@ zmiana w produkcyjnej ścieżce wdrożeniowej.
 
 ## 9. Decyzje należące do właściciela — nie rozstrzygaj ich sam
 
-1. **Merge PR #27** i domknięcie rozjazdu między `main` a wdrożeniem.
-2. **Etap B: B1 czy B2** (patrz wyżej).
-3. **Zasięg folderów poczty** — po tygodniu używania.
-4. **Jak długo trzymać log audytu** i czy na dysku. Nie ma treści maili, ale ma
+Zamknięte, żebyś ich nie otwierał ponownie: **merge PR #27** (zrobiony,
+`d950b97`), **Etap B B1 czy B2** (B2 — Railway, `docs/DECYZJA-REMOTE-MCP.md`),
+**zasięg folderów** (`INBOX`, na podstawie inwentaryzacji), **kredyty API**
+(tylko subskrypcja Claude, zero kredytów).
+
+Otwarte:
+
+1. **Uwierzytelnienie konektora w Claude** — czego wymaga dialog „dodaj własny
+   konektor". Tylko właściciel to widzi.
+2. **Jak długo trzymać log audytu** i czy na dysku. Nie ma treści maili, ale ma
    numery zamówień i frazy wyszukiwania.
-5. **Kto poza właścicielem może pytać agenta.** Dziś: kto ma dostęp do jego
+3. **Kto poza właścicielem może pytać agenta.** Dziś: kto ma dostęp do jego
    maszyny i `.env`. Przy większej liczbie osób tożsamość użytkownika wraca jako
    decyzja projektowa.
-6. **Czy domykać lukę w guardach wdrożeniowych** teabrew-v2.
+4. **Czy domykać lukę w guardach wdrożeniowych** teabrew-v2 (sekcja 0, punkt 3).
+5. **Czy włączyć kanał powiadomień.** `notificationCandidate` jest wyliczany
+   i widoczny, żeby po tygodniu było wiadomo, ile takich sytuacji realnie jest.
+6. **Czy dopuścić JEDNO wywołanie modelu na dobę** wyłącznie do raportu — jedyna
+   droga do streszczeń własnymi słowami. Zaproponowane, nierozstrzygnięte.
 
 ---
 
-## 9. BHT Copilot v1 — co jest zrobione, a co zablokowane
+## 10. BHT Copilot v1 — co jest zrobione, a co zablokowane
 
 Stan na 17.08.2026. Tabela jest ustawiona wobec „Definition of Done" z zadania,
 bez zaokrąglania w górę.
@@ -521,12 +631,13 @@ bez zaokrąglania w górę.
 | --- | --- |
 | Remote MCP działa | **kod gotowy, przetestowany lokalnie** (401 bez tokenu, 11 narzędzi, zero sekretów w logu). **NIE wdrożony** — wymaga konta Railway właściciela |
 | dostępny z telefonu | **NIE zweryfikowane.** Zależy od wdrożenia i od otwartego pytania o uwierzytelnienie konektora — patrz `docs/DECYZJA-REMOTE-MCP.md` punkt 4 |
-| dostęp do prawdziwej poczty | kod bez zmian wobec działającego LIVE; w tej sesji nieweryfikowalny (egress) |
-| dostęp do TeaBrew | jak wyżej |
-| monitoruje właściwe foldery | **narzędzie gotowe** (`npm run mail:foldery`), **inwentaryzacja NIE wykonana** — wymaga IMAP-a, czyli maszyny właściciela |
+| dostęp do prawdziwej poczty | ✅ **potwierdzony przebiegiem monitora na skrzynce właściciela** (20 nowych wiadomości) |
+| dostęp do TeaBrew | ✅ `verify:teabrew` 17/17 + 2 zapytania o zamówienia w przebiegu monitora |
+| monitoruje właściwe foldery | ✅ **inwentaryzacja WYKONANA** — 21 folderów, wynik: `INBOX` (sekcja 4) |
 | nie analizuje całej skrzynki ponownie | ✅ checkpoint per folder + globalny zbiór Message-ID, pokryte testem |
 | checkpointy | ✅ na RFC Message-ID, nie na IMAP UID — obsługuje przeniesienie między folderami, powrót i duplikat |
-| operator wykrywa nowe sprawy | ✅ kod i testy; **nie uruchomiony na prawdziwej poczcie** |
+| operator wykrywa nowe sprawy | ✅ **uruchomiony na prawdziwej poczcie**: 20 → 11 odsianych → 9 spraw, 0 wywołań modelu |
+| priorytety, rozdzielenie szumu, uzasadnienie | ✅ po krytyce właściciela — sekcja 4, „Raport bez modelu". **Streszczeń własnymi słowami NIE MA** i bez modelu nie będzie |
 | trwały Operational State | ✅ dziennik JSONL, test przeżycia restartu |
 | nowe wiadomości aktualizują sprawy | ✅ korelacja ze stopniami pewności, 6 testów |
 | `get_changes_since` | ✅ |
@@ -541,15 +652,23 @@ bez zaokrąglania w górę.
 | instrukcja Claude Project | ✅ `docs/CLAUDE-COPILOT-INSTRUCTIONS.md` |
 | test na prawdziwych danych z telefonu | ❌ **niewykonany** |
 
-**Pięć pozycji jest zablokowanych na maszynie i koncie właściciela, nie na kodzie.**
-Nie próbuj ich odblokować w środowisku agentowym — egress nie przepuszcza ani
-IMAP-a, ani Convexa (zmierzone, 8.9).
+**Trzy pozycje są zablokowane na koncie właściciela, nie na kodzie:** wdrożenie
+Remote MCP, dostępność z telefonu i test z telefonu. Wszystkie trzy zależą od tej
+samej rzeczy — wdrożenia na Railway. Nie próbuj ich odblokować w środowisku
+agentowym: egress nie przepuszcza ani IMAP-a, ani Convexa (zmierzone, 8.9).
+
+Reszta tabeli jest potwierdzona na prawdziwych danych, nie tylko testami.
 
 ### Nowe rzeczy, o których musisz wiedzieć
 
 - **`src/mcp/core.ts` jest JEDYNĄ implementacją protokołu.** `bin/mcp.ts` (stdio)
   i `bin/mcp-http.ts` (zdalnie) są cienkimi transportami. Test pilnuje, żeby
   żaden z nich nie budował własnej listy narzędzi ani nie wołał rejestru wprost.
+- **Ocena wiadomości siedzi w `judge()` w jednym pliku**, pięć uporządkowanych
+  reguł, pierwsza pasująca wygrywa. Jeśli właściciel zgłosi, że coś jest źle
+  spriorytetyzowane — poprawia się JEDNĄ regułę i dopisuje test, nie przepisuje
+  klasyfikatora. Po to `whyListed` niesie treść reguły: żeby wiadomo było, KTÓRA
+  reguła zadziałała.
 - **Zapis „to już pokazałem" robi ADAPTER, nie capability.** Wszystkie cztery
   nowe capability są czystym odczytem — dokładnie jak wpis do audytu jest efektem
   ubocznym rejestru. Gdyby capability sama zapisywała, `effectClass: "read"`
