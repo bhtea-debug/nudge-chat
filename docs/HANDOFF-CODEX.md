@@ -247,6 +247,21 @@ Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
   w tych warunkach — bo test jednostkowy na module, który przy imporcie robi
   robotę, tej klasy usterek nie złapie.
 
+### Git
+
+- **Wzorzec w `.gitignore` bez ukośnika na początku dopasowuje się na KAŻDYM
+  poziomie drzewa.** `state/` (dla katalogu z danymi w czasie działania) ukryło
+  także `src/state/` — siedem plików źródłowych nie trafiło do commita,
+  `git add -A` pominął je bez słowa, `typecheck` i `test` przeszły (pliki były na
+  dysku), a właściciel dowiedział się przy `git pull`:
+  `Cannot find module 'src/state/store.js'`. Katalogi danych zapisuj
+  zakotwiczone: `/state/`, `/raporty/`, `/.audit/`.
+- **„U mnie przechodzi" nie jest dowodem na to, co wypchnięte.**
+  `npm run verify:clone` rozpakowuje drzewo z `HEAD` przez `git archive`,
+  sprawdza, czy każdy import z `src/` ma swój plik W COMMICIE, i uruchamia na tym
+  typecheck oraz testy. Weryfikacja samej kontroli: usunięcie jednego pliku
+  z rozpakowanego drzewa daje 4 zgłoszone zepsute importy.
+
 ### Narzędzia diagnostyczne
 
 - **Nie myl „brak danych" z „zepsute".** `check:mail` raportował jako porażki
