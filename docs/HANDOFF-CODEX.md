@@ -1,15 +1,17 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
 Dokument przekazania. Stan na **17.08.2026**, gałąź
-`claude/ai-company-architecture-mvy1uv`, ostatni commit `a2c91b2`.
+`claude/ai-company-architecture-mvy1uv`, ostatni commit `fe9e9bc`.
 
-> **Zmiana kierunku, którą musisz przyjąć do wiadomości, zanim cokolwiek
-> zaplanujesz.** Do 17.08 obowiązywała zasada „Claude jest interfejsem, nie
-> budujemy PWA ani własnego UI". Właściciel ją **uchylił** jednym zdaniem —
-> doświadczenie użytkownika to „burdel na kółkach, a nie pomoc" — i wprost
-> stwierdził, że ten feedback ma pierwszeństwo przed dotychczasowymi założeniami
-> o UI. Interfejs **istnieje** (`src/ui/`) i jest teraz głównym produktem.
-> Raport HTML i CLI zostają dla diagnostyki. Szczegóły w sekcji 11.
+> **Przeczytaj to, zanim cokolwiek zaplanujesz.** Kierunek co do interfejsu
+> zmieniał się w ciągu jednego dnia DWA razy i ostateczna decyzja właściciela
+> brzmi: **„NIE BUDUJEMY WŁASNEJ APLIKACJI. Całe UI ma być w Claude."**
+> Zbudowany po drodze interfejs (`src/ui/`) został **usunięty** — jest w historii
+> gita, ale jego przywrócenie łamie wprost wyrażone wymaganie. Pełna kolejność
+> zdarzeń i co z tego kodu zostało: sekcja 11.
+>
+> Sekcja 12 mówi, co jest zablokowane i **na czym dokładnie** — to rzeczy, których
+> żaden agent nie odblokuje sam, bo wymagają konta i telefonu właściciela.
 
 Czytaj razem z:
 
@@ -38,11 +40,12 @@ powtarzać ani „dokańczać".
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
 | monitor deterministyczny | **przebiegł na prawdziwej poczcie**: 20 nowych → 11 odsianych → 9 spraw, **0 wywołań modelu** | 4, „Kredyty API" |
-| raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
+| raport dzienny | `launchd` + panel HTML — **tylko diagnostyka**, nie produkt | 8.14 |
 | capability | **11**, zapisujących **0** (`npm run caps`) | 5 |
-| interfejs BHT Copilot | **działa** — sprawdzony w przeglądarce przy 390×844, oba motywy, zero błędów JS | 11 |
-| testy | **191**, bez sieci i bez klucza API | 6 |
-| BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 10 |
+| interfejs | **Claude, przez Remote MCP.** Własne UI usunięte na polecenie właściciela | 11 |
+| Connecteam | kod gotowy, **konto niepodłączone**; API nie dokumentuje odczytu wiadomości | `docs/DECYZJA-CONNECTEAM.md` |
+| testy | **170**, bez sieci i bez klucza API | 6 |
+| wdrożenie zdalne | `npm run wdroz` gotowy, **NIE uruchomiony** — wymaga konta właściciela | 12 |
 
 Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 
@@ -701,88 +704,112 @@ Reszta tabeli jest potwierdzona na prawdziwych danych, nie tylko testami.
 
 ---
 
-## 11. BHT Copilot — interfejs właściciela
+## 11. Claude JEST interfejsem — i co z tego wynika
 
-Powstał 17.08.2026 po ocenie „burdel na kółkach, a nie pomoc". Zarzut dotyczył
-**doświadczenia**, nie braku capabilities, i tak został potraktowany: backend bez
-zmian, dochodzi interfejs z jednym modelem mentalnym — **inbox spraw → otwieram
-sprawę → rozmawiam tylko o tej sprawie.**
+Stan na 17.08.2026, po dwóch zmianach kierunku w jednym dniu. Kolejność ma
+znaczenie, bo bez niej kod wygląda na niespójny:
 
-### Gdzie to mieszka
+1. Rano obowiązywało „Claude jest interfejsem, nie budujemy UI".
+2. Po południu właściciel ocenił doświadczenie jako „burdel na kółkach" i polecił
+   zbudować interfejs. Zbudowałem: `src/ui/`, ekran spraw, ekran sprawy.
+3. Wieczorem uchylił to jednoznacznie: **„NIE BUDUJEMY WŁASNEJ APLIKACJI. Całe UI
+   ma być w Claude."** Interfejs został **usunięty**, nie oznaczony jako
+   przestarzały — martwy kod sprzeczny z kierunkiem jest gorszy niż jego brak.
 
-Jeden proces, trzy wejścia. `npm run copilot` (alias na `mcp:http`):
+**Nie przywracaj `src/ui/`.** Jest w historii gita (`a2c91b2`), jeśli kiedykolwiek
+będzie potrzebny, ale dziś jego istnienie łamie wprost wyrażone wymaganie.
 
-| ścieżka | co | uwierzytelnienie |
-| --- | --- | --- |
-| `/` i `/sprawa/<id>` | interfejs właściciela | ciasteczko sesji |
-| `/mcp` | Remote MCP dla Claude | `Authorization: Bearer` |
-| `/webhook/connecteam` | wejście dla czatu | podpis HMAC ładunku |
-| `/health` | dla platformy hostingowej | brak, i bez danych firmy |
+### Co z UI zostało, bo było danymi, a nie ekranem
 
-**Nie rozdzielaj tego na dwie usługi.** Stan spraw to jeden plik JSONL z jednym
-pisarzem; dwa procesy oznaczałyby dwie kopie stanu albo bazę do ich uzgadniania.
+`src/state/lanes.ts` — podział spraw na grupy. Zasila odpowiedź capability,
+a Claude rysuje z tego widok. **Grupowanie zostaje po naszej stronie celowo**
+i to jest decyzja, którą łatwo „uprościć" i zepsuć: dwa pytania o to samo mają
+dać ten sam układ. Gdyby model liczył sekcje za każdym razem od nowa, właściciel
+dostawałby raz trzy grupy, raz pięć, i przestałby im wierzyć.
 
-### Rzeczy, których nie wolno tu zepsuć
+Pola, które `IssueBrief` niesie dla prezentacji: `lane`, `whyListed`,
+`neededFromOwner`, `sources`, `missingInErp`, a w liście otwartych spraw dodatkowo
+`byLane` i `laneOrder`. Opisy narzędzi mówią Claude, JAK to pokazać — polskie
+nagłówki grup, numerowanie pozycji pod „rozwiń 2", zakaz wymyślania zadań, gdy
+`neededFromOwner` jest puste.
 
-- **`assignLanes` nie może zgubić sprawy.** Sekcja „Obserwuj" jest workiem na
-  wszystko, co nie trafiło wyżej — także na kategorie, których dziś nie
-  przewidujemy. Test `NIE GUBI żadnej sprawy` sprawdza rozdanie na dziewięciu
-  kombinacjach i pilnuje, że każda jest dokładnie raz. Zawężenie tego filtra
-  ukryłoby sprawę bez śladu.
-- **Liczniki na ekranie i delta dla Claude muszą liczyć TO SAMO.**
-  `headStatus().changed` używa dokładnie warunku z `changesSince`:
-  nigdy nie pokazana albo zmieniona po pokazaniu. Rozjazd dałby właścicielowi dwie
-  różne prawdy o tym samym stanie — jedną na ekranie, drugą w rozmowie.
-- **`ownerAction` to JEDYNA droga do statusu `resolved`** i wolno ją wołać tylko
-  z miejsc, gdzie po drugiej stronie naprawdę był człowiek. Ograniczenie „model
-  nie zamyka spraw" nadal stoi w `guardStatus` i nie zależy od promptu.
-- **Sekcja DECYZJE jest strukturalnie pusta bez działania właściciela.**
-  Klasyfikator deterministyczny nie umie wystawić kategorii `decision` — do tego
-  trzeba zrozumieć treść, a treści nie przeformułowujemy. Zapełnia ją status
-  `waiting_for_owner`, który ustawia właściciel przyciskiem. To nie usterka.
-- **Puste sekcje nie są rysowane.** Rubryka, która nigdy nic nie zawiera, uczy
-  przewijać ekran bez czytania — i wtedy przestaje działać także wtedy, gdy coś
-  w niej wreszcie jest.
-- **CSP i nagłówki są ciasne celowo.** `default-src 'none'`, `no-store`,
-  `noindex`, `X-Frame-Options: DENY`. Zero zewnętrznych plików — strona ma się
-  otworzyć w hali przy jednym pasku sieci.
+`laneOf` MUSI zwracać grupę dla każdej sprawy. Ostatnia gałąź jest workiem na
+wszystko, także na kategorie, których dziś nie ma. Test `KAŻDA sprawa dostaje
+grupę` tego pilnuje — sprawdzone mutacją, że faktycznie broni tej gałęzi.
 
 ### Trzy błędy, które wyszły dopiero na prawdziwym wyjściu
 
 Warte zapamiętania, bo żaden nie był widoczny w testach na obecność pól:
 
-1. **To samo zdanie o TeaBrew trzy razy na jednym ekranie**, raz jako „co
-   przyszło ostatnio". TeaBrew nic nie przysyła — to MY pytamy. Stąd
-   `EntryKind` (`komunikacja` / `system` / `wlasne`) i `lastIncoming()`.
+1. **To samo zdanie o TeaBrew trzy razy na jednym ekranie**, raz jako „co przyszło
+   ostatnio". TeaBrew nic nie przysyła — to MY pytamy. Stąd `EntryKind`
+   (`komunikacja` / `system` / `wlasne`) i `lastIncoming()` w `timeline.ts`.
 2. **Nazwa kanału wciśnięta między autora i treść**: „Ania — Produkcja — nie mamy
    etykiet". Nazwa kanału należy do etykiety źródła.
-3. **Stopka liczyła źródła z konfiguracji, nie z danych** — pisała „Connecteam"
-   przy skonfigurowanym kluczu bez ani jednej wiadomości i milczała o Connecteam,
-   gdy wiadomości wpadały webhookiem bez klucza.
+3. **Stopka liczyła źródła z konfiguracji, nie z danych.**
 
 Metoda, która je znalazła: uruchomienie serwera na zasianym stanie i przeczytanie
-wyrenderowanej strony. Rób tak samo, zamiast wnioskować z testów.
+wyjścia. Rób tak samo, zamiast wnioskować z testów.
 
-### Czat w sprawie — dlaczego nie jest wbudowany
+### Czat w sprawie — dlaczego nie ma go po naszej stronie
 
-Własna strona **nie ma dostępu do subskrypcji Claude**. Czat wbudowany w to UI
-musiałby wołać API modelu, czyli zużywać kredyty, których właściciel świadomie nie
-używa — a jego własne polecenie zabrania wdrażania takiego czatu bez uprzedniego
-przedstawienia kosztu. Dlatego ekran sprawy kopiuje polecenie w zwykłym języku
-(bez nazw narzędzi) i rozmowa toczy się w Claude, gdzie subskrypcja działa. Skutek
-uboczny na plus: każda sprawa to osobna rozmowa, więc rozdział kontekstów jest
-ostrzejszy niż w czacie wbudowanym w jedną stronę.
+Nasza infrastruktura NIE wywołuje modelu i to jest wymaganie, nie oszczędność.
+Właściciel pracuje na subskrypcji Claude, bez kredytów API. Reasoning, streszczanie
+i priorytetyzowanie w kontekście robi Claude w momencie pytania. Nasza strona
+zbiera fakty deterministycznie.
 
-**Nie włączaj płatnego czatu w UI bez wyraźnej zgody właściciela.**
+**Nie odtwarzaj reasoningu Claude zestawem reguł deterministycznych.** Reguły mają
+filtrować oczywisty szum, wykrywać sygnały i korelować bezpieczne identyfikatory —
+i na tym koniec.
 
-### Connecteam — stan faktyczny
+---
 
-Kod traktuje Connecteam jako źródło pierwszej klasy; **konto nie jest
-podłączone**, a publiczna dokumentacja dostawcy nie opisuje odczytu treści
-wiadomości ani webhooka na wiadomość. Zanim cokolwiek tu zaplanujesz, przeczytaj
-`docs/DECYZJA-CONNECTEAM.md` — w szczególności rozdzielenie „czego nie wie
-dokumentacja" od „czego nie wie konto". Sondą jest `npm run check:connecteam`.
+## 12. Co jest zablokowane i na czym dokładnie
 
-Zakazane bez osobnej zgody: scraping, automatyzacja przeglądarki, odtwarzanie
-prywatnego API. Taka integracja psuje się w sposób **nieodróżnialny od „nikt nic
-nie napisał"**, czyli w najgroźniejszy dla tego produktu sposób.
+To jest najważniejsza sekcja dla kogoś, kto przejmuje robotę, bo dotyczy rzeczy,
+których **żaden agent nie odblokuje sam** — ani ja, ani Ty.
+
+| pozycja | na czym stoi |
+| --- | --- |
+| wdrożenie na Railway | konto właściciela; logowanie w przeglądarce |
+| podłączenie konektora w Claude | dialog w aplikacji właściciela; nie wiemy, czy wymaga OAuth |
+| test z telefonu | jego telefon, jego skrzynka |
+| Connecteam | klucz API z jego panelu (plan Expert), plus pytanie do wsparcia o Bety |
+| zamykanie spraw bez terminala | decyzja produktowa właściciela — patrz niżej |
+
+Przygotowane po naszej stronie: `Dockerfile`, health-check, trwały wolumen,
+fail-closed przy braku tokenu, `scripts/deploy-railway.sh` (`npm run wdroz`)
+i `docs/WDROZENIE-RAILWAY.md` z drogą ręczną.
+
+**`deploy-railway.sh` nie został uruchomiony na prawdziwym Railwayu.** Nie ma tam
+konta, a `docs.railway.com` jest zablokowana przez politykę egress sesji
+agentowej — flagi komend pochodzą z opisów w wyszukiwarce. Dlatego każdy niepewny
+krok sprawdza wynik i przy błędzie wypisuje `--help`. Sprawdzony na atrapie CLI:
+kolejność kroków, idempotencja, kompletność zmiennych, brak wycieku wartości.
+
+### Luka, której nie zamknąłem, bo wymaga decyzji
+
+Po usunięciu UI **nie ma jak zamknąć sprawy bez terminala.** Trzy wymagania
+właściciela wykluczają się parami:
+
+- CLI nie ma być częścią codziennej pracy,
+- nie dodajemy capability zapisujących,
+- model nie ma prawa ustawić statusu `resolved` (wymuszone w `guardStatus`).
+
+Sprawy będą się więc odkładać bez końca. Jedyne wyjście, które nie łamie żadnego
+z tych trzech: **reguła deterministyczna w monitorze** — sprawa, w której
+odpowiedzieliśmy i od X dni nic nie przyszło, sama przechodzi w
+`probably_resolved`. Zgłoszone właścicielowi, **nierozstrzygnięte**. Nie buduj
+tego bez jego zgody: to zmiana zachowania, którą ma zaakceptować, a nie odkryć.
+
+### Czego NIE powtarzaj po mnie
+
+Trzy potknięcia z tej sesji, wszystkie tej samej klasy — „ułatwienie", które
+tworzy nowy problem:
+
+1. **Dwa razy kazałem właścicielowi wypisać sekret na ekran** (`grep`, `openssl`
+   bez `pbcopy`), a on wkleja mi wyjście z terminala. Dwa tokeny do wyrzucenia.
+   Sekret nigdy nie ma trafiać na stdout — do schowka albo prosto do pliku.
+2. **Zdusiłem wyjście instalatora** przez `>/dev/null 2>&1` i komunikat błędu nie
+   powiedział nic. Diagnostyki nie wolno wyciszać.
+3. **Założyłem, że `npm i -g` przejdzie na macOS.** Nie przechodzi bez uprawnień.
