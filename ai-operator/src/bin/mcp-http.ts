@@ -2,7 +2,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { createApp } from "../index.js";
-import { createMcpCore, PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION, type JsonRpcRequest } from "../mcp/core.js";
+import { createMcpCore, SERVER_NAME, SERVER_VERSION, SUPPORTED_PROTOCOLS, type JsonRpcRequest } from "../mcp/core.js";
 import { newCorrelationId } from "../capability/audit.js";
 import { renderRun, costLine } from "../state/report.js";
 import { appendFileSync } from "node:fs";
@@ -280,7 +280,9 @@ const server = createServer((req, res) => {
         ok: probe.startupError() === null,
         server: SERVER_NAME,
         version: SERVER_VERSION,
-        protocol: PROTOCOL_VERSION,
+        // Lista, nie jedna wartość: serwer uzgadnia wersję z klientem, a health
+        // ma mówić, co naprawdę jest do wzięcia.
+        protocols: SUPPORTED_PROTOCOLS,
         tools: probe.toolNames().length,
         startupError: probe.startupError(),
         monitorInProcess: MONITOR_IN_PROCESS,

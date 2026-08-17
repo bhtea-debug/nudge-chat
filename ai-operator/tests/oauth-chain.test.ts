@@ -214,6 +214,33 @@ describe("łańcuch odkrywania OAuth — dokładnie to, co robi Claude", () => {
     expect(odp.result.tools.length).toBeGreaterThan(0);
   }, 20_000);
 
+  it("9. uzgadniamy wersję protokołu, o którą prosi klient", async () => {
+    // Serwer, który na każde pytanie odpowiada jedną, starą wersją, zostawia
+    // klientowi decyzję „rozłączyć się czy nie" — a rozłączenie w konektorze
+    // wygląda dla właściciela tak samo jak każda inna awaria: cisza.
+    const zapytaj = async (wersja: unknown): Promise<string> => {
+      const res = await fetch(`${BAZA}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: { protocolVersion: wersja, capabilities: {}, clientInfo: { name: "test", version: "1" } },
+        }),
+      });
+      const odp = (await res.json()) as { result: { protocolVersion: string } };
+      return odp.result.protocolVersion;
+    };
+
+    expect(await zapytaj("2025-06-18")).toBe("2025-06-18");
+    expect(await zapytaj("2025-03-26")).toBe("2025-03-26");
+    expect(await zapytaj("2024-11-05")).toBe("2024-11-05");
+    // Nieznana wersja: oddajemy szczyt listy, czyli najwięcej, co umiemy.
+    expect(await zapytaj("1999-01-01")).toBe("2025-06-18");
+    expect(await zapytaj(undefined)).toBe("2025-06-18");
+  });
+
   it("8. złe hasło nie wydaje kodu — to jedyna bramka do poczty firmy", async () => {
     const rejestracja = await fetch(`${BAZA}/oauth/register`, {
       method: "POST",

@@ -20,9 +20,32 @@ import type { CapabilityContext } from "../capability/types.js";
  *  - wywołania modelu — reasoning robi Claude po stronie klienta.
  */
 
-export const PROTOCOL_VERSION = "2024-11-05";
 export const SERVER_NAME = "bht-operator";
 export const SERVER_VERSION = "0.2.0";
+
+/**
+ * Wersje protokołu, na które umiemy odpowiedzieć.
+ *
+ * Specyfikacja mówi wprost: jeżeli serwer obsługuje wersję, o którą prosi
+ * klient, MUSI odpowiedzieć TĄ SAMĄ. Wcześniej odpowiadaliśmy zawsze
+ * `2024-11-05` niezależnie od pytania — legalne, ale zostawia klientowi decyzję
+ * „rozłączyć się czy nie", a rozłączenie po stronie konektora wygląda dla
+ * człowieka tak samo jak każda inna awaria: nie łączy się i nie mówi dlaczego.
+ *
+ * Wszystkie trzy wersje mają dla nas identyczną kopertę — `tools/list`,
+ * `tools/call`, `ping` — bo nie wystawiamy niczego, co się między nimi różni
+ * (żadnych zasobów, promptów, elicytacji). Różnice dotyczą rzeczy, których
+ * świadomie nie mamy, więc zgoda na nowszą wersję nie jest obietnicą na wyrost.
+ * Kolejność od najnowszej: gdy klient prosi o coś nieznanego, oddajemy szczyt
+ * listy, czyli najwięcej, co umiemy.
+ */
+export const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+
+export function negotiateProtocol(requested: unknown): string {
+  return typeof requested === "string" && (SUPPORTED_PROTOCOLS as readonly string[]).includes(requested)
+    ? requested
+    : SUPPORTED_PROTOCOLS[0];
+}
 
 export interface JsonRpcRequest {
   jsonrpc?: "2.0";
@@ -125,7 +148,7 @@ export function createMcpCore(sessionId: string = newCorrelationId()): McpCore {
         return {
           id,
           result: {
-            protocolVersion: PROTOCOL_VERSION,
+            protocolVersion: negotiateProtocol(req.params?.["protocolVersion"]),
             capabilities: { tools: {} },
             serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
             instructions: SERVER_INSTRUCTIONS,
