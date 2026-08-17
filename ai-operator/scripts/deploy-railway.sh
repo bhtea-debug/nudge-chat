@@ -26,6 +26,12 @@ cd "$(dirname "$0")/.." || exit 1
 ENV_FILE=".env"
 MOUNT="/data"
 
+# Nazwa usługi wewnątrz projektu. Railway wiąże z NIĄ wolumen, zmienne
+# środowiskowe i wdrożenie — świeży projekt nie ma żadnej, a `volume add`
+# bez `--service` kończy się błędem. Pierwsza wersja skryptu tego nie tworzyła
+# i właśnie na tym stanęła.
+SERVICE="bht-copilot"
+
 kropka() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 ok()     { printf '  ✓ %s\n' "$1"; }
 zle()    { printf '  ✗ %s\n' "$1" >&2; }
@@ -44,7 +50,7 @@ stop() {
 }
 
 # ── 0. wymagania ──────────────────────────────────────────────────────────────
-kropka "0/7  Sprawdzam wymagania"
+kropka "0/8  Sprawdzam wymagania"
 
 command -v node >/dev/null || stop "Nie ma node. Zainstaluj Node 22 albo nowszy."
 ok "node $(node --version)"
@@ -78,7 +84,7 @@ ok "railway: $($RAILWAY --version 2>/dev/null | tail -1 || echo '?')"
 ok "$ENV_FILE"
 
 # ── 1. logowanie ──────────────────────────────────────────────────────────────
-kropka "1/7  Logowanie do Railwaya"
+kropka "1/8  Logowanie do Railwaya"
 
 if $RAILWAY whoami >/dev/null 2>&1; then
   ok "już zalogowany jako $($RAILWAY whoami 2>/dev/null | tail -1)"
@@ -89,7 +95,7 @@ else
 fi
 
 # ── 2. token dla Claude ───────────────────────────────────────────────────────
-kropka "2/7  Token, którym Claude wchodzi do danych"
+kropka "2/8  Token, którym Claude wchodzi do danych"
 
 # Generujemy po naszej stronie i NIE wypisujemy. Właściciel nie musi go widzieć
 # ani kopiować — to eliminuje jedyny moment, w którym sekret trafiał na ekran.
@@ -108,7 +114,7 @@ else
 fi
 
 # ── 3. projekt ────────────────────────────────────────────────────────────────
-kropka "3/7  Projekt w Railwayu"
+kropka "3/8  Projekt w Railwayu"
 
 if $RAILWAY status >/dev/null 2>&1; then
   ok "katalog jest już powiązany z projektem"
@@ -118,18 +124,43 @@ else
   ok "projekt założony"
 fi
 
+# ── 3b. usługa ────────────────────────────────────────────────────────────────
+kropka "3b/8  Usługa „$SERVICE” w projekcie"
+
+# Railway wiąże wolumen, zmienne i wdrożenie z USŁUGĄ, nie z projektem.
+# Świeży projekt nie ma żadnej, więc trzeba ją najpierw utworzyć.
+if $RAILWAY status 2>/dev/null | grep -q "$SERVICE"; then
+  ok "usługa już istnieje"
+elif $RAILWAY add --service "$SERVICE" >/tmp/bht-add 2>&1; then
+  ok "usługa utworzona"
+else
+  # Może już istnieć — wtedy nie jest to błąd i idziemy dalej.
+  if grep -qi "already\|exists\|duplicate" /tmp/bht-add; then
+    ok "usługa już istniała"
+  else
+    zle "Nie udało się utworzyć usługi."
+    printf '\n  Co powiedziało CLI:\n\n'
+    sed 's/^/    /' /tmp/bht-add
+    printf '\n  Pomoc komendy:\n\n'
+    $RAILWAY add --help 2>&1 | sed 's/^/    /'
+    exit 1
+  fi
+fi
+
 # ── 4. wolumen na stan spraw ──────────────────────────────────────────────────
-kropka "4/7  Trwały wolumen ($MOUNT)"
+kropka "4/8  Trwały wolumen ($MOUNT)"
 
 # Bez wolumenu każdy restart kontenera gubi sprawy i checkpointy, a monitor
 # przeczytałby całą skrzynkę od nowa. To nie jest opcjonalne.
 if $RAILWAY volume list 2>/dev/null | grep -q "$MOUNT"; then
   ok "wolumen na $MOUNT już istnieje"
 else
-  if $RAILWAY volume add --mount-path "$MOUNT" >/dev/null 2>&1; then
+  if $RAILWAY volume add --service "$SERVICE" --mount-path "$MOUNT" >/tmp/bht-vol 2>&1; then
     ok "wolumen dodany"
   else
-    zle "Nie umiem dodać wolumenu tą wersją CLI."
+    zle "Nie umiem dodać wolumenu."
+    printf '\n  Co powiedziało CLI:\n\n'
+    sed 's/^/    /' /tmp/bht-vol
     printf '\n  ZRÓB TO RĘCZNIE, to jedna rzecz i zajmie 20 sekund:\n'
     printf '    panel Railway → Twoja usługa → Settings → Volumes → New Volume\n'
     printf '    punkt montowania: %s\n' "$MOUNT"
@@ -141,7 +172,7 @@ else
 fi
 
 # ── 5. zmienne środowiskowe ───────────────────────────────────────────────────
-kropka "5/7  Zmienne środowiskowe"
+kropka "5/8  Zmienne środowiskowe"
 
 # Przenosimy WYŁĄCZNIE to, co potrzebne na serwerze. Świadomie NIE przenosimy
 # ANTHROPIC_API_KEY (reasoning robi Claude na subskrypcji właściciela) ani
@@ -179,21 +210,27 @@ for KONIECZNE in MAIL_IMAP_HOST MAIL_IMAP_USER MAIL_IMAP_PASSWORD TEABREW_BASE_U
   grep -q "^${KONIECZNE}=." "$ENV_FILE" || stop "Brak $KONIECZNE w .env — bez tego serwer nie połączy się ze źródłami."
 done
 
-$RAILWAY variables "${ARGS[@]}" >/dev/null 2>&1 \
-  || stop "Nie udało się ustawić zmiennych tą wersją CLI." $RAILWAY variables
+$RAILWAY variables --service "$SERVICE" "${ARGS[@]}" >/tmp/bht-vars 2>&1 || {
+  zle "Nie udało się ustawić zmiennych."
+  printf '\n  Co powiedziało CLI:\n\n'
+  sed 's/^/    /' /tmp/bht-vars
+  printf '\n  Pomoc komendy:\n\n'
+  $RAILWAY variables --help 2>&1 | sed 's/^/    /'
+  exit 1
+}
 ok "zmienne przeniesione (wartości nie były nigdzie wypisane)"
 
 # ── 6. wdrożenie ──────────────────────────────────────────────────────────────
-kropka "6/7  Wdrożenie"
+kropka "6/8  Wdrożenie"
 
 printf '  Buduję obraz z Dockerfile i wysyłam. Potrwa 1–3 minuty…\n'
-$RAILWAY up --detach || stop "Wdrożenie nie przeszło." $RAILWAY up
+$RAILWAY up --service "$SERVICE" --detach || stop "Wdrożenie nie przeszło." $RAILWAY up
 ok "wysłane"
 
 # ── 7. adres i sprawdzenie ────────────────────────────────────────────────────
-kropka "7/7  Adres HTTPS i sprawdzenie, czy żyje"
+kropka "7/8  Adres HTTPS i sprawdzenie, czy żyje"
 
-ADRES="$($RAILWAY domain 2>/dev/null | grep -oE '[a-z0-9.-]+\.up\.railway\.app' | head -1 || true)"
+ADRES="$($RAILWAY domain --service "$SERVICE" 2>/dev/null | grep -oE '[a-z0-9.-]+\.up\.railway\.app' | head -1 || true)"
 if [ -z "$ADRES" ]; then
   zle "Nie odczytałem adresu z CLI."
   printf '\n  Wygeneruj go w panelu: Settings → Networking → Generate Domain,\n'
@@ -221,7 +258,7 @@ done
 if [ "$ZDROWY" -ne 1 ]; then
   zle "Serwer nie odpowiedział na /health w ciągu 3 minut."
   printf '\n  Ostatnie logi (bez treści maili i bez tokenów):\n\n'
-  $RAILWAY logs 2>&1 | tail -30 | sed 's/^/    /'
+  $RAILWAY logs --service "$SERVICE" 2>&1 | tail -30 | sed 's/^/    /'
   printf '\n  Wklej mi te linie — powiedzą, czego brakuje.\n'
   exit 1
 fi
