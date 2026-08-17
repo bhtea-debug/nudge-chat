@@ -17,7 +17,7 @@ powtarzać ani „dokańczać".
 
 | element | wynik | gdzie |
 | --- | --- | --- |
-| `verify:teabrew` | **17/17** na produkcyjnych danych | 8.10 |
+| `verify:teabrew` | **17/17** — potwierdzone ponownie po merge #27 | 8.10, punkt 2 |
 | `check:mail` | **11/11** na prawdziwej skrzynce (okno 7 dni) | 8.11 |
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
@@ -35,38 +35,32 @@ Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
    `ai-operator/scripts/live-setup.sh` (dopytuje tylko o brakujące wartości,
    sekrety bez echa, prawa 600, `--reset KLUCZ` do poprawienia literówki).
 
-2. **PILNE (17.08.2026): trasy ERP ZNIKNĘŁY z wdrożenia `calm-porpoise-426`.**
-   `verify:teabrew` — 11 z 11 sprawdzeń merytorycznych dostaje 404, w tym
-   `/ai-operator/health`. Wcześniej to samo narzędzie przechodziło 17/17.
+2. **ROZWIĄZANE (17.08.2026): PR #27 zmergowany, trasy ERP wróciły na trwałe.**
 
-   Przyczyna: funkcje wdrożył **build preview** Vercela tego PR-a (patrz punkt 3),
-   a kolejny build preview z innej gałęzi uruchomił `convex deploy` i je usunął.
-   Zmierzone, nie założone.
+   Przebieg, warty zapamiętania, bo to była przewidziana awaria: trasy wdrożył
+   build **preview** tego PR-a, a kolejny preview z innej gałęzi uruchomił
+   `convex deploy` i je **usunął**. `verify:teabrew` spadło z 17/17 na 0 z 11
+   sprawdzeń merytorycznych (same 404), a monitor poczty dostawał
+   `HTTP 404 na /ai-operator/order`.
 
-   **Uwaga na wdrożenie, na które celuje `TEABREW_BASE_URL`.** To
-   `calm-porpoise-426.eu-west-1.convex.site` i jest to wdrożenie **Development**
-   (tam ustawiono `AI_OPERATOR_API_TOKEN`), nie produkcyjne wdrożenie projektu.
-   Dlatego **sam merge PR #27 najprawdopodobniej NIE przywróci tras pod tym
-   adresem** — build z `main` wdroży je na wdrożenie produkcyjne, czyli pod inny
-   adres. Wtedy trzeba dodatkowo:
-   - zmienić `TEABREW_BASE_URL` na adres wdrożenia produkcyjnego,
-   - ustawić `AI_OPERATOR_API_TOKEN` na tym wdrożeniu.
+   Naprawa: **squash-merge PR #27 do `main`** (`d950b97`), build produkcyjny
+   `READY`, `Deployed Convex functions`. Po tym `verify:teabrew` = **17/17**
+   pod NIEZMIENIONYM `TEABREW_BASE_URL`.
 
-   Szybkie przywrócenie bez zmiany konfiguracji: ponowny build preview gałęzi
-   `claude/ai-operator-read-only-endpoints`. Działa natychmiast, ale jest
-   nietrwałe — następny preview z innej gałęzi znowu je usunie.
+   Ustalenie z tego wynikające: **klucz wdrożeniowy produkcji celuje w to samo
+   wdrożenie Convex (`calm-porpoise-426`), co buildy preview.** Nie trzeba było
+   zmieniać ani adresu, ani ustawiać tokenu na drugim wdrożeniu — moja obawa
+   o rozdział dev/prod się NIE potwierdziła. Zapisane jako fakt, żeby kolejny
+   agent nie planował migracji, której nie ma potrzeby robić.
 
-   To decyzja właściciela, nie zmiana do wprowadzenia z automatu. Nie uruchamiaj
-   `convex deploy` ani `convex dev` — patrz `AGENTS.md` tamtego repo.
+   Trwałość: trasy są w `main`, więc odtwarza je każdy build produkcyjny.
 
-   Poczta działa niezależnie i nie jest tym dotknięta.
-
-3. **Trasy ERP były wdrożone na żywym backendzie, choć `main` ich nie zawiera.**
-   Build preview Vercela uruchamia `convex deploy` bez guardów produkcyjnych —
-   te działają tylko przy `VERCEL_ENV === "production"`. PR
-   [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) jest
-   **nadal otwarty**, a jego merge domyka rozjazd: gdyby ktoś zbudował produkcję
-   z `main`, trasy zniknęłyby. Szczegóły i ocena ryzyka w 8.9 i w komentarzu na PR.
+3. **Rozjazd w `scripts/safe-build.mjs` NADAL istnieje i nie został naprawiony.**
+   Build preview uruchamia `convex deploy` bez guardów produkcyjnych — te
+   działają wyłącznie w bloku `isVercel && isProduction`. To przyczyna awarii
+   z punktu 2 i może ją powtórzyć. Wtedy lekarstwem jest ponowny build z `main`,
+   nie zmiana konfiguracji. Naprawa jest po stronie teabrew-v2 i wymaga decyzji
+   właściciela; przed edycją wykonaj kroki z `AGENTS.md`.
 
 4. **Tryb MCP nie potrzebuje `ANTHROPIC_API_KEY`.** Modelem jest Claude po
    stronie klienta. Jeśli zobaczysz, że `npm run mcp` domaga się klucza — to
