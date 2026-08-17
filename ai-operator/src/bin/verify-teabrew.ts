@@ -371,6 +371,28 @@ async function main(): Promise<number> {
     `Weryfikacja wdrożonej łatki ${CONTRACT_ID}\nBaza: ${baseUrl}\nModel NIE jest wołany.\n`,
   );
 
+  // Sonda wstępna. Bez niej całkowicie PUSTE wdrożenie raportowało „2 przeszło",
+  // bo dwa sprawdzenia negatywne („brak metod zapisu", „brak nieudokumentowanych
+  // tras") przechodzą trywialnie, gdy nie istnieje nic. To był fałszywy komfort
+  // w najgorszym możliwym momencie — kiedy trasy zniknęły z żywego backendu.
+  const probe = await call(ROUTES.health).catch(() => ({ status: 0, body: null }));
+  const deployed = probe.status !== 404;
+
+  if (!deployed) {
+    process.stdout.write(
+      `\n✗ NA TYM WDROŻENIU NIE MA TRAS AGENTA.\n\n` +
+        `  ${baseUrl}${ROUTES.health} zwraca 404.\n\n` +
+        "  Pozostałe sprawdzenia są bez znaczenia i ich NIE uruchamiam: przeszłyby\n" +
+        "  te, które polegają na nieobecności czegoś, i to wyglądałoby na częściowy\n" +
+        "  sukces.\n\n" +
+        "  Trasy nie są w gałęzi `main`. Wdrożył je build preview Vercela, a kolejny\n" +
+        "  build bez tej gałęzi je usunął. Do przywrócenia potrzebne jest wdrożenie\n" +
+        "  funkcji Convex na TO wdrożenie — patrz docs/HANDOFF-CODEX.md punkt 2.\n\n" +
+        "  MODE=live po stronie TeaBrew nie ma teraz sensu. Poczta działa niezależnie.\n",
+    );
+    return 1;
+  }
+
   let failed = 0;
   let skipped = 0;
   let group = "";

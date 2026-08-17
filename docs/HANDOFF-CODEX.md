@@ -35,11 +35,31 @@ Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
    `ai-operator/scripts/live-setup.sh` (dopytuje tylko o brakujące wartości,
    sekrety bez echa, prawa 600, `--reset KLUCZ` do poprawienia literówki).
 
-2. **PILNE (17.08.2026): trasy ERP ZNIKNĘŁY z żywego backendu.** Monitor na
-   prawdziwej poczcie dostaje `HTTP 404 na /ai-operator/order`. To dokładnie ta
-   awaria, którą przewidywał punkt poniżej — funkcje wdrożył build preview
-   Vercela, a kolejny build bez tej gałęzi je usunął. **Bez merge PR #27 połowa
-   Copilota dotycząca TeaBrew nie działa.** Do potwierdzenia: `npm run verify:teabrew`.
+2. **PILNE (17.08.2026): trasy ERP ZNIKNĘŁY z wdrożenia `calm-porpoise-426`.**
+   `verify:teabrew` — 11 z 11 sprawdzeń merytorycznych dostaje 404, w tym
+   `/ai-operator/health`. Wcześniej to samo narzędzie przechodziło 17/17.
+
+   Przyczyna: funkcje wdrożył **build preview** Vercela tego PR-a (patrz punkt 3),
+   a kolejny build preview z innej gałęzi uruchomił `convex deploy` i je usunął.
+   Zmierzone, nie założone.
+
+   **Uwaga na wdrożenie, na które celuje `TEABREW_BASE_URL`.** To
+   `calm-porpoise-426.eu-west-1.convex.site` i jest to wdrożenie **Development**
+   (tam ustawiono `AI_OPERATOR_API_TOKEN`), nie produkcyjne wdrożenie projektu.
+   Dlatego **sam merge PR #27 najprawdopodobniej NIE przywróci tras pod tym
+   adresem** — build z `main` wdroży je na wdrożenie produkcyjne, czyli pod inny
+   adres. Wtedy trzeba dodatkowo:
+   - zmienić `TEABREW_BASE_URL` na adres wdrożenia produkcyjnego,
+   - ustawić `AI_OPERATOR_API_TOKEN` na tym wdrożeniu.
+
+   Szybkie przywrócenie bez zmiany konfiguracji: ponowny build preview gałęzi
+   `claude/ai-operator-read-only-endpoints`. Działa natychmiast, ale jest
+   nietrwałe — następny preview z innej gałęzi znowu je usunie.
+
+   To decyzja właściciela, nie zmiana do wprowadzenia z automatu. Nie uruchamiaj
+   `convex deploy` ani `convex dev` — patrz `AGENTS.md` tamtego repo.
+
+   Poczta działa niezależnie i nie jest tym dotknięta.
 
 3. **Trasy ERP były wdrożone na żywym backendzie, choć `main` ich nie zawiera.**
    Build preview Vercela uruchamia `convex deploy` bez guardów produkcyjnych —
