@@ -43,13 +43,39 @@ const COST_LOG = fromPackageRoot(process.env["COST_LOG"] ?? "state/koszty.jsonl"
 /** Minimalna długość tokenu. Krótszy nie jest sekretem, tylko hasłem do zgadnięcia. */
 const MIN_TOKEN_LENGTH = 32;
 
-if (TOKEN.length < MIN_TOKEN_LENGTH) {
-  // Fail-closed przy starcie: serwer bez tokenu nie ma prawa wstać, bo
-  // wystawiałby pocztę firmy do internetu bez żadnej bramy.
+/**
+ * Dwie powierzchnie, dwa NIEZALEŻNE uwierzytelnienia — i każda wstaje osobno.
+ *
+ * Pierwsza wersja wymagała `MCP_BEARER_TOKEN` do startu całego procesu. Było to
+ * fail-closed, ale w zły sposób: właściciel chciał uruchomić u siebie sam
+ * interfejs, który ma własne hasło, i dostał odmowę startu z powodu tokenu do
+ * funkcji, której nie zamierzał włączać.
+ *
+ * Poprawne fail-closed wyłącza POWIERZCHNIĘ bez bramy, nie cały produkt:
+ *  - brak tokenu           → `/mcp` nie działa (503), interfejs działa,
+ *  - token za krótki       → NIE wstajemy. Ktoś próbował ustawić uwierzytelnienie
+ *                            i zrobił to źle; cicha praca z takim tokenem byłaby
+ *                            gorsza niż odmowa,
+ *  - brak tokenu i hasła   → nie ma czego serwować, mówimy to wprost.
+ */
+const MCP_ENABLED = TOKEN.length >= MIN_TOKEN_LENGTH;
+
+if (TOKEN.length > 0 && !MCP_ENABLED) {
   process.stderr.write(
-    `[${SERVER_NAME}] BRAK albo za krótki MCP_BEARER_TOKEN (wymagane min. ${MIN_TOKEN_LENGTH} znaków).\n` +
+    `[${SERVER_NAME}] MCP_BEARER_TOKEN jest za krótki (${TOKEN.length} znaków, wymagane min. ${MIN_TOKEN_LENGTH}).\n` +
       "Wygeneruj: openssl rand -base64 48\n" +
-      "Serwer nie wstaje — nie wystawię poczty bez uwierzytelnienia.\n",
+      "Serwer NIE wstaje — token ustawiony po części jest gorszy niż brak tokenu,\n" +
+      "bo wygląda na zabezpieczenie, którym nie jest.\n",
+  );
+  process.exit(1);
+}
+
+if (!MCP_ENABLED && !app.config.ui.enabled) {
+  process.stderr.write(
+    `[${SERVER_NAME}] Nie mam czego uruchomić: brak MCP_BEARER_TOKEN (dla Claude) i brak\n` +
+      "COPILOT_UI_PASSWORD (dla interfejsu). Ustaw przynajmniej jedno w .env.\n\n" +
+      "  interfejs w przeglądarce:  COPILOT_UI_PASSWORD=$(openssl rand -base64 24)\n" +
+      "  dostęp dla Claude:         MCP_BEARER_TOKEN=$(openssl rand -base64 48)\n",
   );
   process.exit(1);
 }
@@ -250,6 +276,16 @@ const server = createServer((req, res) => {
       return;
     }
 
+    if (!MCP_ENABLED) {
+      // Bez tokenu ta powierzchnia jest wyłączona, nie „otwarta". Odpowiedź mówi
+      // czego brakuje, ale NIE zdradza, czy po drugiej stronie są jakieś dane.
+      json(res, 503, {
+        error: "dostęp dla Claude jest wyłączony — na serwerze nie ustawiono MCP_BEARER_TOKEN",
+      });
+      logAccess(503, req.method ?? "?", null, Date.now() - started);
+      return;
+    }
+
     const provided = bearerOf(req);
     if (!provided || !tokenMatches(provided)) {
       // Bez szczegółów w treści: komunikat „zły token" vs „brak tokenu" to
@@ -443,11 +479,14 @@ async function monitorTick(): Promise<void> {
 
 server.listen(PORT, () => {
   const probe = coreFor("boot");
+  // Pierwsze linie muszą odpowiadać na „co właściwie wstało i gdzie mam wejść",
+  // bo to jedyne, co właściciel widzi po uruchomieniu.
   process.stdout.write(
     `[${SERVER_NAME}] nasłuchuję na :${PORT}\n` +
-      `[${SERVER_NAME}] narzędzia: ${probe.toolNames().length} (${probe.toolNames().join(", ")})\n` +
+      `[${SERVER_NAME}] interfejs: ${ui ? `http://localhost:${PORT}` : "wyłączony (brak COPILOT_UI_PASSWORD)"}\n` +
+      `[${SERVER_NAME}] dostęp dla Claude: ${MCP_ENABLED ? `włączony, ${probe.toolNames().length} narzędzi` : "wyłączony (brak MCP_BEARER_TOKEN)"}\n` +
       `[${SERVER_NAME}] tryb: ${app.config.mode}, foldery: ${app.config.copilot.monitorFolders.join(", ")}\n` +
-      `[${SERVER_NAME}] monitor w procesie: ${MONITOR_IN_PROCESS ? `tak, co ${app.config.copilot.intervalMinutes} min` : "nie"}\n`,
+      `[${SERVER_NAME}] monitor w procesie: ${MONITOR_IN_PROCESS ? `tak, pierwszy przebieg za 20 s, potem co ${app.config.copilot.intervalMinutes} min` : "nie"}\n`,
   );
   if (probe.startupError()) {
     process.stderr.write(

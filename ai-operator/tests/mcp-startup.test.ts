@@ -130,3 +130,104 @@ describe("serwer MCP wstaje w warunkach aplikacji graficznej", () => {
     expect(r.stderr).toContain("MAIL_IMAP_HOST");
   }, 40_000);
 });
+
+/**
+ * Start serwera HTTP — trzy konfiguracje, trzy różne poprawne zachowania.
+ *
+ * Test istnieje, bo pierwsza wersja wymagała `MCP_BEARER_TOKEN` do startu CAŁEGO
+ * procesu i właściciel, chcąc uruchomić u siebie sam interfejs, dostał odmowę
+ * startu z powodu tokenu do funkcji, której nie zamierzał włączać. To była zła
+ * odmiana fail-closed: wyłączyła produkt zamiast wyłączyć powierzchnię bez bramy.
+ *
+ * Uruchamiamy PRAWDZIWY proces, bo o tej klasie usterek decyduje kod wykonywany
+ * przy starcie, a nie kod wywoływany z testu.
+ */
+const httpEntry = fileURLToPath(new URL("../src/bin/mcp-http.ts", import.meta.url));
+
+interface Boot {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  status: (path: string) => Promise<number>;
+}
+
+async function boot(env: Record<string, string>, port: number): Promise<Boot> {
+  const child = spawn(process.execPath, [tsxCli, httpEntry], {
+    cwd: operatorDir,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: process.env["HOME"] ?? "",
+      MODE: "fixture",
+      MONITOR_IN_PROCESS: "0",
+      COPILOT_STATE_DIR: join(tmpdir(), `bht-boot-${port}`),
+      PORT: String(port),
+      ...env,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+  child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
+
+  const exitCode = await new Promise<number | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), 12_000);
+    // Serwer, który wstał, nie zakończy się sam — czekamy albo na wyjście,
+    // albo na moment, w którym odpowiada na /health.
+    const poll = setInterval(async () => {
+      try {
+        await fetch(`http://127.0.0.1:${port}/health`);
+        clearInterval(poll);
+        clearTimeout(timer);
+        resolve(null);
+      } catch {
+        /* jeszcze nie wstał */
+      }
+    }, 250);
+    child.on("exit", (code) => {
+      clearInterval(poll);
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
+
+  const status = async (path: string): Promise<number> => {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", body: "{}" });
+    return res.status;
+  };
+  return { stdout, stderr, exitCode, status: async (p) => {
+    try {
+      return await status(p);
+    } finally {
+      child.kill();
+    }
+  } };
+}
+
+describe("start serwera HTTP", () => {
+  it("SAM interfejs wstaje bez MCP_BEARER_TOKEN, a /mcp jest wyłączone", async () => {
+    const b = await boot({ COPILOT_UI_PASSWORD: "haslo-dosc-dlugie-1234" }, 8841);
+    expect(b.exitCode).toBeNull();
+    expect(b.stdout).toContain("interfejs: http://localhost:8841");
+    expect(b.stdout).toContain("dostęp dla Claude: wyłączony");
+    // Wyłączone znaczy 503, nie „otwarte bez hasła".
+    expect(await b.status("/mcp")).toBe(503);
+  }, 20_000);
+
+  it("token ustawiony PO CZĘŚCI nie wstaje — wygląda na zabezpieczenie, którym nie jest", async () => {
+    const b = await boot(
+      { COPILOT_UI_PASSWORD: "haslo-dosc-dlugie-1234", MCP_BEARER_TOKEN: "krotki" },
+      8842,
+    );
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("za krótki");
+  }, 20_000);
+
+  it("bez tokenu i bez hasła mówi, czego brakuje, zamiast wstać puste", async () => {
+    const b = await boot({}, 8843);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("Nie mam czego uruchomić");
+    expect(b.stderr).toContain("COPILOT_UI_PASSWORD");
+    expect(b.stderr).toContain("MCP_BEARER_TOKEN");
+  }, 20_000);
+});
