@@ -138,6 +138,34 @@ else
   ok "wygenerowany i zapisany w .env (prawa 600, wartość nigdzie nie wypisana)"
 fi
 
+# ── 2b. hasło do ekranu zgody ─────────────────────────────────────────────────
+kropka "2b/8  Haslo do ekranu zgody (OAuth)"
+
+# Okno konektora w Claude nie ma pola na token — jedyną drogą jest OAuth,
+# a przy nim ktoś musi po ludzku potwierdzić zgodę. To hasło jest tą bramą.
+#
+# W przeciwieństwie do tokenu MUSI być widoczne: wpisujesz je na telefonie,
+# więc trzeba je przeczytać. Dlatego jest krótkie i generowane raz.
+if grep -q '^COPILOT_AUTH_PASSWORD=.\{8,\}' "$ENV_FILE" 2>/dev/null; then
+  ok "hasło już jest w .env"
+else
+  # Bez znaków mylących na ekranie telefonu (0/O, 1/l/I) i bez znaków, które
+  # trzeba przełączać klawiaturą.
+  HASLO_NOWE="$(LC_ALL=C tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' </dev/urandom | head -c 12)"
+  if [ -s "$ENV_FILE" ] && [ "$(tail -c 1 "$ENV_FILE" | wc -l)" -eq 0 ]; then printf '\n' >> "$ENV_FILE"; fi
+  grep -v '^COPILOT_AUTH_PASSWORD=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
+  printf 'COPILOT_AUTH_PASSWORD=%s\n' "$HASLO_NOWE" >> "$ENV_FILE.tmp"
+  mv "$ENV_FILE.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  ok "wygenerowane i zapisane w .env"
+  printf '\n  ┌────────────────────────────────────────────────┐\n'
+  printf '  │  HASŁO DO EKRANU ZGODY:  %-21s │\n' "$HASLO_NOWE"
+  printf '  └────────────────────────────────────────────────┘\n'
+  printf '  Wpiszesz je RAZ, gdy Claude poprosi o zgodę. Zapisz je sobie.\n'
+  printf '  NIE wklejaj tej linii nikomu — to jest brama do poczty firmy.\n'
+  unset HASLO_NOWE
+fi
+
 # ── 3. projekt ────────────────────────────────────────────────────────────────
 kropka "3/8  Projekt w Railwayu"
 
@@ -249,6 +277,7 @@ kropka "5/8  Zmienne środowiskowe"
 # COPILOT_UI_* (interfejs został usunięty — całym UI jest Claude).
 POTRZEBNE=(
   MCP_BEARER_TOKEN
+  COPILOT_AUTH_PASSWORD
   MAIL_IMAP_HOST MAIL_IMAP_PORT MAIL_IMAP_USER MAIL_IMAP_PASSWORD
   MAIL_FOLDER MAIL_SENT_FOLDER MAIL_THREAD_FOLDERS
   TEABREW_BASE_URL TEABREW_AI_OPERATOR_TOKEN
@@ -276,7 +305,7 @@ if [ ${#BRAK[@]} -gt 0 ]; then
   printf '  · pominięte (nie ma ich w .env): %s\n' "${BRAK[*]}"
 fi
 
-for KONIECZNE in MAIL_IMAP_HOST MAIL_IMAP_USER MAIL_IMAP_PASSWORD TEABREW_BASE_URL TEABREW_AI_OPERATOR_TOKEN; do
+for KONIECZNE in MAIL_IMAP_HOST MAIL_IMAP_USER MAIL_IMAP_PASSWORD TEABREW_BASE_URL TEABREW_AI_OPERATOR_TOKEN COPILOT_AUTH_PASSWORD; do
   grep -q "^${KONIECZNE}=." "$ENV_FILE" || stop "Brak $KONIECZNE w .env — bez tego serwer nie połączy się ze źródłami."
 done
 
@@ -360,13 +389,12 @@ $OSTRZEZENIE_WOLUMEN
   ZOSTAŁA JEDNA RZECZ, KTÓREJ ŻADEN SKRYPT NIE ZROBI.
 
   W aplikacji Claude: Ustawienia → Konektory → Dodaj własny konektor
-    adres: https://$ADRES/mcp
+    nazwa:  BHT Copilot
+    adres:  https://$ADRES/mcp
 
-  Token masz w pliku .env pod MCP_BEARER_TOKEN. Podejrzysz go tak
-  (skopiuje do schowka, NIE wypisze na ekran):
+  Pola OAuth Client ID i Secret ZOSTAW PUSTE — serwer rejestruje klienta sam.
 
-    grep '^MCP_BEARER_TOKEN=' .env | cut -d= -f2- | tr -d '\\n' | pbcopy
-
-  Jeśli dialog konektora zapyta o coś innego niż adres i token —
-  powiedz mi dokładnie o co, bo od tego zależy, czy muszę dopisać OAuth.
+  Po kliknięciu „Add" Claude otworzy stronę zgody i poprosi o hasło.
+  To jest to hasło, które wypisałem wyżej (albo masz je w .env pod
+  COPILOT_AUTH_PASSWORD).
 PODSUMOWANIE

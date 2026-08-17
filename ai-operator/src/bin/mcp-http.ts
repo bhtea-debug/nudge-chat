@@ -8,6 +8,19 @@ import { renderRun, costLine } from "../state/report.js";
 import { appendFileSync } from "node:fs";
 import { fromPackageRoot } from "../paths.js";
 import { eventTypeOf, ingestChatMessage, messageFromWebhook, verifySignature } from "../connecteam/ingest.js";
+import {
+  authorizationServerMetadata,
+  checkAuthorize,
+  consentPage,
+  exchangeToken,
+  issueCode,
+  passwordMatches,
+  protectedResourceMetadata,
+  registerClient,
+  verifyAccessToken,
+  wwwAuthenticate,
+  type OAuthConfig,
+} from "../mcp/oauth.js";
 
 /**
  * Remote MCP — ten sam serwer, transport HTTP, dostępny także z telefonu.
@@ -80,6 +93,40 @@ if (!MCP_ENABLED) {
   );
   process.exit(1);
 }
+
+// ── OAuth ─────────────────────────────────────────────────────────────────────
+/**
+ * Okno „Add custom connector" w Claude nie ma pola na token — tylko adres oraz
+ * opcjonalne OAuth Client ID i Secret. Sprawdzone na ekranie właściciela.
+ * Statyczny token zostaje dla `curl` i diagnostyki; dla Claude jedyną drogą
+ * jest OAuth.
+ *
+ * Klucz podpisujący wywodzimy z `MCP_BEARER_TOKEN`, więc nie przybywa sekretów,
+ * a jego rotacja unieważnia WSZYSTKIE wydane tokeny naraz.
+ */
+const AUTH_PASSWORD = (process.env["COPILOT_AUTH_PASSWORD"] ?? "").trim();
+
+/**
+ * Publiczny adres serwera. Bierzemy z nagłówków żądania, bo Railway nadaje
+ * domenę po wdrożeniu i wpisywanie jej ręcznie byłoby kolejną rzeczą do
+ * rozjechania się. `PUBLIC_URL` pozwala to nadpisać, gdyby stanął przed tym
+ * własny proxy.
+ */
+function issuerOf(req: IncomingMessage): string {
+  const wymuszony = (process.env["PUBLIC_URL"] ?? "").trim().replace(/\/+$/, "");
+  if (wymuszony) return wymuszony;
+  const proto = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim() ?? "https";
+  const host = (req.headers["x-forwarded-host"] as string | undefined) ?? req.headers.host ?? "localhost";
+  return `${proto}://${host}`;
+}
+
+const oauthFor = (req: IncomingMessage): OAuthConfig => ({
+  issuer: issuerOf(req),
+  signingKey: `oauth:${TOKEN}`,
+  password: AUTH_PASSWORD,
+});
+
+const OAUTH_ENABLED = AUTH_PASSWORD.length >= 8;
 
 // ── limit żądań ───────────────────────────────────────────────────────────────
 /**
@@ -209,6 +256,59 @@ const server = createServer((req, res) => {
       return;
     }
 
+    // ── OAuth: metadane i flow ────────────────────────────────────────────
+    // Ścieżki `.well-known` odpowiadamy w OBU wariantach — z sufiksem ścieżki
+    // zasobu i bez niego. RFC 9728 opisuje wariant z sufiksem, ale klienci
+    // pytają różnie, a niedopasowanie kończy się cichym „nie znalazłem".
+    if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+      json(res, 200, protectedResourceMetadata(oauthFor(req)));
+      logAccess(200, "oauth", "prm", Date.now() - started);
+      return;
+    }
+    if (url.pathname.startsWith("/.well-known/oauth-authorization-server")) {
+      json(res, 200, authorizationServerMetadata(oauthFor(req)));
+      logAccess(200, "oauth", "asm", Date.now() - started);
+      return;
+    }
+
+    if (url.pathname === "/oauth/register" && req.method === "POST") {
+      if (!OAUTH_ENABLED) {
+        json(res, 503, { error: "oauth_disabled" });
+        logAccess(503, "oauth", "register", Date.now() - started);
+        return;
+      }
+      let ciało: unknown = {};
+      try {
+        ciało = JSON.parse(await readBody(req));
+      } catch {
+        /* pusty ładunek obsłuży walidacja niżej */
+      }
+      const out = registerClient(oauthFor(req), ciało);
+      json(res, out.status, out.body);
+      logAccess(out.status, "oauth", "register", Date.now() - started);
+      return;
+    }
+
+    if (url.pathname === "/oauth/authorize") {
+      const status = await handleAuthorize(req, res, url);
+      logAccess(status, "oauth", "authorize", Date.now() - started);
+      return;
+    }
+
+    if (url.pathname === "/oauth/token" && req.method === "POST") {
+      const form = new URLSearchParams(await readBody(req));
+      const out = exchangeToken(oauthFor(req), {
+        grant_type: form.get("grant_type") ?? "",
+        code: form.get("code") ?? undefined,
+        code_verifier: form.get("code_verifier") ?? undefined,
+        redirect_uri: form.get("redirect_uri") ?? undefined,
+        refresh_token: form.get("refresh_token") ?? undefined,
+      });
+      json(res, out.status, out.body);
+      logAccess(out.status, "oauth", "token", Date.now() - started);
+      return;
+    }
+
     // Webhook Connecteam. Uwierzytelnia się PODPISEM ładunku, nie tokenem MCP
     // i nie ciasteczkiem sesji — po drugiej stronie stoi serwer dostawcy, który
     // nie ma ani jednego, ani drugiego.
@@ -225,10 +325,18 @@ const server = createServer((req, res) => {
     }
 
     const provided = bearerOf(req);
-    if (!provided || !tokenMatches(provided)) {
-      // Bez szczegółów w treści: komunikat „zły token" vs „brak tokenu" to
-      // darmowa informacja dla kogoś, kto próbuje.
-      json(res, 401, { error: "unauthorized" }, { "www-authenticate": 'Bearer realm="bht-operator"' });
+    // Dwie drogi: statyczny token (curl, diagnostyka, klienci umiejące nagłówek)
+    // oraz token wydany przez nasz OAuth (Claude — bo jego okno konektora nie
+    // ma pola na token). Obie prowadzą do tych samych, wyłącznie odczytowych
+    // narzędzi; różni je tylko sposób, w jaki klient udowadnia, że to on.
+    const wpuszczony =
+      provided !== null && (tokenMatches(provided) || verifyAccessToken(oauthFor(req), provided));
+
+    if (!wpuszczony) {
+      // Nagłówek MUSI wskazać metadane zasobu — bez tego klient dostaje samo
+      // 401 i nie ma jak zacząć rozmowy o autoryzacji. To był brakujący element
+      // poprzedniej wersji: brama działała, ale nie mówiła, jak przez nią przejść.
+      json(res, 401, { error: "unauthorized" }, { "www-authenticate": wwwAuthenticate(oauthFor(req)) });
       logAccess(401, req.method ?? "?", null, Date.now() - started);
       return;
     }
@@ -382,6 +490,106 @@ async function handleConnecteamWebhook(req: IncomingMessage, res: ServerResponse
   }
 }
 
+/**
+ * Ekran zgody i wydanie kodu autoryzacyjnego.
+ *
+ * GET  → pokazuje pytanie o hasło,
+ * POST → sprawdza hasło i przekierowuje z kodem.
+ *
+ * Rozdzielenie błędów na „pokaż u nas" i „przekieruj" jest istotne: dopóki nie
+ * wiemy, że `redirect_uri` należy do zarejestrowanego klienta, przekierowanie
+ * tam czegokolwiek byłoby otwartym przekierowaniem — czyli gotowym narzędziem
+ * dla kogoś, kto podszywa się pod nasz adres.
+ */
+async function handleAuthorize(req: IncomingMessage, res: ServerResponse, url: URL): Promise<number> {
+  if (!OAUTH_ENABLED) {
+    html(res, 503, "<p>OAuth nie jest włączony na tym serwerze (brak COPILOT_AUTH_PASSWORD).</p>");
+    return 503;
+  }
+
+  const cfg = oauthFor(req);
+  const q = url.searchParams;
+  const zadanie = {
+    client_id: q.get("client_id") ?? "",
+    redirect_uri: q.get("redirect_uri") ?? "",
+    state: q.get("state"),
+    code_challenge: q.get("code_challenge") ?? "",
+    code_challenge_method: q.get("code_challenge_method") ?? "",
+    resource: q.get("resource"),
+  };
+
+  const sprawdzenie = checkAuthorize(cfg, zadanie);
+  if (!sprawdzenie.ok) {
+    if (sprawdzenie.kind === "fatal") {
+      html(res, 400, `<p>${sprawdzenie.message}</p>`);
+      return 400;
+    }
+    const cel = new URL(zadanie.redirect_uri);
+    cel.searchParams.set("error", sprawdzenie.error);
+    cel.searchParams.set("error_description", sprawdzenie.description);
+    if (zadanie.state) cel.searchParams.set("state", zadanie.state);
+    res.writeHead(302, { location: cel.toString(), "cache-control": "no-store" });
+    res.end();
+    return 302;
+  }
+
+  if (req.method === "GET") {
+    html(res, 200, consentPage({ clientName: sprawdzenie.client.name, query: url.searchParams.toString() }));
+    return 200;
+  }
+
+  if (req.method !== "POST") {
+    html(res, 405, "<p>Użyj GET albo POST.</p>");
+    return 405;
+  }
+
+  // Limit prób per adres z warstwy transportu. Nie ufamy X-Forwarded-For:
+  // klient podaje go dowolnie, więc oparcie limitu na nim to brak limitu.
+  const klucz = `oauth:${req.socket.remoteAddress ?? "?"}`;
+  if (!allow(klucz)) {
+    html(res, 429, "<p>Za dużo prób. Odczekaj chwilę.</p>");
+    return 429;
+  }
+
+  const haslo = new URLSearchParams(await readBody(req)).get("haslo") ?? "";
+  if (!passwordMatches(cfg, haslo)) {
+    process.stderr.write("[oauth] nieudana próba zgody: złe hasło\n");
+    html(
+      res,
+      401,
+      consentPage({
+        clientName: sprawdzenie.client.name,
+        query: url.searchParams.toString(),
+        error: "Nieprawidłowe hasło.",
+      }),
+    );
+    return 401;
+  }
+
+  const cel = new URL(zadanie.redirect_uri);
+  cel.searchParams.set("code", issueCode(cfg, zadanie));
+  if (zadanie.state) cel.searchParams.set("state", zadanie.state);
+  res.writeHead(302, { location: cel.toString(), "cache-control": "no-store" });
+  res.end();
+  process.stdout.write(`[oauth] zgoda udzielona klientowi „${sprawdzenie.client.name}"\n`);
+  return 302;
+}
+
+function html(res: ServerResponse, status: number, body: string): void {
+  const payload = body.startsWith("<!doctype")
+    ? body
+    : `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<body style="font:16px/1.5 -apple-system,sans-serif;max-width:460px;margin:40px auto;padding:0 20px">${body}</body>`;
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": Buffer.byteLength(payload),
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+    "x-frame-options": "DENY",
+  });
+  res.end(payload);
+}
+
 function safeLastScan(): string | null {
   try {
     return app.store.lastOkScanAt();
@@ -422,6 +630,7 @@ server.listen(PORT, () => {
   process.stdout.write(
     `[${SERVER_NAME}] nasłuchuję na :${PORT}\n` +
       `[${SERVER_NAME}] narzędzia dla Claude: ${probe.toolNames().length}\n` +
+      `[${SERVER_NAME}] OAuth dla konektora: ${OAUTH_ENABLED ? "włączony" : "WYŁĄCZONY (brak COPILOT_AUTH_PASSWORD) — Claude się nie połączy"}\n` +
       `[${SERVER_NAME}] tryb: ${app.config.mode}, foldery: ${app.config.copilot.monitorFolders.join(", ")}\n` +
       `[${SERVER_NAME}] monitor w procesie: ${MONITOR_IN_PROCESS ? `tak, pierwszy przebieg za 20 s, potem co ${app.config.copilot.intervalMinutes} min` : "nie"}\n`,
   );
