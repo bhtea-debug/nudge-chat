@@ -116,24 +116,40 @@ describe("dostawca na fiksturach", () => {
 
   it("filtruje po oknie czasowym i po nieprzeczytanych", async () => {
     const recent = await provider.listRecent({ limit: 50, since: new Date(Date.now() - 7 * 3_600_000) });
-    expect(recent.length).toBeGreaterThan(0);
-    expect(recent.every((m) => Date.now() - new Date(m.date).getTime() <= 7 * 3_600_000)).toBe(true);
+    expect(recent.messages.length).toBeGreaterThan(0);
+    expect(
+      recent.messages.every((m) => Date.now() - new Date(m.date).getTime() <= 7 * 3_600_000),
+    ).toBe(true);
+    // Nic nie zostało obcięte, więc liczba trafień równa się liczbie zwróconych.
+    expect(recent.matched).toBe(recent.messages.length);
 
     const unread = await provider.listRecent({
       limit: 50,
       since: new Date(Date.now() - 3 * 86_400_000),
       unreadOnly: true,
     });
-    expect(unread.every((m) => !m.seen)).toBe(true);
+    expect(unread.messages.every((m) => !m.seen)).toBe(true);
   });
 
   it("szuka w temacie, nadawcy i treści", async () => {
     // Trzy trafienia: dwa pytania klienta i nasza odpowiedź (temat też liczy się
     // do wyszukiwania) — agent widzi, że sprawa już raz była obsłużona.
-    expect((await provider.search({ query: "12345", limit: 10 })).length).toBe(3);
-    expect((await provider.search({ query: "sanepid", limit: 10 })).length).toBe(1);
-    expect((await provider.search({ query: "hurt-herbaty", limit: 10 })).length).toBe(1);
-    expect((await provider.search({ query: "nie ma takiej frazy xyz", limit: 10 })).length).toBe(0);
+    expect((await provider.search({ query: "12345", limit: 10 })).messages.length).toBe(3);
+    expect((await provider.search({ query: "sanepid", limit: 10 })).messages.length).toBe(1);
+    expect((await provider.search({ query: "hurt-herbaty", limit: 10 })).messages.length).toBe(1);
+    expect((await provider.search({ query: "nie ma takiej frazy xyz", limit: 10 })).messages.length).toBe(0);
+  });
+
+  it("mówi, ile trafień było PRZED przycięciem do limitu", async () => {
+    // Znalezione na żywo: model poprosił o 30 wiadomości, dostał 30 i napisał,
+    // że pobrał „pełne 30 z 7 dni". Nie miał z czego tego wiedzieć.
+    const all = await provider.listRecent({ limit: 50, since: new Date(0) });
+    expect(all.matched).toBeGreaterThan(1);
+
+    const capped = await provider.listRecent({ limit: 1, since: new Date(0) });
+    expect(capped.messages).toHaveLength(1);
+    // Liczba dostępnych trafień nie zmienia się od tego, ile ich poprosiliśmy.
+    expect(capped.matched).toBe(all.matched);
   });
 
   it("zwraca cały wątek dla dowolnej wiadomości z wątku", async () => {

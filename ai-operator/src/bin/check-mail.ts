@@ -208,7 +208,7 @@ async function main(): Promise<number> {
     // ── 2. listowanie ─────────────────────────────────────────────────────────
     const recent = await withDeadline(
       "listowanie",
-      provider.listRecent({ limit: 25, since, folder: inboxFolder }),
+      provider.listRecent({ limit: 25, since, folder: inboxFolder }).then((r) => r.messages),
     );
     record(
       "2. Listowanie ostatnich wiadomości",
@@ -245,7 +245,7 @@ async function main(): Promise<number> {
     const needle = domain || clipSubject(seed.subject, 12);
     const found = await withDeadline(
       "wyszukiwanie",
-      provider.search({ query: needle, limit: 10, since }),
+      provider.search({ query: needle, limit: 10, since }).then((r) => r.messages),
     );
     record(
       "4. Wyszukiwanie",
@@ -319,7 +319,7 @@ async function main(): Promise<number> {
     if (sentFolder) {
       const sent = await withDeadline(
         "listowanie folderu wysłanych",
-        provider.listRecent({ limit: 10, since, folder: sentFolder }),
+        provider.listRecent({ limit: 10, since, folder: sentFolder }).then((r) => r.messages),
       );
       // Pusty folder wysłanych w oknie to fakt o skrzynce, nie usterka:
       // nikt nie musiał niczego wysłać w ostatnich N dniach. Sprawdzeniem

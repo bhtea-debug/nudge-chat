@@ -32,11 +32,19 @@ const ListRecentInput = z.object({
   folder: z.string().optional().describe('Folder, domyślnie skrzynka odbiorcza.'),
 });
 
+/**
+ * `count` to ile wiadomości zwrócono, `matched` — ile ich w oknie było.
+ * Bez tej drugiej liczby „dostałem 30" i „w oknie było 30" wyglądają identycznie,
+ * a to różnica między prawdziwą odpowiedzią i taką, która pomija 17 wiadomości.
+ */
 const ListRecentOutput = z.object({
   provider: z.string(),
   folder: z.string(),
   sinceIso: z.string(),
   count: z.number().int().nonnegative(),
+  matched: z.number().int().nonnegative().nullable(),
+  truncated: z.boolean(),
+  limitNote: z.string().nullable(),
   messages: z.array(MailMessage),
 });
 
@@ -57,10 +65,39 @@ const SearchOutput = z.object({
   provider: z.string(),
   query: z.string(),
   count: z.number().int().nonnegative(),
+  matched: z.number().int().nonnegative().nullable(),
+  truncated: z.boolean(),
+  limitNote: z.string().nullable(),
   /** Uczciwa informacja o jakości wyszukiwania danego dostawcy. */
   searchNote: z.string(),
   messages: z.array(MailMessage),
 });
+
+/**
+ * Jedno miejsce liczące „czy to wszystko". `matched === null` znaczy, że dostawca
+ * nie potrafi podać liczby trafień — wtedy również NIE WOLNO twierdzić, że wynik
+ * jest kompletny, więc `truncated` jest wtedy prawdą.
+ */
+function limitFacts(
+  result: { messages: readonly unknown[]; matched: number | null },
+  limit: number,
+): { count: number; matched: number | null; truncated: boolean; limitNote: string | null } {
+  const count = result.messages.length;
+  const truncated = result.matched === null ? count >= limit : result.matched > count;
+  return {
+    count,
+    matched: result.matched,
+    truncated,
+    limitNote: !truncated
+      ? null
+      : result.matched === null
+        ? `Zwrócono ${count} wiadomości przy limicie ${limit}, a dostawca nie podaje liczby wszystkich trafień. ` +
+          "NIE twierdź, że to wszystkie — powiedz, że widzisz tylko tyle, i podnieś limit, jeśli to istotne."
+        : `Zwrócono ${count} z ${result.matched} pasujących wiadomości (limit ${limit}). ` +
+          `Pozostałe ${result.matched - count} NIE zostały sprawdzone — nie twierdź, że masz wszystkie. ` +
+          "Jeśli komplet ma znaczenie, wywołaj ponownie z wyższym limitem.",
+  };
+}
 
 const GetThreadInput = z.object({
   messageId: z
@@ -81,7 +118,9 @@ export function createMailCapabilities(
     description:
       "Wypisuje ostatnie wiadomości ze skrzynki odbiorczej wraz z tematem, nadawcą, datą, " +
       "flagami i krótkim podglądem treści. Użyj tego jako pierwszego kroku przy pytaniu " +
-      "„co ważnego przyszło”. Zwraca podgląd, nie pełną treść — po pełną treść użyj mail_get_thread.",
+      "„co ważnego przyszło”. Zwraca podgląd, nie pełną treść — po pełną treść użyj mail_get_thread. " +
+      "Sprawdź truncated: gdy jest true, w oknie było WIĘCEJ wiadomości niż zwrócono i nie wolno " +
+      "twierdzić, że masz wszystkie. Liczbę wszystkich trafień podaje matched.",
     scope: "mail:read",
     effectClass: "read",
     input: ListRecentInput,
@@ -90,11 +129,14 @@ export function createMailCapabilities(
       sinceDays: input.sinceDays,
       unreadOnly: input.unreadOnly,
       count: output?.count ?? 0,
+      // Przycięcie wyniku należy do audytu: „czego agent NIE widział" jest
+      // równie istotne jak to, co sprawdził.
+      truncated: output?.truncated ?? false,
     }),
     handler: async (input, ctx) => {
       const provider = await getProvider();
       const since = daysAgo(input.sinceDays);
-      const messages = await provider.listRecent({
+      const result = await provider.listRecent({
         limit: input.limit,
         since,
         unreadOnly: input.unreadOnly,
@@ -105,8 +147,8 @@ export function createMailCapabilities(
         provider: provider.id,
         folder: input.folder ?? "INBOX",
         sinceIso: since.toISOString(),
-        count: messages.length,
-        messages,
+        ...limitFacts(result, input.limit),
+        messages: result.messages,
       };
     },
   };
@@ -129,10 +171,11 @@ export function createMailCapabilities(
       // nadawców do audytu nie trafiają.
       query: maskAddressesInText(input.query),
       count: output?.count ?? 0,
+      truncated: output?.truncated ?? false,
     }),
     handler: async (input, ctx) => {
       const provider = await getProvider();
-      const messages = await provider.search({
+      const result = await provider.search({
         query: input.query,
         limit: input.limit,
         ...(input.sinceDays ? { since: daysAgo(input.sinceDays) } : {}),
@@ -142,13 +185,13 @@ export function createMailCapabilities(
       return {
         provider: provider.id,
         query: input.query,
-        count: messages.length,
+        ...limitFacts(result, input.limit),
         searchNote: provider.features.fullTextSearch
           ? "Wyszukiwanie obejmuje temat i nadawcę; treść jest przeszukiwana " +
             "dopiero wtedy, gdy nagłówki nic nie dały. Niepusty wynik może więc " +
             "pomijać wiadomości, które mają frazę tylko w treści."
           : "Wyszukiwanie obejmuje wyłącznie temat i nadawcę — treść nie jest indeksowana.",
-        messages,
+        messages: result.messages,
       };
     },
   };

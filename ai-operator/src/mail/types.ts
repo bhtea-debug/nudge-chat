@@ -99,6 +99,26 @@ export interface GetThreadOptions {
 }
 
 /**
+ * Wynik listowania i wyszukiwania.
+ *
+ * `matched` to liczba wiadomości spełniających kryteria PRZED przycięciem do
+ * limitu — i jest tu, bo bez niej nie da się odróżnić „w oknie było tyle" od
+ * „tyle zmieściło się w limicie".
+ *
+ * Znalezione na żywo: model poprosił o 30 wiadomości, dostał 30 i napisał, że
+ * pobrał „pełne 30 z 7 dni". Nie miał z czego tego wiedzieć — a to jest właśnie
+ * twierdzenie bez pokrycia, któremu ma zapobiegać cała reszta tego systemu.
+ * Kontrola dowodów tego nie wyłapie, bo wywołanie się odbyło i zwróciło dane.
+ *
+ * `null` znaczy „ten dostawca nie potrafi podać liczby" — wtedy agent też nie
+ * może twierdzić, że ma wszystko. Nie zgaduj zera.
+ */
+export interface MailListResult {
+  readonly messages: MailMessage[];
+  readonly matched: number | null;
+}
+
+/**
  * Kontrakt dostawcy poczty. MVP dostarcza dwie implementacje: `imap` i `fixture`.
  * Nie ma tu żadnej metody zapisu — ani wysyłki, ani zmiany flag, ani przenoszenia.
  * To jest granica, na której "read-only" jest wymuszone typem, nie zapisem w promptcie.
@@ -112,8 +132,8 @@ export interface MailProvider {
     readonly fullTextSearch: boolean;
     readonly threads: boolean;
   };
-  listRecent(opts: ListRecentOptions): Promise<MailMessage[]>;
-  search(opts: SearchOptions): Promise<MailMessage[]>;
+  listRecent(opts: ListRecentOptions): Promise<MailListResult>;
+  search(opts: SearchOptions): Promise<MailListResult>;
   getThread(opts: GetThreadOptions): Promise<MailThread | null>;
   close(): Promise<void>;
 }

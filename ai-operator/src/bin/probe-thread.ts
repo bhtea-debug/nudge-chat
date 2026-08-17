@@ -204,7 +204,7 @@ async function main(): Promise<number> {
 
   try {
     // Ta sama selekcja co w check:mail: listRecent sortuje po dacie malejąco.
-    const recent = await provider.listRecent({ limit: 25, since, folder: plan.inbox });
+    const { messages: recent } = await provider.listRecent({ limit: 25, since, folder: plan.inbox });
     const ids = new Set(recent.map((m) => m.id));
     const target = recent.find((m) => parentRefsWithin(m, ids).length > 0) ?? null;
 

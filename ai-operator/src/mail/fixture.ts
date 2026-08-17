@@ -3,6 +3,7 @@ import { z } from "zod";
 import type {
   GetThreadOptions,
   ListRecentOptions,
+  MailListResult,
   MailMessage,
   MailMessageFull,
   MailProvider,
@@ -149,21 +150,21 @@ export class FixtureMailProvider implements MailProvider {
     return planFolders(this.folders, this.requestedThreadFolders, "INBOX");
   }
 
-  async listRecent(opts: ListRecentOptions): Promise<MailMessage[]> {
+  async listRecent(opts: ListRecentOptions): Promise<MailListResult> {
     const folder = opts.folder ?? "INBOX";
-    return this.records
+    const hits = this.records
       .filter((r) => r.message.folder === folder)
       .filter((r) => new Date(r.message.date) >= opts.since)
       .filter((r) => (opts.unreadOnly ? !r.message.seen : true))
       .map((r) => r.message)
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, opts.limit);
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return { messages: hits.slice(0, opts.limit), matched: hits.length };
   }
 
-  async search(opts: SearchOptions): Promise<MailMessage[]> {
+  async search(opts: SearchOptions): Promise<MailListResult> {
     const needle = opts.query.toLowerCase().trim();
-    if (!needle) return [];
-    return this.records
+    if (!needle) return { messages: [], matched: 0 };
+    const hits = this.records
       .filter((r) => (opts.folder ? r.message.folder === opts.folder : true))
       .filter((r) => (opts.since ? new Date(r.message.date) >= opts.since : true))
       .filter((r) => {
@@ -178,8 +179,8 @@ export class FixtureMailProvider implements MailProvider {
         return haystack.includes(needle);
       })
       .map((r) => r.message)
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, opts.limit);
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return { messages: hits.slice(0, opts.limit), matched: hits.length };
   }
 
   async getThread(opts: GetThreadOptions): Promise<MailThread | null> {

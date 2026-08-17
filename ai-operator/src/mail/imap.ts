@@ -5,6 +5,7 @@ import type {
   GetThreadOptions,
   ListRecentOptions,
   MailAddress,
+  MailListResult,
   MailMessage,
   MailMessageFull,
   MailProvider,
@@ -228,7 +229,7 @@ export class ImapMailProvider implements MailProvider {
     this.client = null;
   }
 
-  async listRecent(opts: ListRecentOptions): Promise<MailMessage[]> {
+  async listRecent(opts: ListRecentOptions): Promise<MailListResult> {
     const folder = opts.folder ?? this.folder;
     const client = await this.connect();
     const lock = await client.getMailboxLock(folder, { readOnly: true, acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS });
@@ -236,17 +237,22 @@ export class ImapMailProvider implements MailProvider {
       const criteria: Record<string, unknown> = { since: opts.since };
       if (opts.unreadOnly) criteria["seen"] = false;
       const uids = await this.searchUids(client, criteria, opts.signal);
-      if (uids.length === 0) return [];
-      // Najnowsze na końcu listy UID — bierzemy ogon.
+      if (uids.length === 0) return { messages: [], matched: 0 };
+      // Najnowsze na końcu listy UID — bierzemy ogon. Liczba trafień PRZED
+      // przycięciem jest tu darmowa i musi wyjść na zewnątrz: bez niej agent nie
+      // odróżni „tyle było" od „tyle się zmieściło".
       const wanted = uids.slice(-opts.limit);
       const parsed = await this.fetchByUids(client, wanted, folder, opts.signal);
-      return this.finalize(parsed).sort((a, b) => b.date.localeCompare(a.date));
+      return {
+        messages: this.finalize(parsed).sort((a, b) => b.date.localeCompare(a.date)),
+        matched: uids.length,
+      };
     } finally {
       lock.release();
     }
   }
 
-  async search(opts: SearchOptions): Promise<MailMessage[]> {
+  async search(opts: SearchOptions): Promise<MailListResult> {
     const folder = opts.folder ?? this.folder;
     const client = await this.connect();
     const lock = await client.getMailboxLock(folder, { readOnly: true, acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS });
@@ -286,10 +292,13 @@ export class ImapMailProvider implements MailProvider {
         }
       }
 
-      if (seen.size === 0) return [];
+      if (seen.size === 0) return { messages: [], matched: 0 };
       const wanted = [...seen].sort((a, b) => a - b).slice(-opts.limit);
       const parsed = await this.fetchByUids(client, wanted, folder, opts.signal);
-      return this.finalize(parsed).sort((a, b) => b.date.localeCompare(a.date));
+      return {
+        messages: this.finalize(parsed).sort((a, b) => b.date.localeCompare(a.date)),
+        matched: seen.size,
+      };
     } finally {
       lock.release();
     }

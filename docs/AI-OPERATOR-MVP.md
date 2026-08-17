@@ -849,3 +849,45 @@ Lekcja ogólniejsza, warta zapisania: **„działa u mnie z terminala" nie jest
 dowodem, że wstanie u klienta MCP.** Środowisko procesu startowanego z aplikacji
 graficznej różni się w trzech rzeczach naraz — katalogu roboczym, `PATH` i
 zmiennych środowiskowych — i każda z nich potrafi zabić serwer przed handshake.
+
+---
+
+### 8.13 Etap A ZALICZONY — i jedna usterka, którą wykrył
+
+Cztery testy na prawdziwych danych, w Claude Desktop, z Claude jako modelem.
+Wszystkie zdane.
+
+| test | co sprawdzał | wynik |
+| --- | --- | --- |
+| zamówienie `2271126` | prawdziwe dane ERP | Rossmann, `cancelled`/`unpaid`, 1728 szt. BHTJM, powiązane ZP też anulowane |
+| „Japan Matcha 40g" | czy Claude **łączy** narzędzia sam | tak: `find_product` → kod `BHTJM` → `get_stock`, bez podpowiedzi |
+| korelacja poczta ↔ ERP | sens całości | 3 nowe zamówienia Rossmanna z maili, wszystkie `matchedBy: none` — czyli jeszcze nie wprowadzone do TeaBrew |
+| zamówienie `99999888` | **zakaz zgadywania** | „nie istnieje w TeaBrew (…) nie zgaduję statusu" |
+
+Test korelacji zachował się lepiej, niż zakładałem: przy wątku o transakcji P24
+model **odmówił odpowiedzi i powiedział, czego mu brakuje** (pełnego numeru
+transakcji, którego nie ma w mailu powiadamiającym), zamiast dopasować
+najbliższą znalezioną transakcję. Zauważył też sam, że numery przesyłek InPost
+nie są numerami TeaBrew.
+
+#### Usterka: `mail_list_recent` nie mówił, ile wiadomości pominął
+
+W odpowiedzi pojawiło się zdanie „ostatecznie pobrałem **pełne 30** wiadomości
+z 7 dni". Model nie miał z czego tego wiedzieć — poprosił o 30, dostał 30
+i nie istniał sposób odróżnienia „w oknie było 30" od „w oknie było 300".
+
+`ImapMailProvider.listRecent` miał tę liczbę **darmowo** (`uids.length` przed
+`slice(-limit)`) i ją wyrzucał. To samo w `search` (`seen.size`). Kontrola
+dowodów tego nie łapie, bo wywołanie się odbyło i zwróciło prawdziwe dane —
+fałszywa jest tylko **kompletność**, a jej nikt nie sprawdzał.
+
+Naprawione w kontrakcie dostawcy, nie w promptcie: `listRecent` i `search`
+zwracają `MailListResult { messages, matched }`, a capability wystawia `matched`,
+`truncated` i `limitNote` z gotowym zdaniem („zwrócono 30 z 47 (…) pozostałe 17
+NIE zostały sprawdzone"). `matched: null` znaczy „dostawca nie potrafi podać
+liczby" i wtedy `truncated` też jest prawdą — brak wiedzy nie może wyglądać jak
+komplet. `truncated` trafia również do audytu, bo „czego agent NIE widział" jest
+równie istotne jak to, co sprawdził.
+
+Zmiana typu `MailProvider` wyłapała wszystkie trzy pozostałe miejsca użycia
+przez kompilator — dokładnie po to ten interfejs jest wąski.

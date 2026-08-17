@@ -18,8 +18,8 @@ powtarzać ani „dokańczać".
 | `verify:teabrew` | **17/17** na produkcyjnych danych | 8.10 |
 | `check:mail` | **11/11** na prawdziwej skrzynce (okno 7 dni) | 8.11 |
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
-| tryb MCP (Claude jako model) | protokół przetestowany, 7 narzędzi z rejestru | 8.11 |
-| testy | **68**, bez sieci i bez klucza API | — |
+| tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
+| testy | **72**, bez sieci i bez klucza API | — |
 
 Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 
@@ -187,6 +187,14 @@ Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
   Dovecot potrafi przy tym odpowiadać na poziomie socketu — bez limitu narzędzie
   wisi bez komunikatu. Dlatego `search` nie odpala `SEARCH BODY`, jeśli nagłówki
   coś zwróciły, i mówi o tym w `searchNote`.
+- **Przycięcie wyniku do limitu MUSI być widoczne.** `listRecent` i `search`
+  zwracają `MailListResult { messages, matched }`, gdzie `matched` to liczba
+  trafień **przed** `slice(-limit)`. Bez niej model dostaje 30 wiadomości przy
+  limicie 30 i pisze „pobrałem pełne 30 z 7 dni" — twierdzenie, którego nie ma
+  jak sprawdzić. Kontrola dowodów tego nie łapie: wywołanie się odbyło i zwróciło
+  prawdziwe dane, fałszywa jest tylko **kompletność**. `matched: null`
+  (dostawca nie umie podać liczby) daje `truncated: true` — brak wiedzy nie może
+  wyglądać jak komplet. To był realny błąd w odpowiedzi na prawdziwej skrzynce.
 - **Nie pytaj osobno o każdą referencję wątku.** Pierwsza wersja wysyłała ~58
   zapytań na JEDEN wątek (29 referencji × 2 foldery, każde z osobną blokadą) i
   Zenbox rozłączył połączenie w trakcie. `maxMessages` ogranicza wynik, ale nie
@@ -260,7 +268,7 @@ ai-operator/
                      mcp-doctor.mjs (diagnostyka startu serwera MCP)
   teabrew-patch/     źródło kontraktu ERP (założone jako PR #27)
   fixtures/          poczta (INBOX + Sent) i dane ERP — PRAWDZIWE enumy
-  tests/             71 testów: scenariusze, jednostkowe, bezpieczeństwo łatki,
+  tests/             72 testów: scenariusze, jednostkowe, bezpieczeństwo łatki,
                      integralność adaptera MCP, start serwera MCP
   claude-desktop.example.json   konfiguracja MCP dla Claude Desktop
 ```
