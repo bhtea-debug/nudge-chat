@@ -171,15 +171,47 @@ kropka "4/8  Trwały wolumen ($MOUNT)"
 
 # Bez wolumenu każdy restart kontenera gubi sprawy i checkpointy, a monitor
 # przeczytałby całą skrzynkę od nowa. To nie jest opcjonalne.
-if $RAILWAY volume list 2>/dev/null | grep -q "$MOUNT"; then
-  ok "wolumen na $MOUNT już istnieje"
+#
+# Wykrywanie istniejącego wolumenu jest CELOWO pobłażliwe: sprawdzamy i ścieżkę
+# montowania, i samo słowo „volume" w wyjściu. Wolumen dodany ręcznie w panelu
+# może być wypisany inaczej, a druga próba dodania kończy się paniką CLI —
+# lepiej pominąć krok, który już ktoś wykonał, niż wywalić cały skrypt.
+if $RAILWAY volume list 2>/dev/null | grep -qi "$MOUNT\|volume"; then
+  ok "wolumen już istnieje (pomijam)"
 else
-  # `--service` jest opcją GRUPY `railway volume`, nie podkomendy `add`, więc
-  # musi stać PRZED `add`. Przykład w pomocy CLI pokazuje odwrotnie
-  # (`volume add --service api …`) i ta kolejność kończy się błędem
-  # „unexpected argument '--service' found". Nie ufaj tu przykładom z pomocy,
-  # tylko blokowi Options — on opisuje flagi grupy.
-  if $RAILWAY volume --service "$SERVICE" add --mount-path "$MOUNT" >/tmp/bht-vol 2>&1; then
+  # Trzy rzeczy ustalone na żywym CLI, wszystkie sprzeczne z jego własną pomocą:
+  #
+  #  1. `--service` jest flagą GRUPY `railway volume`, nie podkomendy `add`
+  #     (przykład w pomocy pokazuje odwrotnie i kończy się „unexpected argument"),
+  #  2. `--service` oczekuje **ID usługi**, nie jej nazwy,
+  #  3. podanie nazwy zamiast ID nie daje czytelnego błędu, tylko PANIKĘ Rusta
+  #     (`Option::unwrap()` on a `None`) — czyli błąd w narzędziu dostawcy.
+  #
+  # Dlatego najpierw próbujemy wyciągnąć ID usługi z `status --json`, a gdy się
+  # nie uda, wołamy bez flagi. Jedna usługa w projekcie i tak czyni ją zbędną.
+  SERVICE_ID="$($RAILWAY status --json 2>/dev/null | node -e '
+    let d=""; process.stdin.on("data",c=>d+=c).on("end",()=>{
+      try {
+        const j = JSON.parse(d);
+        const szukaj = (o) => {
+          if (!o || typeof o !== "object") return null;
+          if (o.name === process.env.SERVICE && typeof o.id === "string") return o.id;
+          for (const v of Object.values(o)) { const r = szukaj(v); if (r) return r; }
+          return null;
+        };
+        process.stdout.write(szukaj(j) ?? "");
+      } catch { /* brak json albo inny kształt — trudno */ }
+    });
+  ' 2>/dev/null || true)"
+
+  if [ -n "$SERVICE_ID" ]; then
+    printf '  (znalazłem ID usługi, używam go zamiast nazwy)\n'
+    PROBA=($RAILWAY volume --service "$SERVICE_ID" add --mount-path "$MOUNT")
+  else
+    PROBA=($RAILWAY volume add --mount-path "$MOUNT")
+  fi
+
+  if "${PROBA[@]}" >/tmp/bht-vol 2>&1; then
     ok "wolumen dodany"
   else
     zle "Nie umiem dodać wolumenu."
@@ -189,8 +221,10 @@ else
     printf '    panel Railway → usługa %s → Settings → Volumes → New Volume\n' "$SERVICE"
     printf '    punkt montowania: %s\n' "$MOUNT"
     printf '\n  Potem uruchom ten skrypt ponownie — pominie kroki, które już przeszły.\n'
-    printf '\n  Pomoc SAMEJ podkomendy add (to jest to, czego mi brakuje):\n\n'
-    $RAILWAY volume add --help 2>&1 | sed 's/^/    /'
+    if grep -q "panicked" /tmp/bht-vol; then
+      printf '\n  To jest BŁĄD W NARZĘDZIU Railwaya (panika Rusta), nie w konfiguracji.\n'
+      printf '  Nie da się go obejść z wiersza poleceń — panel działa normalnie.\n'
+    fi
     exit 1
   fi
 fi
