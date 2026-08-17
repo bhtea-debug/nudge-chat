@@ -89,10 +89,41 @@ export class CopilotStore {
     }
   }
 
+  /**
+   * Uzupełnia pola dodane PO tym, jak dziennik już istniał.
+   *
+   * Dziennik jest odtwarzany przez `JSON.parse`, a nie przez schemat zoda —
+   * i to jest właściwy wybór, bo zod odrzuciłby stare zdarzenia zamiast je
+   * wczytać. Ale znaczy to, że sprawa zapisana przed dodaniem pola nie ma go
+   * wcale, a `Issue` deklaruje je jako wymagane.
+   *
+   * Kosztowało to konkretną awarię: wyjście `copilot_get_open_issues` jest
+   * sprawdzane zodem, `whyListed` jest wymaganym łańcuchem, więc JEDNA sprawa
+   * sprzed dodania tego pola wywracała CAŁĄ odpowiedź błędem invalid_output —
+   * i Claude nie mógł wypisać ani jednej sprawy. Awaria wyglądała przy tym jak
+   * problem z narzędziem, nie jak problem z jednym starym wpisem.
+   *
+   * Uzupełniamy przy wczytaniu, żeby reszta kodu nigdy nie oglądała sprawy
+   * w niepełnym kształcie.
+   */
+  private static complete(i: Issue): Issue {
+    return {
+      ...i,
+      source: i.source ?? "mail",
+      classifier: i.classifier ?? "deterministic",
+      whyListed: i.whyListed ?? "",
+      likelyIrrelevant: i.likelyIrrelevant ?? false,
+      relatedOrderRefs: i.relatedOrderRefs ?? [],
+      relatedProductRefs: i.relatedProductRefs ?? [],
+      sourceRefs: i.sourceRefs ?? [],
+      history: i.history ?? [],
+    };
+  }
+
   private apply(ev: StateEvent): void {
     switch (ev.t) {
       case "snapshot":
-        this.issues = new Map(ev.issues.map((i) => [i.id, i]));
+        this.issues = new Map(ev.issues.map((i) => [i.id, CopilotStore.complete(i)]));
         this.seen = new Map(ev.seen);
         this.folders = new Map(ev.folders.map((f) => [f.folder, f]));
         this.knownDomains = new Set(ev.knownDomains ?? []);
@@ -103,7 +134,7 @@ export class CopilotStore {
         this.knownDomainsAt = ev.at;
         return;
       case "issue_created":
-        this.issues.set(ev.issue.id, ev.issue);
+        this.issues.set(ev.issue.id, CopilotStore.complete(ev.issue));
         return;
       case "issue_patched": {
         const cur = this.issues.get(ev.id);

@@ -108,6 +108,26 @@ export function whyNow(issue: Issue): string | null {
     const refs = currentOwnOrderRefs(issue);
     return `numeru ${refs.join(", ")} nie ma w TeaBrew`;
   }
+
+  /**
+   * Unieważnienie CAŁEGO przebiegu, nie samego zdania.
+   *
+   * Trzy poprawki tej funkcji poszły na to samo awizo InPostu i dwie pierwsze
+   * nie zadziałały, bo naprawiałem po jednym polu naraz. Sedno jest takie:
+   * gdy monitor uznał, że numeru nie ma w TeaBrew, ustawił w jednym przebiegu
+   * kilka rzeczy naraz — `lastErpSummary`, wysoki priorytet i „warte
+   * powiadomienia". Odebranie wiary jednemu z tych pól, a zostawienie
+   * pozostałych, nie zmienia nic: sprawa dalej stoi na górze, tylko z innym
+   * uzasadnieniem.
+   *
+   * Dlatego: jeśli twierdzenie ERP z tamtego przebiegu jest dziś niepoparte
+   * (numer, o który wtedy pytaliśmy, nie jest już przez nas rozpoznawany), to
+   * NIC z tamtego przebiegu nie windują sprawy. Sprawa zostaje w pamięci
+   * i w niższej grupie — nie znika, tylko przestaje udawać najpilniejszą.
+   */
+  const bylTwierdzeniemErp = /NIE MA w TeaBrew/i.test(issue.lastErpSummary ?? "");
+  if (bylTwierdzeniemErp) return null;
+
   if (issue.priority === "high") return "wysoki priorytet";
   if (issue.notificationCandidate) {
     return issue.notificationReason ?? "uznane za warte powiadomienia";

@@ -1,8 +1,8 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isNow, laneCounts, laneOf, LANE_ORDER, missingInErp } from "../src/state/lanes.js";
+import { isNow, laneCounts, laneOf, LANE_ORDER, missingInErp, whyNow } from "../src/state/lanes.js";
 import { createIssueCapabilities } from "../src/state/capabilities.js";
 import { CopilotStore } from "../src/state/store.js";
 import { buildTimeline, lastIncoming, sourceSummary } from "../src/state/timeline.js";
@@ -199,6 +199,71 @@ describe("dane dla Claude", () => {
   it("mówi, z których systemów pochodzą dowody", async () => {
     const out = await brief(issue());
     expect(out.issues[0]!.sources).toEqual(["mail"]);
+  });
+});
+
+// ── sprawy zapisane starszą wersją schematu ──────────────────────────────────
+
+describe("sprawy z dziennika sprzed zmian schematu", () => {
+  /** Zapisuje dziennik dokładnie w kształcie sprzed dodania whyListed. */
+  const zStarymDziennikiem = (): CopilotStore => {
+    const dir = mkdtempSync(join(tmpdir(), "bht-legacy-"));
+    const stara = {
+      t: "issue_created",
+      at: "2026-08-17T10:00:00.000Z",
+      issue: {
+        id: "spr_f8b6d443",
+        createdAt: "2026-08-17T10:00:00.000Z",
+        updatedAt: "2026-08-17T10:00:00.000Z",
+        source: "mail",
+        sourceRefs: [mailRef()],
+        title: "Wsparcie Handlowe — NIP: 8842745578",
+        summary: "awizo",
+        category: "reply",
+        priority: "high",
+        status: "new",
+        relatedOrderRefs: ["8842745578"],
+        relatedProductRefs: [],
+        lastEvidenceAt: null,
+        lastErpSummary: "numeru 8842745578 NIE MA w TeaBrew",
+        waitingFor: null,
+        lastPresentedAt: null,
+        notificationCandidate: true,
+        notificationReason: "…",
+        history: [],
+        // BRAK: classifier, whyListed, likelyIrrelevant — dodane później.
+      },
+    };
+    writeFileSync(join(dir, "events.jsonl"), `${JSON.stringify(stara)}\n`);
+    return new CopilotStore({ dir, actor: "operator" });
+  };
+
+  it("wyjście capability PRZECHODZI walidację, mimo brakujących pól w dzienniku", async () => {
+    // Wyjście jest sprawdzane zodem, a `whyListed` jest wymaganym łańcuchem.
+    // Sprawa sprzed dodania tego pola wywracała `copilot_get_open_issues`
+    // błędem invalid_output — czyli Claude nie mógł wypisać ANI JEDNEJ sprawy,
+    // bo jedna stara pozycja psuła całą odpowiedź.
+    const caps = createIssueCapabilities(zStarymDziennikiem);
+    const open = caps.find((c) => c.name === "copilot_get_open_issues")!;
+    const out = await open.handler({ limit: 50 } as never, {} as never);
+    const wynik = open.output.safeParse(out);
+    expect(wynik.success).toBe(true);
+  });
+
+  it("brakujące pola dostają wartości domyślne, nie undefined", () => {
+    const i = zStarymDziennikiem().get("spr_f8b6d443")!;
+    expect(i.whyListed).toBe("");
+    expect(i.likelyIrrelevant).toBe(false);
+    expect(i.classifier).toBe("deterministic");
+  });
+
+  it("unieważnione twierdzenie ERP nie trzyma sprawy na górze przez priorytet", () => {
+    // Cały przebieg ustawił naraz: lastErpSummary, priority=high
+    // i notificationCandidate. Odebranie wiary jednemu polu nic nie dawało.
+    const i = zStarymDziennikiem().get("spr_f8b6d443")!;
+    expect(missingInErp(i)).toBe(false);
+    expect(whyNow(i)).toBeNull();
+    expect(laneOf(i)).not.toBe("teraz");
   });
 });
 
