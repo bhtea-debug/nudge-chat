@@ -21,7 +21,8 @@ powtarzać ani „dokańczać".
 | `check:mail` | **11/11** na prawdziwej skrzynce (okno 7 dni) | 8.11 |
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
-| testy | **72**, bez sieci i bez klucza API | — |
+| raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
+| testy | **81**, bez sieci i bez klucza API | — |
 
 Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 
@@ -129,12 +130,26 @@ identyfikatora modelu** — podmiana to `MODEL_FAST` / `MODEL_REASON` w `.env`.
 ### Czego NIE dodawać
 
 Wysyłania maili, draftów, mutacji ERP, integracji z Budżecikiem/B2B/Drive, RAG,
-vector DB, kolejnego agenta, PWA/iOS/Android, własnego chatu ani UI, cronów,
-automatycznego porannego uruchamiania, centralnej bramy, SSO, nowych usług.
+vector DB, kolejnego agenta, PWA/iOS/Android, własnego chatu ani UI, centralnej
+bramy, SSO, nowych usług.
 
 Świadoma decyzja: najpierw 1–2 tygodnie używania Claude jako gotowego
 interfejsu, potem ewentualna decyzja o własnym UI — na podstawie realnych
 potrzeb, nie przewidywania.
+
+**Zmiana decyzji właściciela (17.08.2026): harmonogram JEST dozwolony.**
+Na pierwotnej liście były „crony i automatyczne poranne uruchamianie". Właściciel
+wprost stwierdził, że wpisywanie pytań z ściągawki nie automatyzuje jego pracy,
+i wybrał pełny raport dzienny. To nie jest rozszerzenie zakresu zrobione
+samowolnie — jeśli trafisz na sprzeczność z listą powyżej, ta linia ją
+rozstrzyga. Harmonogram to `launchd` na Macu właściciela uruchamiający kod,
+który już istniał; **nie** nowa usługa, nie serwer, nie nowa zależność.
+
+Co pozostaje zakazane bez kolejnej wyraźnej zgody: **wysyłanie raportu mailem**
+(brak SMTP jest konstrukcyjny, nie przypadkowy) i uruchamianie raportu w chmurze
+— środowisko `anthropic_cloud` nie ma dostępu ani do IMAP-a, ani do Convexa,
+więc zaplanowane zadanie po stronie Anthropic tego raportu nie wykona. Sprawdzone
+przez `list_environments`: konto ma jedno środowisko i jest typu `anthropic_cloud`.
 
 ---
 
@@ -265,12 +280,13 @@ ai-operator/
   src/model/         roles.ts — fast / reason, zero ID modeli w logice, LENIWA
   src/agent/         operator.ts, triage.ts, prompt.ts, evidence.ts
   src/bin/           ask, triage, caps, openapi, mcp, check-mail, verify-teabrew,
-                     probe-thread, audit (podgląd logu — w trybie MCP JEDYNY dowód)
+                     probe-thread, audit (podgląd logu — w trybie MCP JEDYNY dowód),
+                     report (raport dzienny, panel HTML, jedna linia na powiadomienie)
   scripts/           live-setup.sh (uruchomienie live), install-claude-desktop-config.mjs,
                      mcp-doctor.mjs (diagnostyka startu serwera MCP)
   teabrew-patch/     źródło kontraktu ERP (założone jako PR #27)
   fixtures/          poczta (INBOX + Sent) i dane ERP — PRAWDZIWE enumy
-  tests/             72 testów: scenariusze, jednostkowe, bezpieczeństwo łatki,
+  tests/             81 testów: scenariusze, jednostkowe, bezpieczeństwo łatki,
                      integralność adaptera MCP, start serwera MCP
   claude-desktop.example.json   konfiguracja MCP dla Claude Desktop
 ```

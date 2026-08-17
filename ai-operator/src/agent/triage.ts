@@ -48,6 +48,11 @@ export interface TriageResult {
   readonly total: number;
   readonly items: readonly TriageItem[];
   readonly unclassified: readonly z.infer<typeof MailMessage>[];
+  /**
+   * Niepusty, gdy przegląd NIE objął wszystkich wiadomości z okna (limit).
+   * Musi być widoczny w każdym renderze — inaczej raport wygląda na komplet.
+   */
+  readonly mailNote: string | null;
   readonly evidence: readonly EvidenceItem[];
   readonly audit: readonly AuditRecord[];
   readonly correlationId: string;
@@ -72,6 +77,11 @@ export class MailTriage {
     unreadOnly?: boolean;
     /** Ile pilnych spraw dociągnąć z TeaBrew. Chroni przed lawiną wywołań. */
     maxErpLookups?: number;
+    /**
+     * Sprawdzaj w ERP numery z KAŻDEJ kategorii, nie tylko z pilnych.
+     * Do raportu dziennego, którego celem jest luka poczta ↔ system.
+     */
+    checkAllRefs?: boolean;
     signal?: AbortSignal;
   }): Promise<TriageResult> {
     const audit = new MemoryAuditSink(this.opts.auditFile);
@@ -92,7 +102,17 @@ export class MailTriage {
         unreadOnly: args.unreadOnly ?? false,
       },
       ctx,
-    )) as { messages: z.infer<typeof MailMessage>[] };
+    )) as {
+      messages: z.infer<typeof MailMessage>[];
+      truncated: boolean;
+      matched: number | null;
+      limitNote: string | null;
+    };
+
+    // Przycięcie do limitu musi przejść do wyniku. Przegląd, który obejrzał
+    // 30 z 47 wiadomości, nie jest przeglądem poczty — jest przeglądem 30
+    // wiadomości i musi to o sobie powiedzieć.
+    const mailNote = listed.truncated ? listed.limitNote : null;
 
     const messages = listed.messages;
     if (messages.length === 0) {
@@ -101,6 +121,7 @@ export class MailTriage {
         total: 0,
         items: [],
         unclassified: [],
+        mailNote,
         evidence: buildEvidence(audit.records()),
         audit: audit.records(),
         correlationId,
@@ -125,8 +146,15 @@ export class MailTriage {
 
       const refs = row.konkrety.filter((r) => CHECKABLE_REF.test(r.trim()));
       const erp: ErpLookup[] = [];
+      // Domyślnie sprawdzamy w ERP tylko sprawy pilne — reszta to byłoby
+      // odpytywanie „na wszelki wypadek". Ale przy raporcie dziennym pytanie
+      // „co przyszło mailem i nie ma tego w systemie" JEST celem, a nowe
+      // zamówienie od klienta rzadko trafia do kategorii „Pilne". Wtedy
+      // sprawdzamy wszystkie numery — nadal w granicach budżetu wywołań.
       const worthChecking =
-        row.kategoria === "Pilne" || row.kategoria === "Wymaga decyzji";
+        args.checkAllRefs === true ||
+        row.kategoria === "Pilne" ||
+        row.kategoria === "Wymaga decyzji";
 
       if (worthChecking) {
         for (const ref of refs) {
@@ -157,6 +185,7 @@ export class MailTriage {
       total: messages.length,
       items,
       unclassified,
+      mailNote,
       evidence: buildEvidence(audit.records()),
       audit: audit.records(),
       correlationId,
@@ -256,6 +285,8 @@ export function renderTriage(result: TriageResult): string {
     `Wiadomości: ${result.total}`,
     "",
   );
+
+  if (result.mailNote) out.push(`> **Przegląd niepełny.** ${result.mailNote}`, "");
 
   for (const category of TRIAGE_CATEGORIES) {
     const inCat = result.items.filter((i) => i.category === category);

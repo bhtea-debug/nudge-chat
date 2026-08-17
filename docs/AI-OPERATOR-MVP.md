@@ -891,3 +891,72 @@ równie istotne jak to, co sprawdził.
 
 Zmiana typu `MailProvider` wyłapała wszystkie trzy pozostałe miejsca użycia
 przez kompilator — dokładnie po to ten interfejs jest wąski.
+
+---
+
+### 8.14 Raport dzienny — automat zamiast ściągawki
+
+Właściciel po Etapie A powiedział wprost: *„wpisywanie, pamiętanie co zapytać
+wcale nie automatyzuje mojej pracy"*. Miał rację — Etap A to interfejs, nie
+automat. Ściągawka z gotowymi pytaniami przenosi wysiłek, nie usuwa go.
+
+Na jego decyzję (pełny raport) powstał `npm run raport`.
+
+#### Dlaczego to musi działać na Macu, a nie w chmurze
+
+Sprawdzone przez `list_environments`, nie założone: konto ma **jedno środowisko,
+typu `anthropic_cloud`**. Zaplanowane zadanie po stronie Anthropic nie zrobiłoby
+tego raportu, bo z chmury nie ma dostępu ani do `imap.zenbox.pl`, ani do
+wdrożenia Convex (zmierzone w 8.9). Dane są za dwoma hostami, do których dosięga
+tylko maszyna właściciela — więc silnik raportu jest tam, gdzie dane.
+
+Harmonogram to `launchd`, nie cron: `launchd` wykona pominięty przebieg **po
+wybudzeniu** komputera, cron go po prostu opuszcza, a Mac rzadko czuwa o 8:00.
+
+#### Co raport składa i z czego
+
+Zero nowej logiki biznesowej. Raport to `MailTriage` — ten sam agent, te same
+capability, ta sama kontrola dowodów — plus widok. Dwie rzeczy trzeba było w
+triage dodać, obie wynikające z tego, po co raport istnieje:
+
+1. **`checkAllRefs`** — domyślnie triage sprawdza w ERP tylko numery ze spraw
+   pilnych, bo odpytywanie „na wszelki wypadek" jest kosztem bez wartości. Ale
+   pytanie „co przyszło mailem i nie ma tego w systemie" **jest** celem raportu,
+   a nowe zamówienie od klienta rzadko trafia do kategorii „Pilne" — trzy
+   zamówienia Rossmanna z 8.13 były „Do odpowiedzi". Bez tej flagi raport
+   przemilczałby dokładnie to, po co go uruchamiamy.
+2. **`mailNote`** — przycięcie listy do limitu przechodzi teraz do wyniku i do
+   każdego renderu. Przegląd, który obejrzał 30 z 47 wiadomości, nie jest
+   przeglądem poczty; jest przeglądem 30 wiadomości i musi to o sobie powiedzieć.
+
+#### Kolejność sekcji panelu jest decyzją, nie układem
+
+1. **Nie ma tego w TeaBrew** — jedyne pytanie, na które żaden inny program w
+   firmie nie odpowiada, bo wymaga zajrzenia w dwa miejsca naraz.
+2. Czeka na odpowiedź.
+3. Reszta poczty, zwinięta po kategoriach.
+4. **Co dokładnie sprawdziłem** — z audytu. Raport, którego nie da się
+   zweryfikować, po tygodniu przestaje być czytany.
+
+Trzy rzeczy raport wykrzyczy zamiast przemilczeć: niepełny przegląd, nieudane
+sprawdzenie (te dane **nie** zostały sprawdzone — brak wpisu nie znaczy „nic tam
+nie ma") i numery pominięte z powodu budżetu wywołań.
+
+#### Zachowanie o 8:00
+
+Powiadomienie macOS z jednym zdaniem o liczbach — *„Poczta: 12 · 3 numerów nie ma
+w TeaBrew · 2 do odpowiedzi"*. Nie „raport gotowy": to nie jest informacja, po
+której ktokolwiek cokolwiek zrobi.
+
+Panel otwiera się sam **tylko gdy jest po co** — brakujący numer, sprawa pilna
+albo nieudane sprawdzenie. Codzienne okno „nic się nie stało" uczy zamykać je bez
+czytania, a wtedy przestaje działać także w dniu, w którym coś się stało. To ten
+sam argument, co przy narzędziu diagnostycznym krzyczącym na spokojnej skrzynce.
+
+#### Czego raport NIE robi
+
+Nie przychodzi mailem. Brak SMTP jest konstrukcyjny, nie przypadkowy — zdjęcie
+tej blokady jest osobną decyzją właściciela i nie zostało podjęte. Panel jest
+plikiem lokalnym w `raporty/` (w `.gitignore`), zawiera tematy i nadawców z
+prawdziwej poczty, więc nie wolno go nikomu wysyłać. Log audytu, w odróżnieniu od
+raportu, treści nie zawiera i nigdy nie będzie zawierał.
