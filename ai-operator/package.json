@@ -12,6 +12,7 @@
     "ask": "tsx --env-file-if-exists=.env src/bin/ask.ts",
     "triage": "tsx --env-file-if-exists=.env src/bin/triage.ts",
     "mcp": "tsx --env-file-if-exists=.env src/bin/mcp.ts",
+    "audit": "tsx --env-file-if-exists=.env src/bin/audit.ts",
     "check:mail": "tsx --env-file-if-exists=.env src/bin/check-mail.ts",
     "verify:teabrew": "tsx --env-file-if-exists=.env src/bin/verify-teabrew.ts",
     "preflight": "npm run typecheck && npm run test && npm run check:mail && npm run verify:teabrew",

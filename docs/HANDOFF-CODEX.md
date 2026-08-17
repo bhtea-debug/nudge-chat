@@ -1,8 +1,10 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
 Dokument przekazania. Czytaj razem z `docs/AI-OPERATOR-MVP.md` (pełny opis,
-w szczególności **sekcja 8 — Live validation**) i `docs/ARCHITEKTURA-AI-2026.md`
-(dlaczego to wygląda tak, a nie inaczej).
+w szczególności **sekcja 8 — Live validation**), `docs/ARCHITEKTURA-AI-2026.md`
+(dlaczego to wygląda tak, a nie inaczej) oraz
+`docs/AI-OPERATOR-CODZIENNIE.md` (jak właściciel tego używa na co dzień —
+tam jest opisana **różnica gwarancji** między trybem MCP i `npm run ask`).
 
 **Nie rozszerzaj zakresu i nie projektuj niczego od nowa.**
 
@@ -263,7 +265,7 @@ ai-operator/
   src/model/         roles.ts — fast / reason, zero ID modeli w logice, LENIWA
   src/agent/         operator.ts, triage.ts, prompt.ts, evidence.ts
   src/bin/           ask, triage, caps, openapi, mcp, check-mail, verify-teabrew,
-                     probe-thread
+                     probe-thread, audit (podgląd logu — w trybie MCP JEDYNY dowód)
   scripts/           live-setup.sh (uruchomienie live), install-claude-desktop-config.mjs,
                      mcp-doctor.mjs (diagnostyka startu serwera MCP)
   teabrew-patch/     źródło kontraktu ERP (założone jako PR #27)
