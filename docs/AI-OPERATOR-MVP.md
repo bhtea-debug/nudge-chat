@@ -801,3 +801,51 @@ normalnego używania: jeśli odpowiedzi będą regularnie pomijać sprawy, o kt�
 właściciel wie, że przyszły — wtedy wiadomo, które foldery dołożyć i dlaczego.
 Zgadywanie tego teraz oznaczałoby rozszerzanie zasięgu agenta bez dowodu, że to
 potrzebne.
+
+---
+
+### 8.12 Etap A (MCP lokalnie) — serwer nie wstawał pod Claude Desktop
+
+Protokół był przetestowany i działał, gdy sterowałem serwerem z potoku. Pod
+Claude Desktop ten sam serwer pokazywał **„Server disconnected"** i nic więcej.
+
+**Przyczyna: aplikacja graficzna nie daje procesowi tego, co daje `npm run`.**
+Katalog roboczy to `/`, a nie katalog pakietu. `.env` ustawia
+`AUDIT_FILE=./.audit/calls.jsonl`, więc przy katalogu roboczym `/` ta ścieżka
+znaczy `/.audit/calls.jsonl`. Konstruktor `MemoryAuditSink` wołał wtedy
+`mkdirSync("/.audit")` — na macOS wolumin systemowy jest tylko do czytania, więc
+rzut. A ponieważ `mcp.ts` składał aplikację **przy imporcie modułu**, proces
+umierał **przed** odpowiedzią na `initialize`. Klient nie miał z czego zrobić
+komunikatu, bo na poziomie protokołu nie zdążyło się nic zdarzyć.
+
+To były **trzy błędy naraz**, więc naprawione są trzy:
+
+1. **Ścieżki relatywne z konfiguracji liczone od katalogu pakietu**, nie od
+   katalogu roboczego procesu (`src/paths.ts` → `fromPackageRoot`, stosowane do
+   `AUDIT_FILE` i `FIXTURES_DIR`). Ścieżka bezwzględna działa jak dotąd.
+2. **Konstruktor `MemoryAuditSink` nie rzuca.** Brak możliwości pisania na dysk
+   degraduje audyt do pamięci i mówi o tym na stderr. `write` był na to odporny
+   od początku — konstruktor nie był, a to on wykonuje się przy starcie.
+3. **Start serwera nie może przewracać procesu.** `createApp()` jest w
+   `try/catch`; `initialize` odpowiada **zawsze**, a błąd startu staje się
+   czytelnym błędem JSON-RPC (i wpisem na stderr, który klienci MCP logują).
+   Przy zepsutej konfiguracji `tools/list` zwraca **błąd**, nie pustą listę —
+   pusta lista znaczyłaby „nie ma narzędzi", a prawda jest „nie wiem, bo nie
+   wstałem". To ta sama zasada, co przy `matchedBy: "none"` i `unknownCodes`.
+
+**Nowe narzędzie: `npm run mcp:doctor`.** Czyta *zainstalowaną* konfigurację
+Claude Desktop i uruchamia z niej serwer dwa razy: raz dokładnie jak we wpisie,
+raz wrogo — `cwd=/` i minimalne środowisko. Rozróżnia „nie wstaje wcale" od
+„wstaje tylko z właściwym katalogiem roboczym", i pokazuje stderr serwera, czyli
+prawdziwą przyczynę zamiast „Server disconnected".
+
+**Nowe testy: `tests/mcp-startup.test.ts`** (3 testy, razem 71) uruchamiają
+prawdziwy `src/bin/mcp.ts` w tych warunkach — z obcego katalogu roboczego, z
+niezapisywalnym audytem i z niekompletną konfiguracją `MODE=live`. Test
+jednostkowy na module, który przy imporcie wykonuje robotę, tej klasy usterek nie
+złapie; dlatego te testy spawnują proces.
+
+Lekcja ogólniejsza, warta zapisania: **„działa u mnie z terminala" nie jest
+dowodem, że wstanie u klienta MCP.** Środowisko procesu startowanego z aplikacji
+graficznej różni się w trzech rzeczach naraz — katalogu roboczym, `PATH` i
+zmiennych środowiskowych — i każda z nich potrafi zabić serwer przed handshake.

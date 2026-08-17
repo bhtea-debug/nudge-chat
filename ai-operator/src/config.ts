@@ -1,4 +1,5 @@
 import { CapabilityError } from "./capability/types.js";
+import { fromPackageRoot } from "./paths.js";
 
 /**
  * Konfiguracja wyłącznie ze zmiennych środowiskowych. W repozytorium nie ma
@@ -62,7 +63,9 @@ export function loadConfig(): AppConfig {
     throw new CapabilityError("not_configured", `MODE musi być "fixture" albo "live", jest "${mode}"`);
   }
 
-  const fixturesDir = opt("FIXTURES_DIR", "fixtures");
+  // Od katalogu pakietu, nie od katalogu roboczego — patrz paths.ts.
+  const fixturesDir = fromPackageRoot(opt("FIXTURES_DIR", "fixtures"));
+  const auditFileRaw = process.env["AUDIT_FILE"]?.trim();
 
   return {
     mode,
@@ -73,7 +76,7 @@ export function loadConfig(): AppConfig {
       fast: opt("MODEL_FAST", "claude-haiku-4-5"),
       reason: opt("MODEL_REASON", "claude-opus-5"),
     },
-    auditFile: process.env["AUDIT_FILE"]?.trim() || undefined,
+    auditFile: auditFileRaw ? fromPackageRoot(auditFileRaw) : undefined,
     mail:
       mode === "live"
         ? {

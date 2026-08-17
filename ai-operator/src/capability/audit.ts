@@ -13,8 +13,34 @@ import type { AuditRecord, AuditSink } from "./types.js";
 export class MemoryAuditSink implements AuditSink {
   private readonly buf: AuditRecord[] = [];
 
-  constructor(private readonly filePath?: string) {
-    if (filePath) mkdirSync(dirname(filePath), { recursive: true });
+  /** Ścieżka trwałego logu; zerowana, jeśli okaże się niezapisywalna. */
+  private filePath: string | undefined;
+
+  /** Komunikat błędu, jeśli trwały log jest niedostępny. `null` = wszystko gra. */
+  private degraded: string | null = null;
+
+  constructor(filePath?: string) {
+    this.filePath = filePath;
+    if (!filePath) return;
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+    } catch (err) {
+      // Niemożność utworzenia katalogu na log NIE MOŻE przewrócić procesu.
+      // `write` był na to odporny od początku, konstruktor nie był — a to
+      // właśnie on wykonuje się przy starcie i zabijał serwer MCP, zanim ten
+      // zdążył odpowiedzieć na cokolwiek. Degradujemy do audytu w pamięci
+      // i mówimy o tym wprost, zamiast po cichu zgubić log.
+      this.degraded = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[audit] nie mogę pisać do ${filePath}: ${this.degraded}\n` +
+          "[audit] audyt działa tylko w pamięci tego procesu.\n",
+      );
+      this.filePath = undefined;
+    }
+  }
+
+  fileError(): string | null {
+    return this.degraded;
   }
 
   write(record: AuditRecord): void {

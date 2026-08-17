@@ -31,8 +31,41 @@ interface JsonRpcRequest {
   params?: Record<string, unknown>;
 }
 
-const app = createApp();
-const audit = new MemoryAuditSink(app.config.auditFile);
+/**
+ * Start serwera NIE MOŻE przewracać procesu.
+ *
+ * Klient MCP komunikuje się przez stdio: jeśli proces umrze przed odpowiedzią na
+ * `initialize`, klient pokazuje wyłącznie „Server disconnected" i człowiek nie
+ * ma z czego wywnioskować przyczyny. Dlatego złożenie aplikacji jest w try/catch,
+ * a błąd startu staje się czytelnym komunikatem w odpowiedzi JSON-RPC — i trafia
+ * dodatkowo na stderr, który klienci MCP zapisują do swojego logu.
+ */
+type Started = { app: ReturnType<typeof createApp>; audit: MemoryAuditSink };
+
+let started: Started | null = null;
+let startupError: string | null = null;
+
+try {
+  const app = createApp();
+  started = { app, audit: new MemoryAuditSink(app.config.auditFile) };
+} catch (err) {
+  startupError = err instanceof Error ? err.message : String(err);
+  process.stderr.write(
+    `[bht-operator] nie mogę wstać: ${startupError}\n` +
+      "[bht-operator] sprawdź plik .env katalogu ai-operator (patrz .env.example)\n",
+  );
+}
+
+/** Rzuca dopiero w momencie użycia — nigdy przy imporcie modułu. */
+function require_(): Started {
+  if (!started) {
+    throw new Error(
+      `serwer nie wstał poprawnie: ${startupError ?? "nieznany błąd"}. ` +
+        "Żadne narzędzie nie jest dostępne, nie zakładaj żadnego wyniku.",
+    );
+  }
+  return started;
+}
 
 /**
  * Jedna korelacja na całą sesję MCP, nie na wywołanie.
@@ -52,8 +85,8 @@ const sessionCorrelationId = newCorrelationId();
  * w którym taka decyzja musi zostać podjęta świadomie.
  */
 function publishedTools() {
-  return app.registry
-    .listForScopes(AGENT_SCOPES)
+  return require_()
+    .app.registry.listForScopes(AGENT_SCOPES)
     .filter((cap) => cap.effectClass === "read");
 }
 
@@ -98,6 +131,13 @@ async function handle(req: JsonRpcRequest): Promise<void> {
   if (id === undefined || id === null) return;
 
   if (method === "tools/list") {
+    // Handshake udaje się nawet przy zepsutej konfiguracji, więc dopiero tutaj
+    // klient dowiaduje się prawdy. Błąd JSON-RPC, a nie pusta lista: pusta lista
+    // znaczyłaby „nie ma narzędzi", a prawda jest „nie wiem, bo nie wstałem".
+    if (!started) {
+      send({ id, error: { code: -32603, message: `serwer nie wstał: ${startupError}` } });
+      return;
+    }
     send({ id, result: { tools: toMcpToolList(publishedTools()) } });
     return;
   }
@@ -105,11 +145,26 @@ async function handle(req: JsonRpcRequest): Promise<void> {
   if (method === "tools/call") {
     const name = String(req.params?.["name"] ?? "");
     const args = (req.params?.["arguments"] as unknown) ?? {};
+    if (!started) {
+      send({
+        id,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: `Serwer nie wstał: ${startupError}. Nie wykonałem NICZEGO — nie zakładaj żadnego wyniku.`,
+            },
+          ],
+          isError: true,
+        },
+      });
+      return;
+    }
     const ctx: CapabilityContext = {
       agent: `${AGENT_ID}/mcp`,
       correlationId: sessionCorrelationId,
       scopes: AGENT_SCOPES,
-      audit,
+      audit: started.audit,
     };
     // Ta sama polityka co w tools/list. Bez tego klient mógłby wywołać po
     // nazwie capability, której lista nie pokazała.
@@ -132,7 +187,7 @@ async function handle(req: JsonRpcRequest): Promise<void> {
     }
 
     try {
-      const out = await app.registry.invoke(name, args, ctx);
+      const out = await started.app.registry.invoke(name, args, ctx);
       send({
         id,
         result: { content: [{ type: "text", text: JSON.stringify(out) }], isError: false },
@@ -176,5 +231,6 @@ rl.on("line", (line) => {
   });
 });
 rl.on("close", () => {
-  void app.close().finally(() => process.exit(0));
+  if (!started) process.exit(startupError ? 1 : 0);
+  void started.app.close().finally(() => process.exit(0));
 });

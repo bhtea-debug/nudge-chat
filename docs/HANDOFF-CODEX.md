@@ -194,6 +194,33 @@ Wszystkie znalezione na prawdziwych danych. Wszystkie naprawione. Wszystkie
   zapytaniem na folder. Referencje bierz z **ogona** listy (`References` jest od
   najstarszej, więc najbliżsi przodkowie są na końcu).
 
+### Klient MCP (Claude Desktop)
+
+- **Aplikacja graficzna NIE daje procesowi tego, co daje `npm run`.** Katalog
+  roboczy to `/`, środowisko nie ma nic z shella, `PATH` nie zawiera `npx`.
+  Serwer, który wstaje pod `npm run mcp` i nie wstaje pod Claude Desktop, to
+  norma, nie wyjątek.
+- **Ścieżki relatywne z konfiguracji trzeba liczyć od katalogu pakietu.**
+  `AUDIT_FILE=./.audit/calls.jsonl` przy katalogu roboczym `/` znaczy
+  `/.audit/calls.jsonl`. `mkdirSync` w konstruktorze `MemoryAuditSink` rzucał
+  wtedy EROFS/EACCES **przy imporcie modułu** — proces umierał przed odpowiedzią
+  na `initialize`, a jedyne, co widział człowiek, to „Server disconnected".
+  Helper: **`src/paths.ts` → `fromPackageRoot`**, stosowany do `AUDIT_FILE`
+  i `FIXTURES_DIR`.
+- **Start serwera nie może rzucać.** `createApp()` i `MemoryAuditSink` są
+  w `try/catch`; błąd startu staje się czytelnym błędem JSON-RPC i wpisem na
+  stderr, a `initialize` odpowiada **zawsze**. Przy zepsutej konfiguracji
+  `tools/list` zwraca **błąd**, nie pustą listę — pusta lista znaczyłaby „nie ma
+  narzędzi", a prawda jest „nie wiem, bo nie wstałem".
+- **Utrata trwałego audytu degraduje do pamięci, ale nie po cichu** — komunikat
+  na stderr. `write` był na to odporny od początku, konstruktor nie był.
+- **`npm run mcp:doctor`** odtwarza uruchomienie z konfiguracji Claude Desktop
+  w dwóch przebiegach: dokładnie jak we wpisie, oraz wrogo (`cwd=/`, minimalne
+  env). Rozróżnia „nie wstaje wcale" od „wstaje tylko z właściwym katalogiem
+  roboczym". Testy `tests/mcp-startup.test.ts` uruchamiają prawdziwy `mcp.ts`
+  w tych warunkach — bo test jednostkowy na module, który przy imporcie robi
+  robotę, tej klasy usterek nie złapie.
+
 ### Narzędzia diagnostyczne
 
 - **Nie myl „brak danych" z „zepsute".** `check:mail` raportował jako porażki
@@ -229,10 +256,12 @@ ai-operator/
   src/agent/         operator.ts, triage.ts, prompt.ts, evidence.ts
   src/bin/           ask, triage, caps, openapi, mcp, check-mail, verify-teabrew,
                      probe-thread
-  scripts/           live-setup.sh — uruchomienie live na maszynie właściciela
+  scripts/           live-setup.sh (uruchomienie live), install-claude-desktop-config.mjs,
+                     mcp-doctor.mjs (diagnostyka startu serwera MCP)
   teabrew-patch/     źródło kontraktu ERP (założone jako PR #27)
   fixtures/          poczta (INBOX + Sent) i dane ERP — PRAWDZIWE enumy
-  tests/             68 testów: scenariusze, jednostkowe, bezpieczeństwo łatki, MCP
+  tests/             71 testów: scenariusze, jednostkowe, bezpieczeństwo łatki,
+                     integralność adaptera MCP, start serwera MCP
   claude-desktop.example.json   konfiguracja MCP dla Claude Desktop
 ```
 
