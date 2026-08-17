@@ -1,7 +1,7 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
 Dokument przekazania. Stan na **17.08.2026**, gałąź
-`claude/ai-company-architecture-mvy1uv`, ostatni commit `f2f3ef8`.
+`claude/ai-company-architecture-mvy1uv`, ostatni commit `f60c03d`.
 
 > **Przeczytaj to, zanim cokolwiek zaplanujesz.** Kierunek co do interfejsu
 > zmieniał się w ciągu jednego dnia DWA razy i ostateczna decyzja właściciela
@@ -12,6 +12,11 @@ Dokument przekazania. Stan na **17.08.2026**, gałąź
 >
 > Sekcja 12 mówi, co jest zablokowane i **na czym dokładnie** — to rzeczy, których
 > żaden agent nie odblokuje sam, bo wymagają konta i telefonu właściciela.
+>
+> **Sekcja 14 jest najświeższa i odpowiada na pytanie architektoniczne z ostatniej
+> specyfikacji: werdykt A — Claude nadaje się na interfejs na komputerze i na
+> telefonie, potwierdzone pomiarem na iPhonie właściciela.** Zawiera też cztery
+> rundy, które kosztowało podłączenie, i siódmą usterkę doboru spraw.
 
 Czytaj razem z:
 
@@ -883,3 +888,101 @@ Właściciel uruchomił `npm run pilne`. Jako najpilniejsza sprawa w firmie wysz
 łącznie z dziennikiem sprzed zmiany schematu. **Żadna z tych usterek nie została
 wykryta testem — wszystkie wyszły na prawdziwej skrzynce.** Testy powstały
 później, żeby nie wróciły.
+
+---
+
+## 14. Wieczór 17.08, część druga — telefon podłączony, werdykt A
+
+Odpowiedź na pytanie architektoniczne z ostatniej specyfikacji: **czy Claude
+może być docelowym interfejsem na komputerze i na telefonie.**
+
+### Werdykt: A — tak, na obu. Ale nie drogą, którą zakładało pytanie.
+
+Pełne uzasadnienie i pomiary: `docs/UX-SPIKE-CLAUDE.md`, sekcja na samej górze.
+Tu jest to, czego nie wolno zgubić przy planowaniu dalszej pracy.
+
+### Dowód, że to nie jest wrażenie
+
+Właściciel zapytał z iPhone'a w nowej rozmowie: „Co mam obecnie otwartego w BHT
+Copilot?". Claude odpowiedział, że jest **14 otwartych spraw**, i wypisał je
+ponumerowane, zaczynając od tej samej pozycji, którą w tej samej minucie
+zwracał serwer. Liczba i kolejność zgadzają się co do jednego, a tych danych
+nie ma nigdzie poza tym serwerem — więc narzędzie zostało wywołane naprawdę.
+Drugim, niezależnym potwierdzeniem jest to, że aplikacja **zapytała o pozwolenie**
+przed wywołaniem.
+
+**To zamyka pytanie, które poprzednia wersja spike'a musiała zostawić otwarte:
+konektor MCP DZIAŁA w aplikacji mobilnej.**
+
+### Co odpada z wymagań
+
+**„Powiadomienie → jedno kliknięcie → rozmowa o sprawie" jest martwe.** Nie
+z powodu naszego kodu. Deep link doszedł do końca i dał poprawną, przeanalizowaną
+odpowiedź, ale przez pięć czynności:
+
+1. wklejony adres Safari potraktowało najpierw jak frazę do wyszukania w Google,
+2. otworzył się **przeglądarkowy** Claude, nie natywna aplikacja,
+3. przeglądarka wymagała **zalogowania**,
+4. polecenie czekało w polu na „wyślij" — platforma nigdy nie wysyła polecenia
+   z zewnętrznego linku bez potwierdzenia człowieka i **nie wolno tego obchodzić**,
+5. zgoda na wywołanie narzędzia.
+
+Droga zwykła — otwórz Claude, zapytaj słowami — to **dwie** czynności i żadnej
+pułapki. Zbudowaliśmy generator linków (`npm run pilne`), żeby skrócić dojście
+do sprawy, a wyszło, że dojście po ludzku jest krótsze. **`npm run pilne`
+zostaje narzędziem diagnostycznym, nie pomysłem na produkt.**
+
+Konsekwencja dla planu powiadomień: skoro push nie może otworzyć rozmowy, jego
+JEDYNĄ wartością jest trafność. Cała wartość produktu przenosi się na dobór
+treści — czyli na obszar, w którym sekcja 13 wylicza sześć usterek jednej klasy.
+
+### Siódma usterka tej samej klasy — nienaprawiona, świadomie
+
+Tego samego wieczoru na szczyt grupy „🔴 Teraz" wszedł **podpis mailowy samego
+właściciela**: numer telefonu ze stopki (`732 958 000`) ma kształt naszego
+numeru zamówienia, w TeaBrew go nie ma, więc sprawa dostała `missingInErp` i
+najwyższy priorytet. To dokładnie ten sam mechanizm co NIP InPostu z sekcji 13,
+tylko inny rodzaj liczby.
+
+**Nie naprawiona, bo właściciel wprost zakazał naprawiania czegokolwiek w trakcie
+testu UX.** Do podjęcia przy najbliższej okazji — i uwaga: kontrola KSZTAŁTU
+tego nie złapie, bo kształt jest poprawny. Potrzebny jest kontekst (numer
+pochodzący z bloku podpisu / z własnej domeny nadawcy nie jest numerem
+zamówienia).
+
+### Co kosztowało samo podłączenie — cztery rundy, wszystkie nasze
+
+Każda wyglądała dla właściciela identycznie: „nie łączy się i nie mówi dlaczego".
+Żadnej nie złapał test przed faktem.
+
+| # | Objaw | Przyczyna | Naprawa |
+| --- | --- | --- | --- |
+| 1 | okno „Add custom connector" nie ma pola na token | serwer bronił się statycznym tokenem, którego ten klient nie umie podać | OAuth 2.1: `src/mcp/oauth.ts` — PKCE S256, rejestracja dynamiczna, tokeny podpisane HMAC (przeżywają restart), ekran zgody na hasło właściciela |
+| 2 | „Couldn't register with sign-in service" | `OPTIONS` na końcówkach OAuth zwracało 404, więc preflight blokował żądanie **zanim wyszło** — po naszej stronie nie było nawet wpisu w logu | odpowiedź na preflight + CORS na powierzchni JSON |
+| 3 | wdrożenie zameldowało sukces ze **starym** kodem | `railway up` wysyła katalog **lokalny**, a kopia właściciela była starsza o dwa commity; sprawdzenie po wdrożeniu pytało tylko „czy `/health` odpowiada" — a odpowiadał poprzedni kontener | porównanie `HEAD` z `origin` **przed** wysłaniem + czekanie na **zmianę** `startedAt` |
+| 4 | „nowa wersja nie wstała w 4 minuty" | wstała po ~5,5 min; okno było zgadywane, bo pełnego cyklu nigdy nie zmierzyliśmy — poprzednie sprawdzenie zaliczało odpowiedź starego kontenera natychmiast | okno 9 minut + wypisywanie zmierzonego czasu |
+
+**Reguła, którą z tego wyciągam i którą warto trzymać w tym projekcie:**
+„gotowe" musi znaczyć **„odpowiada nowa wersja"**, nie „cokolwiek odpowiada".
+Runda 3 kosztowała najwięcej i była w całości usterką narzędzia, nie produktu.
+
+### Co przybyło w kodzie
+
+| plik | co |
+| --- | --- |
+| `src/mcp/oauth.ts` | cały OAuth 2.1 — funkcje czyste, bez stanu na dysku |
+| `src/bin/mcp-http.ts` | okablowanie OAuth, CORS, `/health` mówi `oauth`, `issuer`, `startedAt`, `protocols` |
+| `src/mcp/core.ts` | uzgadnianie wersji protokołu (`negotiateProtocol`) zamiast jednej stałej odpowiedzi |
+| `tests/oauth-chain.test.ts` | **cała droga Claude na żywym procesie**: 401 ze wskazaniem → metadane zasobu → metadane serwera autoryzacji → rejestracja → zgoda → kod → token → `tools/list`. Powstał, bo runda 2 była zielona we wszystkich testach jednostkowych |
+| `scripts/deploy-railway.sh` | strażnik świeżości kopii, czekanie na nowy kontener, sprawdzenie `oauth` |
+
+201 testów przechodzi. `tsc --noEmit` czysty.
+
+### Co zostaje otwarte
+
+- **Wolumen `/data` na Railwayu NIE JEST dodany.** Sprawy nie przeżyją restartu
+  kontenera; po restarcie monitor odtworzy je ze skrzynki przy pierwszym skanie.
+  CLI Railwaya wywraca się na tym paniką Rusta (`volume.rs:836`) — to błąd ich
+  narzędzia, panel działa. **Do codziennej pracy wymagane.**
+- **Siódma usterka doboru** (wyżej).
+- Wszystko z sekcji 9 — decyzje właściciela — pozostaje aktualne.
