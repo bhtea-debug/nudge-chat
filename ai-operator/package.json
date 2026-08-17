@@ -30,7 +30,8 @@
     "raport:zaplanuj": "bash scripts/install-schedule.sh",
     "wdroz": "bash scripts/deploy-railway.sh",
     "pilne": "tsx --env-file-if-exists=.env src/bin/pilne.ts",
-    "push:test": "node scripts/push-test.mjs"
+    "push:test": "node scripts/push-test.mjs",
+    "ocena": "tsx --env-file-if-exists=.env src/bin/ocena.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
