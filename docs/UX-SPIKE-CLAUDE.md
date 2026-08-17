@@ -37,26 +37,37 @@ w tym korelacja poczty z TeaBrew i uczciwe „tego zamówienia nie ma w systemie
 sprawę (albo wskazaną), wypisuje treść powiadomienia — sprawa, jedno zdanie,
 dlaczego wymaga uwagi — oraz oba adresy, i wysyła powiadomienie systemowe macOS.
 
-**Uruchomione na prawdziwej skrzynce właściciela.** Mechanizm zadziałał: treść
-powiadomienia, oba adresy i powiadomienie systemowe. **Ale wybrał złą sprawę** —
-i to jest najważniejszy wynik tego spike'a, ważniejszy niż sam link.
+**Uruchomione TRZY RAZY na prawdziwej skrzynce właściciela.** Mechanizm działał
+za każdym razem: treść powiadomienia, oba adresy, powiadomienie systemowe.
+**Za każdym razem wybierał złą sprawę** — i to jest najważniejszy wynik tego
+spike'a, ważniejszy niż sam link.
 
-Na szczyt „Teraz", jako najpilniejsza rzecz w firmie, trafiło awizo InPostu:
-24-cyfrowy numer przesyłki i NIP w temacie, z uzasadnieniem „numeru z tej
-wiadomości nie ma w TeaBrew". Oba te fałszywe alarmy były już naprawione
-w `order-refs.ts` — sprawdziłem kod na tym samym tekście i dziś ani NIP, ani
-numer przesyłki nie idą do TeaBrew.
+| przebieg | co wyszło na szczyt | przyczyna |
+| --- | --- | --- |
+| 1 | awizo InPostu (NIP + numer przesyłki) | `lastErpSummary` zapisane raz i nigdy nieweryfikowane |
+| 2 | to samo awizo | kontrola KSZTAŁTU numerów nie działa: NIP ma 10 cyfr, czyli poprawny kształt |
+| 3 | to samo awizo | `priority: high` i `notificationCandidate` ustawione tym SAMYM starym przebiegiem |
+| 4 | wiadomość **phishingowa** | `likelyIrrelevant` kasowane na sztywno przy scaleniu + kolizja nazw `waiting_for_owner` |
 
-Usterką było co innego: **`lastErpSummary` to zdanie zapisane raz i nigdy nie
-weryfikowane.** Sprawa założona przez starszą wersję rozpoznawania numerów
-siedziała na szczycie BEZ KOŃCA, bo nic tego zdania nie unieważniało — a
-właściciel nie ma dziś jak jej zamknąć bez terminala. Naprawione: twierdzenie
-„nie ma tego w TeaBrew" musi być poparte AKTUALNYM numerem o kształcie naszego
-numeru zamówienia, inaczej nie windują priorytetu.
+Wszystkie sześć usterek ma jedno źródło: **stan wyliczony raz i nigdy
+nieweryfikowany, używany jako fakt.** Szczegóły i wnioski w
+`docs/HANDOFF-CODEX.md`, sekcja 13.
 
-Wniosek dla oceny UX: **mechanizm dostarczenia jest sprawny; ryzyko leży
-w doborze treści.** Push z niewłaściwą sprawą jest gorszy niż brak pusha, bo
-uczy ignorować powiadomienia.
+**Najgroźniejsza nie miała nic wspólnego z UX.** Diagnostyka pokazała
+`likelyIrrelevant: undefined` — sprawy sprzed zmiany schematu nie mają pól
+dodanych później, a wyjście capability jest sprawdzane zodem. Jedna taka sprawa
+wywracała CAŁĄ odpowiedź `copilot_get_open_issues`, czyli **Claude nie mógł
+wypisać ani jednej sprawy** — a awaria wyglądała jak problem z MCP, nie jak
+jeden felerny wpis. To zdarzało się właścicielowi zanim ktokolwiek to zauważył.
+
+Wniosek dla oceny UX, i jest on ostrzejszy niż przed testem: **mechanizm
+dostarczenia jest sprawny, a ryzyko produktu leży w CAŁOŚCI w doborze treści.**
+Push z niewłaściwą sprawą jest gorszy niż brak pusha — po trzech takich
+powiadomieniach właściciel przestaje je otwierać i cały pomysł umiera, niezależnie
+od tego, jak dobry jest deep link.
+
+Żadnej z tych sześciu usterek **nie wykrył test.** Wszystkie wyszły na prawdziwej
+skrzynce, przy tym jednym scenariuszu. Testy dopisano po fakcie (175).
 
 ---
 
