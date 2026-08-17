@@ -125,7 +125,7 @@ else
 fi
 
 # ── 3b. usługa ────────────────────────────────────────────────────────────────
-kropka "3b/8  Usługa „$SERVICE” w projekcie"
+kropka "3b/8  Usluga $SERVICE w projekcie"
 
 # Railway wiąże wolumen, zmienne i wdrożenie z USŁUGĄ, nie z projektem.
 # Świeży projekt nie ma żadnej, więc trzeba ją najpierw utworzyć.
