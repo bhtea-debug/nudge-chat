@@ -37,6 +37,27 @@ w tym korelacja poczty z TeaBrew i uczciwe „tego zamówienia nie ma w systemie
 sprawę (albo wskazaną), wypisuje treść powiadomienia — sprawa, jedno zdanie,
 dlaczego wymaga uwagi — oraz oba adresy, i wysyła powiadomienie systemowe macOS.
 
+**Uruchomione na prawdziwej skrzynce właściciela.** Mechanizm zadziałał: treść
+powiadomienia, oba adresy i powiadomienie systemowe. **Ale wybrał złą sprawę** —
+i to jest najważniejszy wynik tego spike'a, ważniejszy niż sam link.
+
+Na szczyt „Teraz", jako najpilniejsza rzecz w firmie, trafiło awizo InPostu:
+24-cyfrowy numer przesyłki i NIP w temacie, z uzasadnieniem „numeru z tej
+wiadomości nie ma w TeaBrew". Oba te fałszywe alarmy były już naprawione
+w `order-refs.ts` — sprawdziłem kod na tym samym tekście i dziś ani NIP, ani
+numer przesyłki nie idą do TeaBrew.
+
+Usterką było co innego: **`lastErpSummary` to zdanie zapisane raz i nigdy nie
+weryfikowane.** Sprawa założona przez starszą wersję rozpoznawania numerów
+siedziała na szczycie BEZ KOŃCA, bo nic tego zdania nie unieważniało — a
+właściciel nie ma dziś jak jej zamknąć bez terminala. Naprawione: twierdzenie
+„nie ma tego w TeaBrew" musi być poparte AKTUALNYM numerem o kształcie naszego
+numeru zamówienia, inaczej nie windują priorytetu.
+
+Wniosek dla oceny UX: **mechanizm dostarczenia jest sprawny; ryzyko leży
+w doborze treści.** Push z niewłaściwą sprawą jest gorszy niż brak pusha, bo
+uczy ignorować powiadomienia.
+
 ---
 
 ## Co blokuje idealny UX

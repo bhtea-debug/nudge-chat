@@ -1,3 +1,4 @@
+import { isOwnOrderShape } from "./order-refs.js";
 import type { Issue } from "./types.js";
 
 /**
@@ -22,9 +23,30 @@ import type { Issue } from "./types.js";
 
 export type Lane = "teraz" | "decyzje" | "odpowiedzi" | "obserwuj" | "prawdopodobnie_nieistotne";
 
-/** Czy TeaBrew powiedział, że numeru z wiadomości u niego nie ma. */
+/**
+ * Czy TeaBrew powiedział, że numeru z wiadomości u niego nie ma.
+ *
+ * Warunek jest DWUCZĘŚCIOWY i drugi człon jest tu z bolesnego powodu.
+ *
+ * `lastErpSummary` to zdanie zapisane w momencie sprawdzenia i nikt go potem nie
+ * weryfikuje. Sprawa założona przez starszą wersję rozpoznawania numerów mogła
+ * dostać takie zdanie o numerze, który dziś w ogóle nie kwalifikuje się do
+ * pytania TeaBrew — i wtedy siedzi na szczycie „Teraz" BEZ KOŃCA, bo nic tego
+ * zdania nie unieważnia.
+ *
+ * Zdarzyło się to naprawdę: awizo InPostu z 24-cyfrowym numerem przesyłki
+ * i NIP-em w temacie wylądowało jako najpilniejsza sprawa w firmie, długo po
+ * tym, jak oba te fałszywe alarmy zostały naprawione w `order-refs.ts`.
+ *
+ * Dlatego twierdzenie „nie ma tego w TeaBrew" musi być poparte AKTUALNYM
+ * numerem o kształcie naszego numeru zamówienia. Bez niego jest to zdanie
+ * o czymś, o co dziś w ogóle byśmy nie zapytali — i nie ma prawa windować
+ * priorytetu. Ta sama zasada, co w kontroli dowodów: twierdzenie bez pokrycia
+ * jest gorsze niż brak twierdzenia.
+ */
 export function missingInErp(issue: Issue): boolean {
-  return /NIE MA w TeaBrew/i.test(issue.lastErpSummary ?? "");
+  if (!/NIE MA w TeaBrew/i.test(issue.lastErpSummary ?? "")) return false;
+  return issue.relatedOrderRefs.some(isOwnOrderShape);
 }
 
 /**

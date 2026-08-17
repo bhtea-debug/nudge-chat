@@ -101,6 +101,28 @@ describe("grupowanie spraw", () => {
     expect(laneOf(brak)).toBe("teraz");
   });
 
+  it("stare „nie ma w TeaBrew” NIE trzyma sprawy na szczycie bez aktualnego numeru", () => {
+    // Zdarzyło się naprawdę: awizo InPostu z 24-cyfrowym numerem przesyłki
+    // i NIP-em w temacie wylądowało jako najpilniejsza sprawa w firmie —
+    // długo po tym, jak oba te fałszywe alarmy naprawiono w order-refs.
+    // Zdanie zapisane przez starszą wersję nikogo już nie obchodzi, ale nic
+    // go nie unieważniało, więc sprawa siedziała w TERAZ bez końca.
+    const przeterminowana = issue({
+      lastErpSummary: "zamówienia 521000014358100142097412 NIE MA w TeaBrew",
+      relatedOrderRefs: ["521000014358100142097412"], // 24 cyfry — nie nasz kształt
+    });
+    expect(missingInErp(przeterminowana)).toBe(false);
+    expect(laneOf(przeterminowana)).not.toBe("teraz");
+
+    // Ale prawdziwy numer naszego kształtu nadal windują na górę.
+    const prawdziwa = issue({
+      lastErpSummary: "zamówienia 2307411 NIE MA w TeaBrew",
+      relatedOrderRefs: ["2307411"],
+    });
+    expect(missingInErp(prawdziwa)).toBe(true);
+    expect(laneOf(prawdziwa)).toBe("teraz");
+  });
+
   it("wysyłka masowa NIE wchodzi do TERAZ, nawet z wysokim priorytetem", () => {
     const szum = issue({ likelyIrrelevant: true, priority: "high" });
     expect(isNow(szum)).toBe(false);
