@@ -101,9 +101,25 @@ const CONNECT_ATTEMPTS = 2;
  */
 function isBulk(parsed: ParsedMail): boolean {
   const h = parsed.headers;
-  if (h.has("list-unsubscribe")) return true;
+
+  // UWAGA: `mailparser` NIE trzyma nagłówka pod kluczem "list-unsubscribe".
+  // Wszystkie nagłówki `List-*` grupuje w jeden obiekt pod kluczem `list`:
+  //   List-Unsubscribe: <https://…>  →  list = { unsubscribe: { url: "https://…" } }
+  //   List-Id: <newsletter.x.pl>     →  list = { id: { name: "newsletter.x.pl" } }
+  //
+  // Pierwsza wersja sprawdzała `h.has("list-unsubscribe")` i dlatego NIE ODSIAŁA
+  // NICZEGO na prawdziwej skrzynce: 16 wiadomości, w tym TikTok, Booking.com
+  // i pięć newsletterów, przeszło filtr jako zwykła korespondencja. Zmierzone,
+  // nie założone — sprawdzone przez przepuszczenie prawdziwego nagłówka RFC822
+  // przez `simpleParser`.
+  const list = h.get("list") as Record<string, unknown> | undefined;
+  if (list && ("unsubscribe" in list || "id" in list)) return true;
+
   const precedence = String(h.get("precedence") ?? "").toLowerCase();
   if (["bulk", "list", "junk"].includes(precedence.trim())) return true;
+
+  // RFC 3834: `auto-generated` / `auto-replied`. Wartość `no` znaczy wprost
+  // „to napisał człowiek", więc jej nie liczymy.
   const auto = String(h.get("auto-submitted") ?? "").toLowerCase();
   return auto.trim() !== "" && !auto.includes("no");
 }

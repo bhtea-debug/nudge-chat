@@ -71,8 +71,15 @@ const PREFIXED = /\b[A-Z]{2,4}[/-]\d{1,6}(?:[/-]\d{1,6}){0,3}\b/g;
 const TOKEN_START = "(?<![\\w/-])";
 const TOKEN_END = "(?![\\w/-])";
 
-/** Sześć cyfr lub więcej — nie pomylimy tego z rokiem ani z ilością. */
-const LONG_DIGITS = new RegExp(`${TOKEN_START}\\d{6,}${TOKEN_END}`, "g");
+/**
+ * Siedem cyfr lub więcej. Próg wzięty z PRAWDZIWEJ numeracji tej firmy:
+ * zamówienia Rossmanna to `2307029`, `2271126`, `2307348` — zawsze siedem.
+ *
+ * Sześć cyfr było za mało: kod logowania do sklepu (`348819 to Twój kod
+ * logowania`) trafiał do TeaBrew i wracał jako brak. Numery 4–6-cyfrowe nadal
+ * są rozpoznawane, ale tylko gdy obok stoi słowo kluczowe.
+ */
+const LONG_DIGITS = new RegExp(`${TOKEN_START}\\d{7,}${TOKEN_END}`, "g");
 
 /**
  * Liczba 4–5-cyfrowa poprzedzona słowem kluczowym w promieniu ~24 znaków.

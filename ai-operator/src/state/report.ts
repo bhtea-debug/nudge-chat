@@ -28,8 +28,8 @@ export function renderRun(run: MonitorRun): string {
       continue;
     }
     out.push(
-      `  ✓ ${f.folder}: ${f.considered} nowych → ${f.filtered} odsiane, ${f.toModel} do modelu` +
-        ` → ${f.created} nowych spraw, ${f.updated} zaktualizowanych`,
+      `  ✓ ${f.folder}: ${f.considered} nowych → ${f.filtered} odsiane, ` +
+        `${f.toModel} do klasyfikacji → ${f.created} nowych spraw, ${f.updated} zaktualizowanych`,
     );
   }
 

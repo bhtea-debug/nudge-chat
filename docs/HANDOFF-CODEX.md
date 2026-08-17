@@ -22,7 +22,7 @@ powtarzać ani „dokańczać".
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
 | raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
-| testy | **139**, bez sieci i bez klucza API | — |
+| testy | **142**, bez sieci i bez klucza API | — |
 | BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 9 |
 
 Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
@@ -35,7 +35,13 @@ Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
    `ai-operator/scripts/live-setup.sh` (dopytuje tylko o brakujące wartości,
    sekrety bez echa, prawa 600, `--reset KLUCZ` do poprawienia literówki).
 
-2. **Trasy ERP są wdrożone na żywym backendzie, choć `main` ich nie zawiera.**
+2. **PILNE (17.08.2026): trasy ERP ZNIKNĘŁY z żywego backendu.** Monitor na
+   prawdziwej poczcie dostaje `HTTP 404 na /ai-operator/order`. To dokładnie ta
+   awaria, którą przewidywał punkt poniżej — funkcje wdrożył build preview
+   Vercela, a kolejny build bez tej gałęzi je usunął. **Bez merge PR #27 połowa
+   Copilota dotycząca TeaBrew nie działa.** Do potwierdzenia: `npm run verify:teabrew`.
+
+3. **Trasy ERP były wdrożone na żywym backendzie, choć `main` ich nie zawiera.**
    Build preview Vercela uruchamia `convex deploy` bez guardów produkcyjnych —
    te działają tylko przy `VERCEL_ENV === "production"`. PR
    [`teabrew-v2#27`](https://github.com/bhtea-debug/teabrew-v2/pull/27) jest
@@ -285,6 +291,22 @@ infrastruktura NIE wywołuje drugiego modelu"). Teraz:
 
 **Nie przywracaj modelu do ścieżki domyślnej.**
 
+### `mailparser` grupuje nagłówki `List-*` pod kluczem `list`
+
+**Nie ma klucza `list-unsubscribe`.** `List-Unsubscribe: <https://…>` staje się
+`headers.get("list") === { unsubscribe: { url: "https://…" } }`, a `List-Id` →
+`{ id: { name: … } }`.
+
+Sprawdzanie `headers.has("list-unsubscribe")` zwraca **zawsze false** — i filtr
+poczty masowej nie odsiał NICZEGO na prawdziwej skrzynce. Pierwszy przebieg
+monitora: 16 wiadomości, w tym TikTok, Booking.com, PsiBufet i pięć newsletterów,
+przeszło jako zwykła korespondencja i każda dostała własną sprawę.
+
+Rozstrzygnięte przez przepuszczenie prawdziwego nagłówka RFC822 przez
+`simpleParser`, nie przez czytanie dokumentacji. Test pokrywa cztery kształty
+(`List-Unsubscribe`, `List-Id`, `Precedence: bulk`, `Auto-Submitted`) plus
+`Auto-Submitted: no`, które znaczy „to napisał człowiek".
+
 ### Rozpoznawanie numerów zamówień — cztery kolejne wpadki w jednym miejscu
 
 `src/state/order-refs.ts` jest JEDYNYM miejscem rozpoznającym numer zamówienia.
@@ -300,6 +322,10 @@ klasy — fałszywy alarm „numeru X nie ma w TeaBrew":
    i „2" granica wyrazu istnieje. Potrzebne `(?<![\w/-])`.
 4. **numer przesyłki** (24 cyfry, InPost) sprawdzany w TeaBrew gwarantował
    odpowiedź „nie znam", czyli fałszywy alarm przy każdym przebiegu.
+5. **próg 6 cyfr był za niski** — kod logowania do sklepu („348819 to Twój kod
+   logowania") trafiał do TeaBrew. Prawdziwe numery tej firmy mają SIEDEM cyfr
+   (`2307029`, `2271126`, `2307348`), więc próg to 7. Numery 4–6-cyfrowe nadal
+   są łapane, ale tylko ze słowem kluczowym obok.
 
 Reguły: numer musi mieć POWÓD (prefiks literowy, słowo kluczowe obok, albo ≥6
 cyfr), a do TeaBrew idą tylko numery o KSZTAŁCIE naszego numeru

@@ -504,3 +504,56 @@ describe("rozpoznawanie numerów zamówień w surowym tekście", () => {
     );
   });
 });
+
+describe("wykrywanie poczty masowej po nagłówkach RFC", () => {
+  const mail = (extra: readonly string[]): Buffer =>
+    Buffer.from(
+      ["From: a@b.c", "To: d@e.f", "Subject: x", "Message-ID: <z@b.c>", ...extra, "", "treść"].join(
+        "\r\n",
+      ),
+    );
+
+  /**
+   * Ten test istnieje z powodu realnej wpadki: sprawdzałem
+   * `headers.has("list-unsubscribe")`, a mailparser grupuje wszystkie nagłówki
+   * List-* pod kluczem `list`. Filtr NIE ODSIAŁ NICZEGO na prawdziwej skrzynce —
+   * 16 wiadomości, w tym TikTok i Booking.com, przeszło jako korespondencja.
+   */
+  it("List-Unsubscribe jest widziany, choć mailparser trzyma go pod kluczem `list`", async () => {
+    const { simpleParser } = await import("mailparser");
+    const p = await simpleParser(mail(["List-Unsubscribe: <https://x.pl/unsub>"]));
+    // To jest dokładnie to, co pierwsza wersja sprawdzała — i dlatego nie działała.
+    expect(p.headers.has("list-unsubscribe")).toBe(false);
+    expect(p.headers.get("list")).toHaveProperty("unsubscribe");
+  });
+
+  it("rozpoznaje wszystkie cztery kształty poczty masowej", async () => {
+    const { simpleParser } = await import("mailparser");
+    const cases: [string, readonly string[], boolean][] = [
+      ["List-Unsubscribe", ["List-Unsubscribe: <https://x.pl/u>"], true],
+      ["List-Id", ["List-Id: <news.x.pl>"], true],
+      ["Precedence", ["Precedence: bulk"], true],
+      ["Auto-Submitted", ["Auto-Submitted: auto-generated"], true],
+      ["Auto-Submitted: no", ["Auto-Submitted: no"], false],
+      ["zwykły mail od człowieka", [], false],
+    ];
+    for (const [name, hdrs, expected] of cases) {
+      const p = await simpleParser(mail(hdrs));
+      const list = p.headers.get("list") as Record<string, unknown> | undefined;
+      const auto = String(p.headers.get("auto-submitted") ?? "").toLowerCase();
+      const precedence = String(p.headers.get("precedence") ?? "").toLowerCase().trim();
+      const bulk =
+        (list !== undefined && ("unsubscribe" in list || "id" in list)) ||
+        ["bulk", "list", "junk"].includes(precedence) ||
+        (auto.trim() !== "" && !auto.includes("no"));
+      expect(bulk, name).toBe(expected);
+    }
+  });
+
+  it("kod logowania nie jest numerem zamówienia", () => {
+    // „348819 to Twój kod logowania" trafiał do TeaBrew i wracał jako brak.
+    // Próg podniesiony do siedmiu cyfr — tyle mają prawdziwe numery tej firmy.
+    expect(findOrderRefs("348819 to Twój kod logowania").map((f) => f.ref)).toEqual([]);
+    expect(findOrderRefs("Rossmann Order 2307348").map((f) => f.ref)).toContain("2307348");
+  });
+});
