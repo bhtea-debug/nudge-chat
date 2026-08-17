@@ -22,7 +22,8 @@ powtarzać ani „dokańczać".
 | `npm run triage` | działa na prawdziwej poczcie z prawdziwym modelem | 8.11 |
 | tryb MCP (Claude jako model) | **Etap A zaliczony** — 4 testy na prawdziwych danych w Claude Desktop | 8.12, 8.13 |
 | raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
-| testy | **81**, bez sieci i bez klucza API | — |
+| testy | **116**, bez sieci i bez klucza API | — |
+| BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 9 |
 
 Trzy rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
 
@@ -393,3 +394,63 @@ zmiana w produkcyjnej ścieżce wdrożeniowej.
    maszyny i `.env`. Przy większej liczbie osób tożsamość użytkownika wraca jako
    decyzja projektowa.
 6. **Czy domykać lukę w guardach wdrożeniowych** teabrew-v2.
+
+---
+
+## 9. BHT Copilot v1 — co jest zrobione, a co zablokowane
+
+Stan na 17.08.2026. Tabela jest ustawiona wobec „Definition of Done" z zadania,
+bez zaokrąglania w górę.
+
+| wymaganie DoD | status |
+| --- | --- |
+| Remote MCP działa | **kod gotowy, przetestowany lokalnie** (401 bez tokenu, 11 narzędzi, zero sekretów w logu). **NIE wdrożony** — wymaga konta Railway właściciela |
+| dostępny z telefonu | **NIE zweryfikowane.** Zależy od wdrożenia i od otwartego pytania o uwierzytelnienie konektora — patrz `docs/DECYZJA-REMOTE-MCP.md` punkt 4 |
+| dostęp do prawdziwej poczty | kod bez zmian wobec działającego LIVE; w tej sesji nieweryfikowalny (egress) |
+| dostęp do TeaBrew | jak wyżej |
+| monitoruje właściwe foldery | **narzędzie gotowe** (`npm run mail:foldery`), **inwentaryzacja NIE wykonana** — wymaga IMAP-a, czyli maszyny właściciela |
+| nie analizuje całej skrzynki ponownie | ✅ checkpoint per folder + globalny zbiór Message-ID, pokryte testem |
+| checkpointy | ✅ na RFC Message-ID, nie na IMAP UID — obsługuje przeniesienie między folderami, powrót i duplikat |
+| operator wykrywa nowe sprawy | ✅ kod i testy; **nie uruchomiony na prawdziwej poczcie** |
+| trwały Operational State | ✅ dziennik JSONL, test przeżycia restartu |
+| nowe wiadomości aktualizują sprawy | ✅ korelacja ze stopniami pewności, 6 testów |
+| `get_changes_since` | ✅ |
+| `get_open_issues` | ✅ |
+| wejście w konkretną sprawę | ✅ `copilot_get_issue` |
+| nie pokazuje tego samego dwa razy | ✅ i test, że **pokazanie nie jest zmianą** — inaczej sprawa wracałaby w każdej delcie na zawsze |
+| TeaBrew read-only | ✅ bez zmian, 18 testów łatki dalej przechodzi |
+| poczta read-only | ✅ bez zmian |
+| audyt działa | ✅ |
+| koszty operatora mierzone | ✅ `MonitorCost` + `state/koszty.jsonl` |
+| awaria Copilota nie rusza produkcji | ✅ konstrukcyjnie + test, że nieudany przebieg monitora nie przewraca serwera MCP |
+| instrukcja Claude Project | ✅ `docs/CLAUDE-COPILOT-INSTRUCTIONS.md` |
+| test na prawdziwych danych z telefonu | ❌ **niewykonany** |
+
+**Pięć pozycji jest zablokowanych na maszynie i koncie właściciela, nie na kodzie.**
+Nie próbuj ich odblokować w środowisku agentowym — egress nie przepuszcza ani
+IMAP-a, ani Convexa (zmierzone, 8.9).
+
+### Nowe rzeczy, o których musisz wiedzieć
+
+- **`src/mcp/core.ts` jest JEDYNĄ implementacją protokołu.** `bin/mcp.ts` (stdio)
+  i `bin/mcp-http.ts` (zdalnie) są cienkimi transportami. Test pilnuje, żeby
+  żaden z nich nie budował własnej listy narzędzi ani nie wołał rejestru wprost.
+- **Zapis „to już pokazałem" robi ADAPTER, nie capability.** Wszystkie cztery
+  nowe capability są czystym odczytem — dokładnie jak wpis do audytu jest efektem
+  ubocznym rejestru. Gdyby capability sama zapisywała, `effectClass: "read"`
+  przestałoby być prawdą i testy strzegące tej granicy przestałyby cokolwiek
+  znaczyć. Nie „upraszczaj" tego.
+- **Model nie może zamknąć sprawy.** `resolved` ustawia wyłącznie
+  `ownerResolve` (aktor `wlasciciel`, komenda `npm run sprawy -- --zamknij`).
+  Próba przez copilota daje `probably_resolved`. Wymuszone w `store.ts`.
+- **Korelacja scala tylko przy wysokiej pewności.** Wspólny wątek scala zawsze;
+  wspólny numer zamówienia dopiero razem ze zgodną domeną nadawcy. Sam numer bez
+  nadawcy zakłada osobną sprawę i dopisuje podobieństwo do streszczenia —
+  duplikat jest mniej groźny niż zmieszanie dwóch spraw dwóch klientów.
+- **Filtr przed modelem stoi na nagłówkach RFC**, nie na nazwie nadawcy.
+  Świadomie NIE odrzuca po `noreply@`: tak przychodzą potwierdzenia zamówień
+  i awizo kurierskie.
+- **Kanał powiadomień NIE istnieje** i to jest świadome. `notificationCandidate`
+  jest wyliczany i widoczny w logu przebiegu oraz w `npm run sprawy`, żeby po
+  tygodniu było wiadomo, ile takich sytuacji realnie jest, **zanim** ktokolwiek
+  włączy alerty. Nie włączaj kanału bez zgody właściciela.

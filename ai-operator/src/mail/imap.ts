@@ -26,6 +26,18 @@ import {
 } from "./text.js";
 import { AUTO, planFolders, type FolderPlan, type MailboxInfo } from "./folders.js";
 
+/** Jeden wiersz inwentaryzacji folderu. */
+export interface FolderStat {
+  readonly path: string;
+  readonly specialUse: string | null;
+  readonly subscribed: boolean;
+  readonly messages: number | null;
+  readonly unseen: number | null;
+  /** Data najnowszej wiadomości. null = folder pusty albo nieodczytany. */
+  readonly newestAt: string | null;
+  readonly error: string | null;
+}
+
 export interface ImapConfig {
   readonly host: string;
   readonly port: number;
@@ -138,6 +150,70 @@ export class ImapMailProvider implements MailProvider {
     }
     this.plan = planFolders(boxes, this.requestedThreadFolders, this.folder);
     return this.plan;
+  }
+
+  /**
+   * Inwentaryzacja folderów: co istnieje, ile tam jest i kiedy ostatnio coś
+   * przyszło. Do decyzji „które foldery monitorować", nie do logiki agenta.
+   *
+   * Świadomie TANIA: `STATUS` daje liczniki bez otwierania folderu, a data
+   * ostatniej aktywności bierze się z JEDNEJ koperty najnowszej wiadomości.
+   * Nie pobieramy archiwów — folder z 40 tysiącami maili kosztuje tu tyle samo,
+   * co pusty.
+   */
+  async inventory(signal?: AbortSignal): Promise<FolderStat[]> {
+    const client = await this.connect();
+    const boxes = await this.listMailboxes();
+    const out: FolderStat[] = [];
+
+    for (const box of boxes) {
+      signal?.throwIfAborted();
+      let messages: number | null = null;
+      let unseen: number | null = null;
+      let newest: string | null = null;
+      let error: string | null = null;
+
+      try {
+        const st = await client.status(box.path, { messages: true, unseen: true });
+        messages = st.messages ?? null;
+        unseen = st.unseen ?? null;
+
+        if ((messages ?? 0) > 0) {
+          const lock = await client.getMailboxLock(box.path, {
+            readOnly: true,
+            acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS,
+          });
+          try {
+            // Najwyzszy numer sekwencyjny = najnowsza wiadomosc. Sama koperta,
+            // bez tresci i bez zalacznikow.
+            for await (const msg of client.fetch(`${messages}:${messages}`, {
+              envelope: true,
+              internalDate: true,
+            })) {
+              const d = msg.envelope?.date ?? msg.internalDate;
+              newest = d ? new Date(d).toISOString() : null;
+            }
+          } finally {
+            lock.release();
+          }
+        }
+      } catch (err) {
+        // Folder, ktorego nie da sie otworzyc, MUSI sie pokazac jako problem.
+        // Cicha nieobecnosc w wyniku wygladalaby jak „ten folder jest pusty".
+        error = err instanceof Error ? err.message : String(err);
+      }
+
+      out.push({
+        path: box.path,
+        specialUse: box.specialUse ?? null,
+        subscribed: box.subscribed ?? false,
+        messages,
+        unseen,
+        newestAt: newest,
+        error,
+      });
+    }
+    return out;
   }
 
   /** Lista folderów na serwerze — do diagnostyki, nie do logiki agenta. */
