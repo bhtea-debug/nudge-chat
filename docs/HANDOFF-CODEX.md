@@ -1,7 +1,15 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
 Dokument przekazania. Stan na **17.08.2026**, gałąź
-`claude/ai-company-architecture-mvy1uv`, ostatni commit `2d22ed9`.
+`claude/ai-company-architecture-mvy1uv`, ostatni commit `a2c91b2`.
+
+> **Zmiana kierunku, którą musisz przyjąć do wiadomości, zanim cokolwiek
+> zaplanujesz.** Do 17.08 obowiązywała zasada „Claude jest interfejsem, nie
+> budujemy PWA ani własnego UI". Właściciel ją **uchylił** jednym zdaniem —
+> doświadczenie użytkownika to „burdel na kółkach, a nie pomoc" — i wprost
+> stwierdził, że ten feedback ma pierwszeństwo przed dotychczasowymi założeniami
+> o UI. Interfejs **istnieje** (`src/ui/`) i jest teraz głównym produktem.
+> Raport HTML i CLI zostają dla diagnostyki. Szczegóły w sekcji 11.
 
 Czytaj razem z:
 
@@ -11,6 +19,7 @@ Czytaj razem z:
 | `docs/ARCHITEKTURA-AI-2026.md` | dlaczego to wygląda tak, a nie inaczej |
 | `docs/AI-OPERATOR-CODZIENNIE.md` | jak właściciel tego używa na co dzień — tam jest **różnica gwarancji** między trybem MCP i `npm run ask` |
 | `docs/DECYZJA-REMOTE-MCP.md` | wybór hostingu zdalnego MCP, spisany **przed** wdrożeniem |
+| `docs/DECYZJA-CONNECTEAM.md` | co API Connecteam **faktycznie** daje, sprawdzone **przed** implementacją. Przeczytaj, zanim zaplanujesz cokolwiek wokół czatu |
 | `docs/CLAUDE-COPILOT-INSTRUCTIONS.md` | instrukcja do wklejenia w Claude Project |
 
 **Nie rozszerzaj zakresu i nie projektuj niczego od nowa.**
@@ -31,7 +40,8 @@ powtarzać ani „dokańczać".
 | monitor deterministyczny | **przebiegł na prawdziwej poczcie**: 20 nowych → 11 odsianych → 9 spraw, **0 wywołań modelu** | 4, „Kredyty API" |
 | raport dzienny | `launchd` + panel HTML + powiadomienie macOS | 8.14 |
 | capability | **11**, zapisujących **0** (`npm run caps`) | 5 |
-| testy | **146**, bez sieci i bez klucza API | 6 |
+| interfejs BHT Copilot | **działa** — sprawdzony w przeglądarce przy 390×844, oba motywy, zero błędów JS | 11 |
+| testy | **191**, bez sieci i bez klucza API | 6 |
 | BHT Copilot v1 | kod gotowy, **wdrożenie i test z telefonu po stronie właściciela** | 10 |
 
 Cztery rzeczy, które musisz o tym wiedzieć, zanim czegokolwiek dotkniesz:
@@ -650,7 +660,7 @@ bez zaokrąglania w górę.
 | koszty operatora mierzone | ✅ `MonitorCost` + `state/koszty.jsonl` |
 | awaria Copilota nie rusza produkcji | ✅ konstrukcyjnie + test, że nieudany przebieg monitora nie przewraca serwera MCP |
 | instrukcja Claude Project | ✅ `docs/CLAUDE-COPILOT-INSTRUCTIONS.md` |
-| test na prawdziwych danych z telefonu | ❌ **niewykonany** |
+| test na prawdziwych danych z telefonu | ❌ **niewykonany na telefonie właściciela**. Interfejs sprawdzony w Chromium przy 390×844 na zasianych danych — to nie to samo co jego iPhone i jego skrzynka |
 
 **Trzy pozycje są zablokowane na koncie właściciela, nie na kodzie:** wdrożenie
 Remote MCP, dostępność z telefonu i test z telefonu. Wszystkie trzy zależą od tej
@@ -688,3 +698,91 @@ Reszta tabeli jest potwierdzona na prawdziwych danych, nie tylko testami.
   jest wyliczany i widoczny w logu przebiegu oraz w `npm run sprawy`, żeby po
   tygodniu było wiadomo, ile takich sytuacji realnie jest, **zanim** ktokolwiek
   włączy alerty. Nie włączaj kanału bez zgody właściciela.
+
+---
+
+## 11. BHT Copilot — interfejs właściciela
+
+Powstał 17.08.2026 po ocenie „burdel na kółkach, a nie pomoc". Zarzut dotyczył
+**doświadczenia**, nie braku capabilities, i tak został potraktowany: backend bez
+zmian, dochodzi interfejs z jednym modelem mentalnym — **inbox spraw → otwieram
+sprawę → rozmawiam tylko o tej sprawie.**
+
+### Gdzie to mieszka
+
+Jeden proces, trzy wejścia. `npm run copilot` (alias na `mcp:http`):
+
+| ścieżka | co | uwierzytelnienie |
+| --- | --- | --- |
+| `/` i `/sprawa/<id>` | interfejs właściciela | ciasteczko sesji |
+| `/mcp` | Remote MCP dla Claude | `Authorization: Bearer` |
+| `/webhook/connecteam` | wejście dla czatu | podpis HMAC ładunku |
+| `/health` | dla platformy hostingowej | brak, i bez danych firmy |
+
+**Nie rozdzielaj tego na dwie usługi.** Stan spraw to jeden plik JSONL z jednym
+pisarzem; dwa procesy oznaczałyby dwie kopie stanu albo bazę do ich uzgadniania.
+
+### Rzeczy, których nie wolno tu zepsuć
+
+- **`assignLanes` nie może zgubić sprawy.** Sekcja „Obserwuj" jest workiem na
+  wszystko, co nie trafiło wyżej — także na kategorie, których dziś nie
+  przewidujemy. Test `NIE GUBI żadnej sprawy` sprawdza rozdanie na dziewięciu
+  kombinacjach i pilnuje, że każda jest dokładnie raz. Zawężenie tego filtra
+  ukryłoby sprawę bez śladu.
+- **Liczniki na ekranie i delta dla Claude muszą liczyć TO SAMO.**
+  `headStatus().changed` używa dokładnie warunku z `changesSince`:
+  nigdy nie pokazana albo zmieniona po pokazaniu. Rozjazd dałby właścicielowi dwie
+  różne prawdy o tym samym stanie — jedną na ekranie, drugą w rozmowie.
+- **`ownerAction` to JEDYNA droga do statusu `resolved`** i wolno ją wołać tylko
+  z miejsc, gdzie po drugiej stronie naprawdę był człowiek. Ograniczenie „model
+  nie zamyka spraw" nadal stoi w `guardStatus` i nie zależy od promptu.
+- **Sekcja DECYZJE jest strukturalnie pusta bez działania właściciela.**
+  Klasyfikator deterministyczny nie umie wystawić kategorii `decision` — do tego
+  trzeba zrozumieć treść, a treści nie przeformułowujemy. Zapełnia ją status
+  `waiting_for_owner`, który ustawia właściciel przyciskiem. To nie usterka.
+- **Puste sekcje nie są rysowane.** Rubryka, która nigdy nic nie zawiera, uczy
+  przewijać ekran bez czytania — i wtedy przestaje działać także wtedy, gdy coś
+  w niej wreszcie jest.
+- **CSP i nagłówki są ciasne celowo.** `default-src 'none'`, `no-store`,
+  `noindex`, `X-Frame-Options: DENY`. Zero zewnętrznych plików — strona ma się
+  otworzyć w hali przy jednym pasku sieci.
+
+### Trzy błędy, które wyszły dopiero na prawdziwym wyjściu
+
+Warte zapamiętania, bo żaden nie był widoczny w testach na obecność pól:
+
+1. **To samo zdanie o TeaBrew trzy razy na jednym ekranie**, raz jako „co
+   przyszło ostatnio". TeaBrew nic nie przysyła — to MY pytamy. Stąd
+   `EntryKind` (`komunikacja` / `system` / `wlasne`) i `lastIncoming()`.
+2. **Nazwa kanału wciśnięta między autora i treść**: „Ania — Produkcja — nie mamy
+   etykiet". Nazwa kanału należy do etykiety źródła.
+3. **Stopka liczyła źródła z konfiguracji, nie z danych** — pisała „Connecteam"
+   przy skonfigurowanym kluczu bez ani jednej wiadomości i milczała o Connecteam,
+   gdy wiadomości wpadały webhookiem bez klucza.
+
+Metoda, która je znalazła: uruchomienie serwera na zasianym stanie i przeczytanie
+wyrenderowanej strony. Rób tak samo, zamiast wnioskować z testów.
+
+### Czat w sprawie — dlaczego nie jest wbudowany
+
+Własna strona **nie ma dostępu do subskrypcji Claude**. Czat wbudowany w to UI
+musiałby wołać API modelu, czyli zużywać kredyty, których właściciel świadomie nie
+używa — a jego własne polecenie zabrania wdrażania takiego czatu bez uprzedniego
+przedstawienia kosztu. Dlatego ekran sprawy kopiuje polecenie w zwykłym języku
+(bez nazw narzędzi) i rozmowa toczy się w Claude, gdzie subskrypcja działa. Skutek
+uboczny na plus: każda sprawa to osobna rozmowa, więc rozdział kontekstów jest
+ostrzejszy niż w czacie wbudowanym w jedną stronę.
+
+**Nie włączaj płatnego czatu w UI bez wyraźnej zgody właściciela.**
+
+### Connecteam — stan faktyczny
+
+Kod traktuje Connecteam jako źródło pierwszej klasy; **konto nie jest
+podłączone**, a publiczna dokumentacja dostawcy nie opisuje odczytu treści
+wiadomości ani webhooka na wiadomość. Zanim cokolwiek tu zaplanujesz, przeczytaj
+`docs/DECYZJA-CONNECTEAM.md` — w szczególności rozdzielenie „czego nie wie
+dokumentacja" od „czego nie wie konto". Sondą jest `npm run check:connecteam`.
+
+Zakazane bez osobnej zgody: scraping, automatyzacja przeglądarki, odtwarzanie
+prywatnego API. Taka integracja psuje się w sposób **nieodróżnialny od „nikt nic
+nie napisał"**, czyli w najgroźniejszy dla tego produktu sposób.
