@@ -108,6 +108,26 @@ ok "railway: $($RAILWAY --version 2>/dev/null | tail -1 || echo '?')"
 [ -f "$ENV_FILE" ] || stop "Nie ma pliku .env w $(pwd). Bez niego nie wiem, jak łączyć się z pocztą i TeaBrew."
 ok "$ENV_FILE"
 
+# Na serwer leci zawartość TEGO katalogu, a nie to, co jest na GitHubie. Raz już
+# wdrożyliśmy tą drogą starą wersję i wyglądało to na pełny sukces, bo /health
+# odpowiadał — odpowiadał poprzedni kontener. Sprawdzamy to ZANIM cokolwiek
+# wyślemy, bo po wysłaniu kosztuje to całą rundę.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  GALAZ="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  if git fetch --quiet origin "$GALAZ" 2>/dev/null; then
+    ZA_STARE="$(git rev-list --count "HEAD..origin/$GALAZ" 2>/dev/null || echo 0)"
+    if [ "${ZA_STARE:-0}" -gt 0 ]; then
+      zle "Twoja kopia jest starsza o ${ZA_STARE} commit(ów) od origin/$GALAZ."
+      printf '\n  Wdrożyłbym kod, którego już nie chcesz. Najpierw:\n\n    git pull\n\n'
+      printf '  potem uruchom to jeszcze raz. Nic nie zostało wysłane.\n'
+      exit 1
+    fi
+  else
+    printf '  · nie sprawdziłem świeżości kopii (nie dosięgnąłem GitHuba) — wdrażam to, co tu leży\n'
+  fi
+  ok "wdrażam $(git rev-parse --short HEAD): $(git log -1 --format=%s 2>/dev/null | cut -c1-58)"
+fi
+
 # ── 1. logowanie ──────────────────────────────────────────────────────────────
 kropka "1/8  Logowanie do Railwaya"
 
@@ -322,6 +342,16 @@ ok "zmienne przeniesione (wartości nie były nigdzie wypisane)"
 # ── 6. wdrożenie ──────────────────────────────────────────────────────────────
 kropka "6/8  Wdrożenie"
 
+# Adres i „kto teraz odpowiada" ustalamy PRZED wysłaniem. Bez tego jedynym
+# sprawdzeniem po wdrożeniu było „czy /health odpowiada" — a odpowiadał także
+# stary kontener, więc wdrożenie starego kodu meldowało sukces.
+zservice domain >/dev/null 2>&1 || true
+ADRES="$(grep -oE '[a-z0-9.-]+\.up\.railway\.app' /tmp/bht-out 2>/dev/null | head -1 || true)"
+PRZED=""
+if [ -n "$ADRES" ]; then
+  PRZED="$(curl -fsS --max-time 8 "https://$ADRES/health" 2>/dev/null | grep -oE '"startedAt":"[^"]*"' || true)"
+fi
+
 printf '  Buduję obraz z Dockerfile i wysyłam. Potrwa 1–3 minuty…\n'
 zservice up --detach || {
   zle "Wdrożenie nie przeszło."
@@ -337,8 +367,6 @@ ok "wysłane"
 # ── 7. adres i sprawdzenie ────────────────────────────────────────────────────
 kropka "7/8  Adres HTTPS i sprawdzenie, czy żyje"
 
-zservice domain >/dev/null 2>&1 || true
-ADRES="$(grep -oE '[a-z0-9.-]+\.up\.railway\.app' /tmp/bht-out 2>/dev/null | head -1 || true)"
 if [ -z "$ADRES" ]; then
   zle "Nie odczytałem adresu z CLI."
   printf '\n  Wygeneruj go w panelu: Settings → Networking → Generate Domain,\n'
@@ -347,30 +375,45 @@ if [ -z "$ADRES" ]; then
 fi
 ok "https://$ADRES"
 
-printf '  Czekam, aż wstanie (do 3 minut). Każda kropka to jedna próba:\n  '
+# Czekamy na ZMIANĘ `startedAt`, nie na samą odpowiedź. Odpowiedź daje też stary
+# kontener, który jeszcze nie zszedł — i właśnie na tym raz się przejechaliśmy.
+printf '  Czekam, aż wstanie NOWY kontener (do 4 minut). Każda kropka to jedna próba:\n  '
 ZDROWY=0
-for _ in $(seq 1 36); do
+for _ in $(seq 1 48); do
   ODP="$(curl -fsS --max-time 8 "https://$ADRES/health" 2>/dev/null || true)"
-  if printf '%s' "$ODP" | grep -q '"ok":true'; then
+  TERAZ="$(printf '%s' "$ODP" | grep -oE '"startedAt":"[^"]*"' || true)"
+  if printf '%s' "$ODP" | grep -q '"ok":true' && [ -n "$TERAZ" ] && [ "$TERAZ" != "$PRZED" ]; then
     ZDROWY=1
     NARZEDZIA="$(printf '%s' "$ODP" | grep -oE '"tools":[0-9]+' | cut -d: -f2)"
+    OAUTH="$(printf '%s' "$ODP" | grep -oE '"oauth":(true|false)' | cut -d: -f2)"
     printf '\n'
     break
   fi
-  # Kropka po każdej próbie: bez niej trzy minuty ciszy wyglądają jak zawieszenie
-  # i człowiek przerywa skrypt w połowie budowania obrazu.
+  # Kropka po każdej próbie: bez niej cztery minuty ciszy wyglądają jak
+  # zawieszenie i człowiek przerywa skrypt w połowie budowania obrazu.
   printf '.'
   sleep 5
 done
 
 if [ "$ZDROWY" -ne 1 ]; then
-  zle "Serwer nie odpowiedział na /health w ciągu 3 minut."
-  printf '\n  Ostatnie logi (bez treści maili i bez tokenów):\n\n'
+  printf '\n'
+  zle "Nowa wersja nie odpowiedziała na /health w ciągu 4 minut."
+  printf '\n  Stary serwer mógł dalej działać — to NIE znaczy, że wdrożenie przeszło.\n'
+  printf '  Zajrzyj w Build Logs (adres wypisany wyżej przy „wysłane"): tam widać,\n'
+  printf '  czy obraz się zbudował.\n\n'
+  printf '  Ostatnie logi (bez treści maili i bez tokenów):\n\n'
   zservice logs >/dev/null 2>&1 || true
   tail -30 /tmp/bht-out | sed 's/^/    /'
   printf '\n  Wklej mi te linie — powiedzą, czego brakuje.\n'
   exit 1
 fi
+
+if [ "${OAUTH:-}" != "true" ]; then
+  zle "Serwer wstał, ale OAuth jest WYŁĄCZONY — konektor w Claude się nie połączy."
+  printf '  Znaczy to, że COPILOT_AUTH_PASSWORD nie dojechało do usługi.\n'
+  exit 1
+fi
+ok "nowa wersja stoi, OAuth włączony"
 
 OSTRZEZENIE_WOLUMEN=""
 if [ "$BEZ_WOLUMENU" = "1" ]; then
@@ -383,7 +426,7 @@ cat <<PODSUMOWANIE
   Serwer działa: https://$ADRES
 $OSTRZEZENIE_WOLUMEN
   Narzędzia dla Claude: ${NARZEDZIA:-?}
-  Stan spraw: trwały wolumen $MOUNT
+  Stan spraw: $([ "$BEZ_WOLUMENU" = "1" ] && printf 'w kontenerze (bez wolumenu)' || printf 'trwały wolumen %s' "$MOUNT")
   Poczta i TeaBrew: read-only, jak dotychczas
 
   ZOSTAŁA JEDNA RZECZ, KTÓREJ ŻADEN SKRYPT NIE ZROBI.

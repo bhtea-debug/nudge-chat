@@ -46,6 +46,17 @@ import {
 
 const app = createApp();
 const PORT = Number(process.env["PORT"] ?? 8787);
+
+/**
+ * Moment startu TEGO procesu.
+ *
+ * Wygląda błaho, a rozstrzyga pytanie, na które inaczej nie ma odpowiedzi
+ * z zewnątrz: „czy odpowiada mi nowy kontener, czy stary jeszcze nie zszedł".
+ * Wdrożenie raz już zameldowało „gotowe", bo `/health` odpowiadał — tyle że
+ * odpowiadała poprzednia wersja. Skrypt wdrożeniowy czeka teraz na ZMIANĘ tej
+ * wartości, a nie na samą odpowiedź.
+ */
+const STARTED_AT = new Date().toISOString();
 const TOKEN = (process.env["MCP_BEARER_TOKEN"] ?? "").trim();
 const MONITOR_IN_PROCESS = (process.env["MONITOR_IN_PROCESS"] ?? "1") !== "0";
 const COST_LOG = fromPackageRoot(process.env["COST_LOG"] ?? "state/koszty.jsonl");
@@ -287,6 +298,7 @@ const server = createServer((req, res) => {
         startupError: probe.startupError(),
         monitorInProcess: MONITOR_IN_PROCESS,
         lastMailScanAt: safeLastScan(),
+        startedAt: STARTED_AT,
         // Dwie rzeczy, bez których nie da się z zewnątrz odpowiedzieć na pytanie
         // „dlaczego Claude się nie łączy". Żadna z nich nie jest sekretem:
         //  - `oauth` mówi tylko, CZY hasło zgody jest ustawione, nie jakie,
