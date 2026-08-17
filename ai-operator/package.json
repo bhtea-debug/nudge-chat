@@ -27,7 +27,8 @@
     "probe:thread": "tsx --env-file-if-exists=.env src/bin/probe-thread.ts",
     "mcp:install": "node scripts/install-claude-desktop-config.mjs",
     "mcp:doctor": "node scripts/mcp-doctor.mjs",
-    "raport:zaplanuj": "bash scripts/install-schedule.sh"
+    "raport:zaplanuj": "bash scripts/install-schedule.sh",
+    "wdroz": "bash scripts/deploy-railway.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
