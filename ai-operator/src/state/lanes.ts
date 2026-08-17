@@ -86,10 +86,33 @@ export function currentOwnOrderRefs(issue: Issue): string[] {
  * sprawa uznana za wartą powiadomienia.
  */
 export function isNow(issue: Issue): boolean {
-  // Wysłanka masowa nie wchodzi do TERAZ nawet z wysokim priorytetem — inaczej
+  return whyNow(issue) !== null;
+}
+
+/**
+ * DLACZEGO sprawa jest w TERAZ, albo `null`, gdy nie jest.
+ *
+ * Jedna funkcja zwraca i decyzję, i jej uzasadnienie — celowo. Wcześniej
+ * `isNow` decydowało o grupie, a powiadomienie budowało własne zdanie
+ * z surowego `lastErpSummary`. Dwa źródła prawdy o tym samym rozjechały się
+ * dokładnie tak, jak musiały: sprawa przestała kwalifikować się przez TeaBrew,
+ * a powiadomienie dalej pisało „numeru nie ma w TeaBrew", bo testowało tekst
+ * po swojemu. Powód i decyzja mają odtąd jedno źródło.
+ */
+export function whyNow(issue: Issue): string | null {
+  // Wysyłka masowa nie wchodzi do TERAZ nawet z wysokim priorytetem — inaczej
   // jeden newsletter z natrętnym tematem zająłby najważniejsze miejsce.
-  if (issue.likelyIrrelevant) return false;
-  return missingInErp(issue) || issue.priority === "high" || issue.notificationCandidate;
+  if (issue.likelyIrrelevant) return null;
+
+  if (missingInErp(issue)) {
+    const refs = currentOwnOrderRefs(issue);
+    return `numeru ${refs.join(", ")} nie ma w TeaBrew`;
+  }
+  if (issue.priority === "high") return "wysoki priorytet";
+  if (issue.notificationCandidate) {
+    return issue.notificationReason ?? "uznane za warte powiadomienia";
+  }
+  return null;
 }
 
 /**

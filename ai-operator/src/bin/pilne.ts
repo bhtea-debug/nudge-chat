@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { execFileSync } from "node:child_process";
 import { createApp } from "../index.js";
-import { laneOf } from "../state/lanes.js";
+import { currentOwnOrderRefs, laneOf, missingInErp, whyNow } from "../state/lanes.js";
 import type { Issue } from "../state/types.js";
 
 /**
@@ -69,10 +69,10 @@ const LINK_WWW = `https://claude.ai/new?q=${q}`;
 
 // ── treść powiadomienia (§8) ──────────────────────────────────────────────────
 
-const powod =
-  wybrana.lastErpSummary && /NIE MA w TeaBrew/i.test(wybrana.lastErpSummary)
-    ? "numeru z tej wiadomości nie ma w TeaBrew"
-    : wybrana.notificationReason ?? wybrana.whyListed ?? "wymaga Twojej uwagi";
+// Powód bierzemy z TEJ SAMEJ funkcji, która decyduje o grupie. Wcześniej stała
+// tu własna reguła na surowym `lastErpSummary` i wypisywała „numeru nie ma
+// w TeaBrew" także wtedy, gdy sprawa dawno przestała się przez to kwalifikować.
+const powod = whyNow(wybrana) ?? wybrana.whyListed ?? "wymaga Twojej uwagi";
 
 const tytul = `🔴 ${wybrana.title}`.slice(0, 120);
 const tresc = `${jednymZdaniem(wybrana.summary)}\nDlaczego: ${powod}`;
@@ -110,6 +110,25 @@ if (process.platform === "darwin" && !process.argv.includes("--bez-powiadomienia
   } catch {
     process.stdout.write("Powiadomienia systemowego nie udało się wysłać (to nie psuje testu).\n\n");
   }
+}
+
+if (process.argv.includes("--dlaczego")) {
+  // Pola decydujące o tym, że ta sprawa jest na górze. Bez treści wiadomości —
+  // to ma trafić do rozmowy ze mną, więc nie może zawierać korespondencji.
+  process.stdout.write(
+    `DIAGNOSTYKA — co windują tę sprawę:\n` +
+      `  priority:              ${wybrana.priority}\n` +
+      `  notificationCandidate: ${wybrana.notificationCandidate}\n` +
+      `  notificationReason:    ${wybrana.notificationReason ?? "—"}\n` +
+      `  status:                ${wybrana.status}\n` +
+      `  category:              ${wybrana.category}\n` +
+      `  likelyIrrelevant:      ${wybrana.likelyIrrelevant}\n` +
+      `  lastErpSummary:        ${wybrana.lastErpSummary ?? "—"}\n` +
+      `  relatedOrderRefs:      ${wybrana.relatedOrderRefs.join(", ") || "—"}\n` +
+      `  numery DZIŚ:           ${currentOwnOrderRefs(wybrana).join(", ") || "— (żadnych)"}\n` +
+      `  missingInErp:          ${missingInErp(wybrana)}\n` +
+      `  whyNow:                ${whyNow(wybrana) ?? "null (nie powinna być w TERAZ)"}\n\n`,
+  );
 }
 
 process.stdout.write(
