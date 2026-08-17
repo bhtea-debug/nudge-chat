@@ -49,6 +49,25 @@ stop() {
   exit 1
 }
 
+
+# Wywołanie komendy Railwaya z przypięciem do usługi, odporne na to, gdzie ta
+# wersja CLI chce widzieć flagę.
+#
+# Powód: `railway volume` to GRUPA i `--service` należy do niej, a nie do
+# podkomendy `add`. Przy zwykłych komendach (`variables`, `up`) flaga stoi po
+# komendzie. Jedna pomyłka w tej kolejności to kolejna wizyta właściciela
+# w terminalu, więc próbujemy po cichu drugiej formy — a gdy projekt ma tylko
+# jedną usługę, pominięcie flagi też jest poprawne.
+#
+# Wynik ostatniej próby zostaje w /tmp/bht-out, żeby wywołujący mógł go pokazać.
+zservice() {
+  local cmd="$1"; shift
+  $RAILWAY "$cmd" --service "$SERVICE" "$@" >/tmp/bht-out 2>&1 && return 0
+  grep -q "unexpected argument" /tmp/bht-out || return 1
+  # Ta wersja CLI nie chce flagi w tym miejscu — przy jednej usłudze zbędna.
+  $RAILWAY "$cmd" "$@" >/tmp/bht-out 2>&1
+}
+
 # ── 0. wymagania ──────────────────────────────────────────────────────────────
 kropka "0/8  Sprawdzam wymagania"
 
@@ -155,18 +174,23 @@ kropka "4/8  Trwały wolumen ($MOUNT)"
 if $RAILWAY volume list 2>/dev/null | grep -q "$MOUNT"; then
   ok "wolumen na $MOUNT już istnieje"
 else
-  if $RAILWAY volume add --service "$SERVICE" --mount-path "$MOUNT" >/tmp/bht-vol 2>&1; then
+  # `--service` jest opcją GRUPY `railway volume`, nie podkomendy `add`, więc
+  # musi stać PRZED `add`. Przykład w pomocy CLI pokazuje odwrotnie
+  # (`volume add --service api …`) i ta kolejność kończy się błędem
+  # „unexpected argument '--service' found". Nie ufaj tu przykładom z pomocy,
+  # tylko blokowi Options — on opisuje flagi grupy.
+  if $RAILWAY volume --service "$SERVICE" add --mount-path "$MOUNT" >/tmp/bht-vol 2>&1; then
     ok "wolumen dodany"
   else
     zle "Nie umiem dodać wolumenu."
     printf '\n  Co powiedziało CLI:\n\n'
     sed 's/^/    /' /tmp/bht-vol
     printf '\n  ZRÓB TO RĘCZNIE, to jedna rzecz i zajmie 20 sekund:\n'
-    printf '    panel Railway → Twoja usługa → Settings → Volumes → New Volume\n'
+    printf '    panel Railway → usługa %s → Settings → Volumes → New Volume\n' "$SERVICE"
     printf '    punkt montowania: %s\n' "$MOUNT"
     printf '\n  Potem uruchom ten skrypt ponownie — pominie kroki, które już przeszły.\n'
-    printf '\n  Pomoc CLI:\n'
-    $RAILWAY volume --help 2>&1 | sed 's/^/    /'
+    printf '\n  Pomoc SAMEJ podkomendy add (to jest to, czego mi brakuje):\n\n'
+    $RAILWAY volume add --help 2>&1 | sed 's/^/    /'
     exit 1
   fi
 fi
@@ -210,10 +234,10 @@ for KONIECZNE in MAIL_IMAP_HOST MAIL_IMAP_USER MAIL_IMAP_PASSWORD TEABREW_BASE_U
   grep -q "^${KONIECZNE}=." "$ENV_FILE" || stop "Brak $KONIECZNE w .env — bez tego serwer nie połączy się ze źródłami."
 done
 
-$RAILWAY variables --service "$SERVICE" "${ARGS[@]}" >/tmp/bht-vars 2>&1 || {
+zservice variables "${ARGS[@]}" || {
   zle "Nie udało się ustawić zmiennych."
   printf '\n  Co powiedziało CLI:\n\n'
-  sed 's/^/    /' /tmp/bht-vars
+  sed 's/^/    /' /tmp/bht-out
   printf '\n  Pomoc komendy:\n\n'
   $RAILWAY variables --help 2>&1 | sed 's/^/    /'
   exit 1
@@ -224,13 +248,22 @@ ok "zmienne przeniesione (wartości nie były nigdzie wypisane)"
 kropka "6/8  Wdrożenie"
 
 printf '  Buduję obraz z Dockerfile i wysyłam. Potrwa 1–3 minuty…\n'
-$RAILWAY up --service "$SERVICE" --detach || stop "Wdrożenie nie przeszło." $RAILWAY up
+zservice up --detach || {
+  zle "Wdrożenie nie przeszło."
+  printf '\n  Co powiedziało CLI:\n\n'
+  sed 's/^/    /' /tmp/bht-out
+  printf '\n  Pomoc komendy:\n\n'
+  $RAILWAY up --help 2>&1 | sed 's/^/    /'
+  exit 1
+}
+cat /tmp/bht-out | tail -3 | sed 's/^/    /' 
 ok "wysłane"
 
 # ── 7. adres i sprawdzenie ────────────────────────────────────────────────────
 kropka "7/8  Adres HTTPS i sprawdzenie, czy żyje"
 
-ADRES="$($RAILWAY domain --service "$SERVICE" 2>/dev/null | grep -oE '[a-z0-9.-]+\.up\.railway\.app' | head -1 || true)"
+zservice domain >/dev/null 2>&1 || true
+ADRES="$(grep -oE '[a-z0-9.-]+\.up\.railway\.app' /tmp/bht-out 2>/dev/null | head -1 || true)"
 if [ -z "$ADRES" ]; then
   zle "Nie odczytałem adresu z CLI."
   printf '\n  Wygeneruj go w panelu: Settings → Networking → Generate Domain,\n'
@@ -258,7 +291,8 @@ done
 if [ "$ZDROWY" -ne 1 ]; then
   zle "Serwer nie odpowiedział na /health w ciągu 3 minut."
   printf '\n  Ostatnie logi (bez treści maili i bez tokenów):\n\n'
-  $RAILWAY logs --service "$SERVICE" 2>&1 | tail -30 | sed 's/^/    /'
+  zservice logs >/dev/null 2>&1 || true
+  tail -30 /tmp/bht-out | sed 's/^/    /'
   printf '\n  Wklej mi te linie — powiedzą, czego brakuje.\n'
   exit 1
 fi
