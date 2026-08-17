@@ -21,6 +21,9 @@ import {
   wwwAuthenticate,
   type OAuthConfig,
 } from "../mcp/oauth.js";
+import { Subskrypcje } from "../push/subskrypcje.js";
+import { ikonaPng, manifest, serviceWorker, stronaPush } from "../push/strona.js";
+import { konfiguracjaZeSrodowiska, wyslij, type Waga } from "../push/wyslij.js";
 
 /**
  * Remote MCP — ten sam serwer, transport HTTP, dostępny także z telefonu.
@@ -138,6 +141,19 @@ const oauthFor = (req: IncomingMessage): OAuthConfig => ({
 });
 
 const OAUTH_ENABLED = AUTH_PASSWORD.length >= 8;
+
+// ── powiadomienia ─────────────────────────────────────────────────────────────
+/**
+ * Web Push. Jedyna droga z tego serwera na iPhone'a właściciela, która nie
+ * wymaga ani aplikacji z App Store, ani cudzej usługi pośredniczącej —
+ * i jedyna, w której treść alertu jest szyfrowana end-to-end.
+ *
+ * Klucze VAPID przychodzą ze środowiska. Ich brak wyłącza POWIERZCHNIĘ, nie
+ * produkt: serwer wstaje, Claude działa, powiadomienia po prostu nie ruszą
+ * i `/health` mówi o tym wprost.
+ */
+const PUSH = konfiguracjaZeSrodowiska();
+const subskrypcje = new Subskrypcje(app.config.copilot.stateDir);
 
 // ── limit żądań ───────────────────────────────────────────────────────────────
 /**
@@ -306,6 +322,10 @@ const server = createServer((req, res) => {
         // Ich brak kosztował już jedną rundę zgadywania.
         oauth: OAUTH_ENABLED,
         issuer: issuerOf(req),
+        // Czy powiadomienia mają czym ruszyć i czy ktokolwiek je odbiera.
+        // Liczba urządzeń, nie adresy — te są sekretem subskrypcji.
+        push: PUSH !== null,
+        pushUrzadzenia: safeIleSubskrypcji(),
       });
       logAccess(200, "health", null, Date.now() - started);
       return;
@@ -361,6 +381,13 @@ const server = createServer((req, res) => {
       });
       json(res, out.status, out.body);
       logAccess(out.status, "oauth", "token", Date.now() - started);
+      return;
+    }
+
+    // ── powiadomienia ─────────────────────────────────────────────────────
+    if (url.pathname === "/push" || url.pathname.startsWith("/push/")) {
+      const status = await handlePush(req, res, url);
+      logAccess(status, "push", url.pathname.slice(5) || "strona", Date.now() - started);
       return;
     }
 
@@ -546,6 +573,161 @@ async function handleConnecteamWebhook(req: IncomingMessage, res: ServerResponse
 }
 
 /**
+ * Odbiornik powiadomień: strona, service worker, manifest, ikona i trzy
+ * końcówki do zarządzania subskrypcją.
+ *
+ * ── Dlaczego to jest chronione hasłem ─────────────────────────────────────────
+ * Subskrypcja to zgoda na otrzymywanie alertów o sprawach firmy. Gdyby
+ * `/push/subscribe` stało otworem, każdy, kto zna adres, zapisałby SWOJE
+ * urządzenie i od tej chwili dostawał nazwy klientów i numery zamówień —
+ * i nie byłoby tego widać, bo alerty docierałyby też do właściciela.
+ *
+ * Używamy tego samego hasła co ekran zgody OAuth. Świadomie nie dokładamy
+ * kolejnego sekretu: dwa hasła do jednego produktu to jedno hasło zapisane
+ * na kartce.
+ */
+async function handlePush(req: IncomingMessage, res: ServerResponse, url: URL): Promise<number> {
+  const sciezka = url.pathname.replace(/\/+$/, "") || "/push";
+
+  // Zasoby statyczne — bez uwierzytelnienia, bo nie ma w nich ani jednej danej
+  // firmy. Klucz publiczny VAPID jest z definicji publiczny: służy do
+  // zaszyfrowania ładunku DLA nas, nie do odszyfrowania czegokolwiek.
+  if (req.method === "GET") {
+    if (sciezka === "/push") {
+      if (!PUSH) {
+        plik(res, 503, "text/html; charset=utf-8", Buffer.from(
+          "<!doctype html><meta charset=utf-8><p>Powiadomienia nie są skonfigurowane na tym serwerze (brak kluczy VAPID).</p>",
+        ));
+        return 503;
+      }
+      plik(res, 200, "text/html; charset=utf-8", Buffer.from(stronaPush(PUSH.publiczny), "utf8"));
+      return 200;
+    }
+    if (sciezka === "/push/manifest.webmanifest") {
+      plik(res, 200, "application/manifest+json; charset=utf-8", Buffer.from(manifest(), "utf8"));
+      return 200;
+    }
+    if (sciezka === "/push/sw.js") {
+      plik(res, 200, "text/javascript; charset=utf-8", Buffer.from(serviceWorker(), "utf8"));
+      return 200;
+    }
+    if (sciezka === "/push/ikona.png") {
+      plik(res, 200, "image/png", ikonaPng(), "public, max-age=86400");
+      return 200;
+    }
+  }
+
+  if (req.method !== "POST") {
+    json(res, 404, { error: "nieznana ścieżka powiadomień" });
+    return 404;
+  }
+
+  if (!OAUTH_ENABLED) {
+    json(res, 503, { error: "brak COPILOT_AUTH_PASSWORD — nie ma czym chronić subskrypcji" });
+    return 503;
+  }
+
+  let ciało: Record<string, unknown> = {};
+  try {
+    ciało = JSON.parse(await readBody(req)) as Record<string, unknown>;
+  } catch {
+    json(res, 400, { error: "ładunek nie jest poprawnym JSON-em" });
+    return 400;
+  }
+
+  // Limit prób hasła per adres — inaczej ta końcówka jest wygodniejsza do
+  // zgadywania niż ekran zgody, bo odpowiada JSON-em i da się ją zapętlić.
+  if (!allow(`push:${req.socket.remoteAddress ?? "?"}`)) {
+    json(res, 429, { error: "za dużo prób" }, { "retry-after": "5" });
+    return 429;
+  }
+
+  const cfg = oauthFor(req);
+  if (!passwordMatches(cfg, typeof ciało["haslo"] === "string" ? ciało["haslo"] : "")) {
+    process.stderr.write("[push] odrzucone: złe hasło\n");
+    json(res, 401, { error: "nieprawidłowe hasło" });
+    return 401;
+  }
+
+  if (sciezka === "/push/subscribe") {
+    const s = ciało["subskrypcja"] as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } } | undefined;
+    if (typeof s?.endpoint !== "string" || typeof s.keys?.p256dh !== "string" || typeof s.keys?.auth !== "string") {
+      json(res, 400, { error: "niekompletna subskrypcja" });
+      return 400;
+    }
+    subskrypcje.dodaj({
+      endpoint: s.endpoint,
+      keys: { p256dh: s.keys.p256dh, auth: s.keys.auth },
+      dodanaO: new Date().toISOString(),
+      opis: typeof ciało["opis"] === "string" ? ciało["opis"].slice(0, 60) : "urządzenie",
+    });
+    // Adresu bramki NIE logujemy — jest sekretem urządzenia.
+    process.stdout.write(`[push] zapisano urządzenie, razem: ${subskrypcje.ile()}\n`);
+    json(res, 200, { ok: true, urzadzenia: subskrypcje.ile() });
+    return 200;
+  }
+
+  if (sciezka === "/push/unsubscribe") {
+    const endpoint = typeof ciało["endpoint"] === "string" ? ciało["endpoint"] : "";
+    const usuniete = endpoint ? subskrypcje.usun(endpoint) : false;
+    json(res, 200, { ok: true, usuniete, urzadzenia: subskrypcje.ile() });
+    return 200;
+  }
+
+  if (sciezka === "/push/test") {
+    if (!PUSH) {
+      json(res, 503, { error: "brak kluczy VAPID" });
+      return 503;
+    }
+    if (subskrypcje.ile() === 0) {
+      json(res, 409, { error: "żadne urządzenie nie ma włączonych powiadomień" });
+      return 409;
+    }
+    const waga = ciało["waga"] === "pilne" || ciało["waga"] === "informacja" ? (ciało["waga"] as Waga) : "zwykle";
+    const wynik = await wyslij(PUSH, subskrypcje, {
+      tytul: typeof ciało["tytul"] === "string" ? ciało["tytul"] : "BHT Copilot",
+      tresc: typeof ciało["tresc"] === "string" ? ciało["tresc"] : "Powiadomienie testowe.",
+      waga,
+      tag: typeof ciało["tag"] === "string" ? ciało["tag"] : undefined,
+    });
+    process.stdout.write(
+      `[push] wysłane=${wynik.wyslane} usunięte=${wynik.usuniete} błędy=${wynik.bledy.length}\n`,
+    );
+    json(res, wynik.wyslane > 0 ? 200 : 502, wynik);
+    return wynik.wyslane > 0 ? 200 : 502;
+  }
+
+  json(res, 404, { error: "nieznana ścieżka powiadomień" });
+  return 404;
+}
+
+function plik(
+  res: ServerResponse,
+  status: number,
+  typ: string,
+  body: Buffer,
+  cache = "no-store",
+): void {
+  res.writeHead(status, {
+    "content-type": typ,
+    "content-length": body.length,
+    "cache-control": cache,
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(body);
+}
+
+function safeIleSubskrypcji(): number {
+  try {
+    return subskrypcje.ile();
+  } catch {
+    // Uszkodzony plik subskrypcji nie może przewrócić health-checku.
+    return 0;
+  }
+}
+
+/**
  * Ekran zgody i wydanie kodu autoryzacyjnego.
  *
  * GET  → pokazuje pytanie o hasło,
@@ -686,6 +868,7 @@ server.listen(PORT, () => {
     `[${SERVER_NAME}] nasłuchuję na :${PORT}\n` +
       `[${SERVER_NAME}] narzędzia dla Claude: ${probe.toolNames().length}\n` +
       `[${SERVER_NAME}] OAuth dla konektora: ${OAUTH_ENABLED ? "włączony" : "WYŁĄCZONY (brak COPILOT_AUTH_PASSWORD) — Claude się nie połączy"}\n` +
+      `[${SERVER_NAME}] powiadomienia: ${PUSH ? `włączone, urządzeń: ${safeIleSubskrypcji()}` : "WYŁĄCZONE (brak kluczy VAPID)"}\n` +
       `[${SERVER_NAME}] tryb: ${app.config.mode}, foldery: ${app.config.copilot.monitorFolders.join(", ")}\n` +
       `[${SERVER_NAME}] monitor w procesie: ${MONITOR_IN_PROCESS ? `tak, pierwszy przebieg za 20 s, potem co ${app.config.copilot.intervalMinutes} min` : "nie"}\n`,
   );

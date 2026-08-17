@@ -186,6 +186,20 @@ else
   unset HASLO_NOWE
 fi
 
+# ── 2c. klucze powiadomień ────────────────────────────────────────────────────
+kropka "2c/8  Klucze powiadomien (VAPID)"
+
+# Generuje tylko wtedy, gdy ich nie ma: rotacja unieważniłaby subskrypcje
+# i właściciel musiałby włączać powiadomienia od nowa na każdym urządzeniu.
+if VAPID_WYNIK="$(node scripts/generuj-vapid.mjs 2>&1)"; then
+  ok "$VAPID_WYNIK"
+else
+  zle "Nie udało się przygotować kluczy VAPID."
+  printf '%s\n' "$VAPID_WYNIK" | sed 's/^/    /'
+  printf '  Powiadomienia będą wyłączone; reszta serwera działa normalnie.\n'
+fi
+unset VAPID_WYNIK
+
 # ── 3. projekt ────────────────────────────────────────────────────────────────
 kropka "3/8  Projekt w Railwayu"
 
@@ -298,6 +312,7 @@ kropka "5/8  Zmienne środowiskowe"
 POTRZEBNE=(
   MCP_BEARER_TOKEN
   COPILOT_AUTH_PASSWORD
+  VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY VAPID_SUBJECT
   MAIL_IMAP_HOST MAIL_IMAP_PORT MAIL_IMAP_USER MAIL_IMAP_PASSWORD
   MAIL_FOLDER MAIL_SENT_FOLDER MAIL_THREAD_FOLDERS
   TEABREW_BASE_URL TEABREW_AI_OPERATOR_TOKEN
