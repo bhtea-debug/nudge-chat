@@ -374,8 +374,14 @@ fi
 # obrazem. Wdrożenie meldowało wtedy sukces po piętnastu sekundach, choć
 # budowanie obrazu tyle nie trwa. Stary kontener nie może udawać nowego, jeżeli
 # rozpoznajemy go po KODZIE, a nie po czasie startu.
+#
+# Plik NIE jest w .gitignore i nie może tam trafić: `railway up` pomija
+# wszystko, co pasuje do .gitignore, więc wpisanie go tam znaczyło dokładnie
+# „nie wysyłaj znacznika" — a skrypt czekał potem dziewięć minut na plik,
+# którego sam nie wysłał. Kasujemy go po wyjściu, żeby nie zaśmiecał repozytorium.
 WERSJA="$(git rev-parse --short HEAD 2>/dev/null || echo 'bez-gita')"
 printf '{"commit":"%s"}\n' "$WERSJA" > src/wersja.json
+trap 'rm -f src/wersja.json' EXIT
 ok "znacznik wersji: $WERSJA"
 
 printf '  Buduję obraz z Dockerfile i wysyłam. Potrwa 1–3 minuty…\n'

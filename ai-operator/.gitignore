@@ -15,7 +15,9 @@ openapi.json
 /raporty/
 /state/
 
-# Znacznik wersji wstrzykiwany przez skrypt wdrożeniowy tuż przed wysłaniem.
-# Jest w kontekście budowania (i w obrazie), ale NIE w repozytorium — to on
-# pozwala odróżnić „odpowiada nowy kontener" od „odpowiada nowy KOD".
-src/wersja.json
+# UWAGA: `src/wersja.json` celowo NIE jest tu wymieniony.
+#
+# `railway up` pomija wszystko, co pasuje do .gitignore — więc wpisanie tu
+# znacznika wersji znaczyło „nie wysyłaj znacznika", a skrypt wdrożeniowy
+# czekał potem dziewięć minut na plik, którego sam nie wysłał. Skrypt tworzy
+# go tuż przed wysłaniem i kasuje zaraz po nim.
