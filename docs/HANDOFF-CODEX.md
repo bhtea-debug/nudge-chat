@@ -1,7 +1,7 @@
 # Handoff: AI Operator — brief dla kolejnego agenta
 
 Dokument przekazania. Stan na **17.08.2026**, gałąź
-`claude/ai-company-architecture-mvy1uv`, ostatni commit `fe9e9bc`.
+`claude/ai-company-architecture-mvy1uv`, ostatni commit `f2f3ef8`.
 
 > **Przeczytaj to, zanim cokolwiek zaplanujesz.** Kierunek co do interfejsu
 > zmieniał się w ciągu jednego dnia DWA razy i ostateczna decyzja właściciela
@@ -813,3 +813,73 @@ tworzy nowy problem:
 2. **Zdusiłem wyjście instalatora** przez `>/dev/null 2>&1` i komunikat błędu nie
    powiedział nic. Diagnostyki nie wolno wyciszać.
 3. **Założyłem, że `npm i -g` przejdzie na macOS.** Nie przechodzi bez uprawnień.
+
+
+---
+
+## 13. Wieczór 17.08 — sześć usterek JEDNEJ klasy
+
+To jest najcenniejsza sekcja tego dokumentu, bo opisuje błąd systemowy, który
+w tym projekcie wraca. Wszystkie sześć wyszło w ciągu godziny, przy jednym
+zadaniu (UX spike), i wszystkie mają to samo źródło:
+
+> **Stan wyliczony raz i nigdy nieweryfikowany, używany jako fakt.**
+
+### Przebieg
+
+Właściciel uruchomił `npm run pilne`. Jako najpilniejsza sprawa w firmie wyszło
+**awizo InPostu** — 24-cyfrowy numer przesyłki i NIP w temacie, z uzasadnieniem
+„numeru nie ma w TeaBrew".
+
+1. **Sprawdziłem `order-refs.ts` — był naprawiony.** NIP i numer przesyłki nie
+   trafiają dziś do TeaBrew. Sprawa pochodziła z przebiegu sprzed poprawki.
+2. **Poprawka pierwsza: sprawdzaj KSZTAŁT zapisanych numerów.** Nie zadziałała.
+   NIP `8842745578` ma dziesięć cyfr, czyli poprawny kształt naszego numeru
+   zamówienia. **Kontrola kształtu z zasady nie odróżni numeru, którego dziś
+   byśmy nie wyciągnęli, od takiego, który byśmy wyciągnęli.**
+3. **Poprawka druga: rozpoznaj numery OD NOWA** dzisiejszymi regułami, z tytułu
+   i streszczenia sprawy (`currentOwnOrderRefs`). Zadziałała — ale sprawa dalej
+   stała na górze.
+4. **Diagnostyka od właściciela** (`npm run pilne -- --dlaczego`) pokazała
+   dlaczego: monitor ustawił w JEDNYM przebiegu `lastErpSummary`, `priority:
+   high` **i** `notificationCandidate: true`. Odebranie wiary jednemu polu nic
+   nie dawało — sprawa wracała z innym uzasadnieniem. **Unieważniać trzeba cały
+   przebieg, nie pojedyncze pole.**
+5. **Ta sama diagnostyka pokazała coś groźniejszego:** `likelyIrrelevant:
+   undefined`. Dziennik odtwarzamy przez `JSON.parse`, więc sprawy sprzed
+   dodania pola nie mają go wcale — a wyjście capability **jest sprawdzane
+   zodem** i `whyListed` jest tam wymaganym łańcuchem. Jedna stara sprawa
+   wywracała CAŁĄ odpowiedź `copilot_get_open_issues` błędem `invalid_output`,
+   czyli **Claude nie mógł wypisać ani jednej sprawy.** Naprawa:
+   `CopilotStore.complete()` uzupełnia pola przy wczytaniu.
+6. **Po naprawie na górę weszła wiadomość phishingowa** i odsłoniła dwie kolejne:
+   - monitor przy scaleniu ustawiał `likelyIrrelevant: false` **na sztywno**
+     („ktoś wrócił do sprawy, więc to korespondencja"). Zawodzi dokładnie tam,
+     gdzie boli: phishing i newslettery piszą powtórnie **z definicji**,
+   - `laneOf` traktowało status `waiting_for_owner` jak DECYZJE, a monitor
+     ustawia go KAŻDEJ wiadomości kategorii `reply`. DECYZJE były więc drugą
+     kopią ODPOWIEDZI.
+
+### Co z tego wynika dla Ciebie
+
+- **Nie ufaj polu, którego nie umiesz dziś odtworzyć.** Jeśli wartość powstała
+  z reguły, która od tamtej pory się zmieniła, przelicz ją albo zignoruj.
+  `currentOwnOrderRefs` jest wzorcem: liczy z tekstu, który mamy, dzisiejszymi
+  regułami, więc stan **leczy się sam** przy każdej kolejnej poprawce.
+- **Unieważniaj przebieg, nie pole.** Monitor pisze kilka pól naraz; jeśli
+  podstawa przebiegu upadła, upadają wszystkie jego skutki.
+- **Wyjście capability jest walidowane zodem.** Każde nowe pole w `Issue`
+  wymaga wartości domyślnej w `CopilotStore.complete()`, inaczej stary dziennik
+  wywali całe narzędzie. Awaria wygląda wtedy jak problem z MCP, nie jak jeden
+  felerny wpis — i to jest najgorsze w niej.
+- **Nie zgaduj, co siedzi w danych właściciela.** Zgadywałem dwa razy i dwa razy
+  wysłałem go do terminala po nic. Rozstrzygnęło dopiero
+  `npm run pilne -- --dlaczego`, które wypisuje pola decydujące BEZ treści
+  wiadomości. Ta flaga istnieje właśnie po to — używaj jej od razu.
+
+### Stan po tych poprawkach
+
+175 testów. Trzy nowe pliki testowe odtwarzają dokładnie te kształty danych,
+łącznie z dziennikiem sprzed zmiany schematu. **Żadna z tych usterek nie została
+wykryta testem — wszystkie wyszły na prawdziwej skrzynce.** Testy powstały
+później, żeby nie wróciły.
