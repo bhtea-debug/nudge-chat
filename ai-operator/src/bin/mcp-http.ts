@@ -204,6 +204,30 @@ function logAccess(status: number, method: string, tool: string | null, ms: numb
   );
 }
 
+/**
+ * Nagłówki CORS dla powierzchni JSON.
+ *
+ * Klient Claude wykonuje część odkrywania OAuth z przeglądarki, a przeglądarka
+ * wysyła najpierw zapytanie OPTIONS. Bez odpowiedzi na nie właściwe żądanie
+ * **nigdy nie wychodzi** i po naszej stronie nie ma nawet wpisu w logu — awaria
+ * wygląda wtedy jak cisza i nie da się jej odróżnić od „serwer nie odpowiada".
+ *
+ * Gwiazdka jest tu bezpieczna, bo w tym serwerze nie ma ciasteczek ani sesji
+ * przeglądarkowych: te ścieżki albo są publicznymi metadanymi, albo wymagają
+ * nagłówka `Authorization`, którego przeglądarka nie dołoży sama. Cudza strona
+ * nie ma więc czego nadużyć — nie dysponuje tokenem właściciela.
+ *
+ * Ekran zgody (`html()`) CORS-u nie dostaje i zostaje przy `X-Frame-Options`,
+ * bo tam człowiek podejmuje decyzję i nie ma być do niej namówiony z ramki.
+ */
+const CORS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type, authorization, mcp-session-id, mcp-protocol-version",
+  "access-control-expose-headers": "mcp-session-id, www-authenticate",
+  "access-control-max-age": "86400",
+};
+
 function json(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -211,6 +235,7 @@ function json(res: ServerResponse, status: number, body: unknown, headers: Recor
     "content-length": Buffer.byteLength(payload),
     // Odpowiedzi zawierają dane firmy — żadnego pośredniego cache'owania.
     "cache-control": "no-store",
+    ...CORS,
     ...headers,
   });
   res.end(payload);
@@ -237,6 +262,15 @@ const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
   void (async () => {
+    // Preflight przeglądarki. Musi być obsłużony PRZED czymkolwiek innym, bo
+    // dotyczy każdej ścieżki i przychodzi zawsze przed właściwym żądaniem.
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, CORS);
+      res.end();
+      logAccess(204, "OPTIONS", null, Date.now() - started);
+      return;
+    }
+
     // Health BEZ uwierzytelnienia i BEZ danych: mówi tylko, że proces żyje
     // i ile narzędzi wystawia. Platformy hostingowe wymagają takiego endpointu,
     // a brak w nim danych firmy jest warunkiem jego istnienia.
@@ -251,6 +285,13 @@ const server = createServer((req, res) => {
         startupError: probe.startupError(),
         monitorInProcess: MONITOR_IN_PROCESS,
         lastMailScanAt: safeLastScan(),
+        // Dwie rzeczy, bez których nie da się z zewnątrz odpowiedzieć na pytanie
+        // „dlaczego Claude się nie łączy". Żadna z nich nie jest sekretem:
+        //  - `oauth` mówi tylko, CZY hasło zgody jest ustawione, nie jakie,
+        //  - `issuer` to publiczny adres tego serwera; kto pyta, i tak go zna.
+        // Ich brak kosztował już jedną rundę zgadywania.
+        oauth: OAUTH_ENABLED,
+        issuer: issuerOf(req),
       });
       logAccess(200, "health", null, Date.now() - started);
       return;
