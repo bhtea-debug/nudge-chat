@@ -40,6 +40,15 @@ export const MailMessage = z.object({
   inReplyTo: z.string().nullable(),
   references: z.array(z.string()),
   attachments: z.array(MailAttachmentMeta),
+  /**
+   * Wiadomość masowa / automatyczna według NAGŁÓWKÓW RFC, nie według nazwy
+   * nadawcy: `List-Unsubscribe`, `Precedence: bulk|list|junk`, `Auto-Submitted`.
+   *
+   * Istnieje po to, żeby filtr przed modelem był deterministyczny. Zgadywanie
+   * po adresie („zawiera noreply") odrzuca prawdziwą korespondencję od firm,
+   * które tak mają skonfigurowaną skrzynkę.
+   */
+  bulk: z.boolean().default(false),
   /** Skrócony podgląd treści. Pełna treść tylko przez mail_get_thread. */
   snippet: z.string(),
 });

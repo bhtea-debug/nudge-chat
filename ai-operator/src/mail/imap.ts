@@ -79,6 +79,23 @@ const CONNECT_ATTEMPTS = 2;
  * Message-ID, normalizacja References. Nie przenosimy stąd niczego, co
  * dotyczyło kolejek, Turso, IDLE ani powiadomień push — MVP odpytuje na żądanie.
  */
+/**
+ * Czy to poczta masowa/automatyczna — wyłącznie na podstawie nagłówków RFC.
+ *
+ * `List-Unsubscribe` wstawiają systemy do wysyłek masowych. `Precedence: bulk`
+ * i `Auto-Submitted` (RFC 3834) oznaczają automat. Żaden z tych nagłówków nie
+ * pojawia się w mailu napisanym przez człowieka do człowieka — a nazwa nadawcy
+ * bywa myląca w obie strony, dlatego jej tu nie ma.
+ */
+function isBulk(parsed: ParsedMail): boolean {
+  const h = parsed.headers;
+  if (h.has("list-unsubscribe")) return true;
+  const precedence = String(h.get("precedence") ?? "").toLowerCase();
+  if (["bulk", "list", "junk"].includes(precedence.trim())) return true;
+  const auto = String(h.get("auto-submitted") ?? "").toLowerCase();
+  return auto.trim() !== "" && !auto.includes("no");
+}
+
 export class ImapMailProvider implements MailProvider {
   readonly id = "imap";
   readonly features = {
@@ -584,6 +601,7 @@ export class ImapMailProvider implements MailProvider {
       answered: msg.flags?.has("\\Answered") ?? false,
       inReplyTo: parsed.inReplyTo?.trim() || null,
       references: normalizeReferences(parsed.references, parsed.inReplyTo),
+      bulk: isBulk(parsed),
       attachments: (parsed.attachments ?? []).map((a) => ({
         filename: a.filename ?? null,
         contentType: a.contentType ?? null,

@@ -14,7 +14,13 @@ export type EffectClass =
 /** Zakres uprawnień. Agent dostaje listę zakresów; capability wymaga jednego. */
 export type Scope =
   | "mail:read"
-  | "erp:read";
+  | "erp:read"
+  /**
+   * Pamięć Copilota — lista spraw. Osobny zakres, bo to inna domena niż poczta
+   * i ERP: dane tutaj NIE są systemem prawdy firmy, więc uprawnienie do ich
+   * czytania nie mówi nic o dostępie do poczty ani do TeaBrew, i odwrotnie.
+   */
+  | "issues:read";
 
 export interface CapabilityContext {
   /** Kto wywołuje. W MVP zawsze jeden agent: "inbox-operator". */

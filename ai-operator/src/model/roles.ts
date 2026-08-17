@@ -58,13 +58,29 @@ export class ModelLayer {
     return this.profiles[role];
   }
 
-  /** Jednorazowe zapytanie bez narzędzi — używane przez triage. */
+/** Jednorazowe zapytanie bez narzędzi — używane przez triage. */
   async complete(args: {
     role: ModelRole;
     system: string;
     prompt: string;
     signal?: AbortSignal;
   }): Promise<string> {
+    return (await this.completeDetailed(args)).text;
+  }
+
+  /**
+   * To samo, ale ze zużyciem tokenów.
+   *
+   * Istnieje, bo monitor w tle pracuje bez człowieka i jego koszt musi być
+   * mierzony, a nie szacowany. `complete` zwracał wyłącznie tekst i wyrzucał
+   * `usage` — czyli jedyną twardą liczbę, jaką dostajemy od API.
+   */
+  async completeDetailed(args: {
+    role: ModelRole;
+    system: string;
+    prompt: string;
+    signal?: AbortSignal;
+  }): Promise<{ text: string; inputTokens: number; outputTokens: number; model: string }> {
     const p = this.profile(args.role);
     const res = await this.client.messages.create(
       {
@@ -76,10 +92,15 @@ export class ModelLayer {
       },
       args.signal ? { signal: args.signal } : {},
     );
-    return res.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("\n")
-      .trim();
+    return {
+      text: res.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("\n")
+        .trim(),
+      inputTokens: res.usage?.input_tokens ?? 0,
+      outputTokens: res.usage?.output_tokens ?? 0,
+      model: p.model,
+    };
   }
 }

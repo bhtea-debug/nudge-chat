@@ -10,9 +10,19 @@ import { createTeabrewCapabilities } from "./teabrew/capabilities.js";
 import { FixtureTeabrewReader, HttpTeabrewReader, type TeabrewReader } from "./teabrew/client.js";
 import { InboxOperator } from "./agent/operator.js";
 import { MailTriage } from "./agent/triage.js";
+import { CopilotStore } from "./state/store.js";
+import { createIssueCapabilities } from "./state/capabilities.js";
+import { MailMonitor } from "./state/monitor.js";
 
-/** Zakresy przyznane agentowi inbox-operator. Oba są tylko do czytania. */
-export const AGENT_SCOPES: readonly Scope[] = ["mail:read", "erp:read"];
+/**
+ * Zakresy przyznane agentowi. Wszystkie są tylko do czytania.
+ *
+ * `issues:read` to pamięć Copilota — osobny zakres, bo to inna domena niż
+ * poczta i ERP. Zapis do tej pamięci NIE przechodzi przez capability: robi to
+ * store bezpośrednio, wołany przez monitor i przez adapter. Dzięki temu
+ * `effectClass: "read"` pozostaje prawdą dla każdego narzędzia w rejestrze.
+ */
+export const AGENT_SCOPES: readonly Scope[] = ["mail:read", "erp:read", "issues:read"];
 
 export interface App {
   readonly config: AppConfig;
@@ -28,6 +38,9 @@ export interface App {
   readonly models: ModelLayer;
   readonly operator: InboxOperator;
   readonly triage: MailTriage;
+  /** Pamięć Copilota. Leniwa — otwiera dziennik przy pierwszym użyciu. */
+  readonly store: CopilotStore;
+  readonly monitor: MailMonitor;
   close(): Promise<void>;
 }
 
@@ -65,9 +78,16 @@ export function createApp(config: AppConfig = loadConfig()): App {
     return teabrewReader;
   };
 
+  // Stan Copilota jest leniwy: `npm run caps` i `openapi` nie mają po co
+  // otwierać dziennika, a MCP otwiera go dopiero przy pierwszym pytaniu o sprawy.
+  let store: CopilotStore | null = null;
+  const getStore = (): CopilotStore =>
+    (store ??= new CopilotStore({ dir: config.copilot.stateDir, actor: "copilot" }));
+
   const registry = new CapabilityRegistry().registerAll([
     ...createMailCapabilities(getMail),
     ...createTeabrewCapabilities(getTeabrew),
+    ...createIssueCapabilities(getStore),
   ]);
 
   let models: ModelLayer | null = null;
@@ -81,10 +101,27 @@ export function createApp(config: AppConfig = loadConfig()): App {
 
   let operator: InboxOperator | null = null;
   let triage: MailTriage | null = null;
+  let monitor: MailMonitor | null = null;
 
   return {
     config,
     registry,
+    get store() {
+      return getStore();
+    },
+    get monitor() {
+      return (monitor ??= new MailMonitor({
+        registry,
+        models: getModels(),
+        scopes: AGENT_SCOPES,
+        store: getStore(),
+        auditFile: config.auditFile,
+        folders: config.copilot.monitorFolders,
+        firstRunDays: config.copilot.firstRunDays,
+        maxPerFolder: config.copilot.maxPerFolder,
+        maxErpLookups: config.copilot.maxErpLookups,
+      }));
+    },
     get models() {
       return getModels();
     },
@@ -111,6 +148,9 @@ export function createRegistryForProjections(): CapabilityRegistry {
   const caps: AnyCapability[] = [
     ...createMailCapabilities(unreachable),
     ...createTeabrewCapabilities(unreachable),
+    ...createIssueCapabilities(() => {
+      throw new Error("rejestr do projekcji nie otwiera stanu");
+    }),
   ];
   return new CapabilityRegistry().registerAll(caps);
 }

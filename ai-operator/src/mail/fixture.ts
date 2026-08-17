@@ -44,6 +44,7 @@ const FixtureMessage = z.object({
     .default([]),
   text: z.string().default(""),
   html: z.string().nullable().default(null),
+  bulk: z.boolean().default(false),
 });
 
 /**
@@ -127,6 +128,7 @@ export class FixtureMailProvider implements MailProvider {
         inReplyTo: m.inReplyTo,
         references: normalizeReferences(m.references, m.inReplyTo),
         attachments: m.attachments,
+        bulk: m.bulk,
         snippet: makeSnippet(stripQuotedHistory(body)),
       };
       return { message, body };

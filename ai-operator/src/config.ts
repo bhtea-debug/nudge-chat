@@ -26,6 +26,20 @@ export interface AppConfig {
   readonly anthropicApiKey: string;
   readonly models: { readonly fast: string; readonly reason: string };
   readonly auditFile: string | undefined;
+  /** Pamięć Copilota: katalog stanu i parametry monitora w tle. */
+  readonly copilot: {
+    readonly stateDir: string;
+    /**
+     * Foldery obserwowane przez monitor. Domyślnie tylko skrzynka odbiorcza —
+     * rozszerzenie wymaga DOWODU z `npm run mail:foldery`, nie założenia, że
+     * wszystkie foldery są ciekawe.
+     */
+    readonly monitorFolders: readonly string[];
+    readonly intervalMinutes: number;
+    readonly firstRunDays: number;
+    readonly maxPerFolder: number;
+    readonly maxErpLookups: number;
+  };
   readonly mail:
     | { readonly kind: "fixture"; readonly filePath: string }
     | {
@@ -77,6 +91,19 @@ export function loadConfig(): AppConfig {
       reason: opt("MODEL_REASON", "claude-opus-5"),
     },
     auditFile: auditFileRaw ? fromPackageRoot(auditFileRaw) : undefined,
+    copilot: {
+      stateDir: opt("COPILOT_STATE_DIR", "state"),
+      monitorFolders: opt("MAIL_MONITOR_FOLDERS", opt("MAIL_FOLDER", "INBOX"))
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      // Kilkanaście minut, nie sekundy: poczta nie zmienia się częściej,
+      // a każdy skan to połączenie IMAP i potencjalnie wywołanie modelu.
+      intervalMinutes: Math.max(5, Number(opt("MONITOR_INTERVAL_MINUTES", "15"))),
+      firstRunDays: Math.max(1, Number(opt("MONITOR_FIRST_RUN_DAYS", "3"))),
+      maxPerFolder: Math.max(1, Number(opt("MONITOR_MAX_PER_FOLDER", "50"))),
+      maxErpLookups: Math.max(0, Number(opt("MONITOR_MAX_ERP_LOOKUPS", "10"))),
+    },
     mail:
       mode === "live"
         ? {

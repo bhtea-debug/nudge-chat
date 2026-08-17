@@ -243,6 +243,11 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
 
   it("rejestr zawiera dokładnie zaplanowane capability", () => {
     expect(caps.map((c) => c.name)).toEqual([
+      // Pamięć Copilota — sprawy. Zakres issues:read, wyłącznie odczyt.
+      "copilot_get_changes_since",
+      "copilot_get_issue",
+      "copilot_get_open_issues",
+      "copilot_search_issues",
       "mail_get_thread",
       "mail_list_recent",
       "mail_search",

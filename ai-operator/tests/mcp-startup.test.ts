@@ -15,6 +15,13 @@ import { describe, expect, it } from "vitest";
  * na module, który przy imporcie robi robotę.
  */
 
+/**
+ * Ile narzędzi publikuje MCP: 3 poczta + 4 TeaBrew + 4 sprawy Copilota.
+ * Trzymane w jednym miejscu, bo ta liczba rośnie i rozjazd w dwóch testach
+ * kosztowałby więcej niż stała.
+ */
+const EXPECTED_TOOLS = 11;
+
 const operatorDir = fileURLToPath(new URL("..", import.meta.url));
 const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
 const entry = fileURLToPath(new URL("../src/bin/mcp.ts", import.meta.url));
@@ -92,7 +99,7 @@ describe("serwer MCP wstaje w warunkach aplikacji graficznej", () => {
 
     expect(r.initialize?.result?.serverInfo?.name).toBe("bht-operator");
     expect(r.tools?.error, `tools/list zwróciło błąd; stderr: ${r.stderr}`).toBeUndefined();
-    expect(r.tools.result.tools).toHaveLength(7);
+    expect(r.tools.result.tools).toHaveLength(EXPECTED_TOOLS);
     expect(r.exitCode).toBe(0);
   }, 40_000);
 
@@ -106,7 +113,7 @@ describe("serwer MCP wstaje w warunkach aplikacji graficznej", () => {
     });
 
     expect(r.initialize?.result?.serverInfo?.name).toBe("bht-operator");
-    expect(r.tools.result.tools).toHaveLength(7);
+    expect(r.tools.result.tools).toHaveLength(EXPECTED_TOOLS);
     // Utrata trwałego logu nie może być cicha.
     expect(r.stderr).toContain("[audit]");
   }, 40_000);
