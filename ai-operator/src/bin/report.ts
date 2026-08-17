@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { createApp } from "../index.js";
 import { fromPackageRoot } from "../paths.js";
 import { renderReportHtml, summarize } from "../agent/report-view.js";
+import { formatModelError } from "../model/errors.js";
 
 const argv = process.argv.slice(2);
 const num = (flag: string, fallback: number): number => {
@@ -77,8 +78,9 @@ async function main(): Promise<number> {
     // Kontrola dowodów działa w tym trybie — i ma być widoczna.
     return result.evidence.some((e) => e.ok === false) ? 3 : 0;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stdout.write(`Raport się nie udał: ${msg}\n`);
+    // Ten sam komunikat co w monitorze — właściciel widzi go w powiadomieniu
+    // macOS, więc surowy JSON z API byłby tam całkowicie bezużyteczny.
+    process.stdout.write(`Raport się nie udał: ${formatModelError(err)}\n`);
     return 1;
   } finally {
     await app.close();

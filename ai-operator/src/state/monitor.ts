@@ -9,6 +9,7 @@ import { extractOrderRefs, matchIssue } from "./correlate.js";
 import { splitNoise } from "./noise.js";
 import type { CopilotStore } from "./store.js";
 import { ISSUE_CATEGORIES, ISSUE_PRIORITIES, type IssueStatus, type SourceRef } from "./types.js";
+import { explainModelError } from "../model/errors.js";
 
 /**
  * Background Operator — obserwuje pocztę bez rozmowy z człowiekiem.
@@ -284,7 +285,11 @@ export class MailMonitor {
           scanAt,
         );
       } catch (err) {
-        error = err instanceof Error ? err.message : String(err);
+        // Surowy `400 {"type":"error",...}` wysyła człowieka szukać usterki
+        // w kodzie, gdy problemem jest saldo na koncie. Tłumaczymy na komunikat,
+        // z którego wynika, co zrobić.
+        const e = explainModelError(err);
+        error = e.kind === "inny" ? e.plain : `${e.plain} ${e.advice}`;
         // Nieudany skan NIE przesuwa checkpointu. Inaczej awaria połączenia
         // cicho przeskakiwałaby wiadomości, których nikt już nie zobaczy.
         this.opts.store.saveCheckpoint(

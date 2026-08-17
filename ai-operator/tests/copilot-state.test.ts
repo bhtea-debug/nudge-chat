@@ -13,6 +13,7 @@ import type { Issue, SourceRef } from "../src/state/types.js";
 import type { MailMessage } from "../src/mail/types.js";
 import { judge } from "../src/mail/folder-verdict.js";
 import type { FolderStat } from "../src/mail/imap.js";
+import { explainModelError } from "../src/model/errors.js";
 
 const fresh = (): string => mkdtempSync(join(tmpdir(), "bht-state-"));
 
@@ -404,5 +405,39 @@ describe("ocena folderów poczty", () => {
     const v = judge(f({ error: "NO Mailbox doesn't exist" }));
     expect(v.verdict).toBe("pomiń");
     expect(v.why).toContain("nie udało się odczytać");
+  });
+});
+
+describe("błędy API modelu tłumaczone na komunikat dla człowieka", () => {
+  it("brak kredytów mówi, że kod jest w porządku i nic nie zginęło", () => {
+    const e = explainModelError(
+      new Error('400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}'),
+    );
+    expect(e.kind).toBe("brak_kredytow");
+    expect(e.advice).toContain("NIE jest usterka kodu");
+    expect(e.advice).toContain("checkpoint");
+    // Powtarzanie tego nie naprawi.
+    expect(e.transient).toBe(false);
+  });
+
+  it("brak klucza wyjaśnia, że rozmowa przez MCP go nie potrzebuje", () => {
+    const e = explainModelError(new Error("brak ANTHROPIC_API_KEY — jest wymagany tylko dla ask i triage"));
+    expect(e.kind).toBe("brak_klucza");
+    expect(e.advice).toContain("MCP");
+  });
+
+  it("limit szybkości i przeciążenie są przejściowe", () => {
+    expect(explainModelError(new Error("429 rate_limit_error")).transient).toBe(true);
+    expect(explainModelError(new Error("529 overloaded_error")).transient).toBe(true);
+  });
+
+  it("nieznanego błędu nie udaje, że rozumie", () => {
+    const e = explainModelError(new Error("coś zupełnie innego"));
+    expect(e.kind).toBe("inny");
+    expect(e.plain).toContain("coś zupełnie innego");
+  });
+
+  it("nie gubi treści przy błędzie, który nie jest Error", () => {
+    expect(explainModelError("socket hang up").plain).toContain("socket hang up");
   });
 });
