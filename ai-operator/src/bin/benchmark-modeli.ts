@@ -171,8 +171,10 @@ const OUTPUT_SCHEMA = {
   type: "object",
   properties: {
     class: { type: "string", enum: ["A", "B", "C"] },
-    confidence: { type: "number", minimum: 0, maximum: 1 },
-    reason: { type: "string", minLength: 1, maxLength: 240 },
+    // Claude structured outputs nie obsługuje ograniczeń minimum/maximum
+    // ani minLength/maxLength. Te warunki nadal wymusza PredictionSchema po odpowiedzi.
+    confidence: { type: "number" },
+    reason: { type: "string" },
   },
   required: ["class", "confidence", "reason"],
   additionalProperties: false,
