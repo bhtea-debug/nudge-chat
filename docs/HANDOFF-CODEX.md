@@ -13,10 +13,14 @@ Dokument przekazania. Stan na **17.08.2026**, gałąź
 > Sekcja 12 mówi, co jest zablokowane i **na czym dokładnie** — to rzeczy, których
 > żaden agent nie odblokuje sam, bo wymagają konta i telefonu właściciela.
 >
-> **Sekcja 14 jest najświeższa i odpowiada na pytanie architektoniczne z ostatniej
-> specyfikacji: werdykt A — Claude nadaje się na interfejs na komputerze i na
-> telefonie, potwierdzone pomiarem na iPhonie właściciela.** Zawiera też cztery
-> rundy, które kosztowało podłączenie, i siódmą usterkę doboru spraw.
+> **Sekcja 15 jest najświeższa: walidacja GO/NO-GO zakończyła się NO-GO —
+> dostarczanie działa (push na iPhone potwierdzony), ale dobór spraw ma czułość
+> alarmu 0%. Przeczytaj ją, ZANIM zaplanujesz cokolwiek wokół powiadomień.**
+>
+> Sekcja 14 odpowiada na wcześniejsze pytanie architektoniczne: werdykt A —
+> Claude nadaje się na interfejs na komputerze i na telefonie, potwierdzone
+> pomiarem na iPhonie właściciela. Zawiera też cztery rundy, które kosztowało
+> podłączenie konektora.
 
 Czytaj razem z:
 
@@ -986,3 +990,108 @@ Runda 3 kosztowała najwięcej i była w całości usterką narzędzia, nie prod
   narzędzia, panel działa. **Do codziennej pracy wymagane.**
 - **Siódma usterka doboru** (wyżej).
 - Wszystko z sekcji 9 — decyzje właściciela — pozostaje aktualne.
+
+---
+
+## 15. Walidacja GO/NO-GO — wynik: NO-GO
+
+Pełny raport: `docs/GO-NOGO-VALIDATION.md`. Tu jest to, co musi wpłynąć na
+planowanie dalszej pracy.
+
+| Obszar | Wynik | Skąd wiadomo |
+| --- | --- | --- |
+| Connecteam | **FAIL** | prawdziwe konto, prawdziwy klucz, trzy ścieżki odczytu → 404/405 |
+| Push iPhone | **PASS** | prawdziwe powiadomienie na iPhonie właściciela, aplikacja zamknięta |
+| Quality | **FAIL** | 50 prawdziwych wiadomości, etykiety właściciela, czułość alarmu **0%** |
+
+### Najważniejsze ustalenie: to jest JEDEN zły sygnał, nie seria pomyłek
+
+Sekcja 13 opisywała sześć usterek jednej klasy i traktowała je jako usterki.
+Pomiar pokazał, że to nie były usterki, tylko **konsekwencje reguły**:
+
+> System podnosi alarm wtedy i tylko wtedy, gdy znajdzie numer o KSZTAŁCIE
+> naszego zamówienia, którego **NIE MA w TeaBrew**.
+
+Ta reguła odpowiada na pytanie „czy coś się rozjechało w danych", a nie „czy to
+jest pilne". Z niej wynikają obie strony błędu naraz — i dlatego nie da się jej
+poprawić wyjątkami:
+
+**Fałszywe alarmy (3 z 3 pochodzą stąd):** numer faktury dostawcy `20260162`,
+numer telefonu współpracowniczki `534888748`, własny numer telefonu właściciela
+ze stopki `732958000`. Każdy z nich ma poprawny kształt numeru zamówienia.
+Kontrola kształtu **z zasady** tego nie odróżni — to czwarty raz, kiedy ten sam
+mechanizm wyprodukował fałszywy alarm (wcześniej NIP InPostu, dziesięć cyfr).
+
+**Przeoczone alarmy (2 z 4 pochodzą stąd):** zamówienia Rossmanna `2307348`
+i `2307029` — prawdziwe, przychodzące, numer rozpoznany poprawnie. Nie
+zaalarmowały, bo **są** w TeaBrew. Przy tej regule poprawnie działające
+zamówienie od dużego klienta jest **z definicji niealarmowalne.**
+
+**Pozostałe 2 przeoczenia** to inna klasa: powiadomienia z Missive („X mentioned
+you") odrzucone przez filtr szumu po nagłówkach `List-Unsubscribe` /
+`Precedence` / `Auto-Submitted`. Reguła jest poprawna dla masówki, ale narzędzia
+zespołowe wysyłają tymi nagłówkami także rzeczy imienne. Odsianie jest
+**milczące**, więc te wiadomości nie pojawiają się nigdzie.
+
+### Liczby, żeby nie trzeba było ich szukać
+
+| | A (alarm) | B (podsumowanie) | C (nieistotne) |
+| --- | --- | --- | --- |
+| właściciel | 4 | 18 | 28 |
+| system | 3 | 8 | 39 |
+
+Czułość ALARM **0%**, precyzja **0%**, TP **0**, FN **4**, FP **3**, zgodność
+3-klasowa 68%. Ta ostatnia liczba jest myląca — bierze się prawie w całości
+z klasy C, najliczniejszej. Osobna obserwacja: **system ukrywa więcej, niż
+właściciel chce ukryć** (39 wobec 28).
+
+Zbiór ma 50, nie 100 wiadomości, i powód jest strukturalny: kontrakt
+`mail_list_recent` ogranicza jeden odczyt do 50, a **to samo ograniczenie ma
+monitor** — system nigdy nie ogląda więcej za jednym razem. Nie podniosłem tego
+limitu, bo zmiana kontraktu w środku pomiaru znaczyłaby, że mierzę coś innego
+niż produkt.
+
+### Czego NIE robić
+
+**Nie łatać tych przypadków wyjątkami per nadawca, format czy numer.** Zadanie
+tego zabraniało i pomiar pokazuje, dlaczego: przy zerowej czułości i zerowej
+precyzji problemem nie jest kalibracja progu, tylko to, że sygnał mierzy co
+innego. Każdy wyjątek dołożony do tej reguły przedłuża jej życie i utrudnia
+zobaczenie, że jest zła.
+
+**Nie zwiększać zbioru w nadziei na lepszy wynik.** Przy zerowej liczbie trafień
+wniosek nie zależy od wielkości próby.
+
+### Narzędzie do powtórzenia pomiaru
+
+`npm run ocena` — zamraża zbiór do pliku, klasyfikuje go aktualnym mechanizmem,
+zbiera etykiety właściciela **bez pokazywania mu oceny systemu** (jedno
+naciśnięcie klawisza na wiadomość), liczy metryki i wypisuje przeoczone alarmy
+z powodem przegapienia. `npm run ocena -- --wynik` wypisuje same liczby.
+`--od-nowa` zaczyna od zera. Narzędzie nie woła modelu i niczego nie zapisuje
+ani w skrzynce, ani w dzienniku spraw.
+
+**Po każdej zmianie w doborze spraw ten pomiar da się powtórzyć na tym samym
+zamrożonym zbiorze i tych samych etykietach** — czyli porównać uczciwie.
+
+### Co przybyło w kodzie przy okazji Testu 2
+
+Odbiornik Web Push: `src/push/{subskrypcje,wyslij,strona}.ts`, okablowanie
+w `src/bin/mcp-http.ts` (`/push`, `/push/sw.js`, `/push/manifest.webmanifest`,
+`/push/ikona.png`, `POST /push/{subscribe,unsubscribe,test}`), generator kluczy
+`scripts/generuj-vapid.mjs` i wysyłka `npm run push:test`. Wybrany świadomie
+zamiast ntfy/Pushover: ładunek jest szyfrowany end-to-end, więc nazwy klientów
+i numery zamówień nie przechodzą przez cudzy serwer otwartym tekstem.
+
+Strona jest ODBIORNIKIEM, nie interfejsem: jedno pole, jeden przycisk, zero
+spraw na ekranie. Nie jest wyjątkiem od decyzji „całe UI w Claude".
+
+### Otwarte, z przypisaniem
+
+- **Wolumen `/data` na Railwayu — właściciel, 2 minuty w panelu.** Bez niego
+  restart kontenera kasuje sprawy ORAZ subskrypcję powiadomień. CLI Railwaya
+  wywraca się na tym paniką własnego narzędzia (`volume.rs:836`).
+- **Webhooki czatu Connecteam — pytanie do wsparcia dostawcy.** Jeśli włączą,
+  po naszej stronie nie ma nic do zbudowania.
+- **Zamykanie spraw bez terminala — decyzja produktowa właściciela.** Wciąż
+  otwarta, patrz sekcja 9.
