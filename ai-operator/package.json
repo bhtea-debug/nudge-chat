@@ -32,7 +32,8 @@
     "pilne": "tsx --env-file-if-exists=.env src/bin/pilne.ts",
     "push:test": "node scripts/push-test.mjs",
     "ocena": "tsx --env-file-if-exists=.env src/bin/ocena.ts",
-    "benchmark": "tsx src/bin/benchmark-modeli.ts"
+    "benchmark": "tsx src/bin/benchmark-modeli.ts",
+    "benchmark:policy": "tsx src/bin/benchmark-modeli.ts --policy=rossmann-v1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

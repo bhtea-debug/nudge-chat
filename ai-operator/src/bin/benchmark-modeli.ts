@@ -12,6 +12,11 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import {
+  ROSSMANN_NEW_ORDER_POLICY_ID,
+  classifyByBusinessPolicy,
+} from "../classification/business-policy.js";
+import { findOrderRefs, isOwnOrderShape } from "../state/order-refs.js";
 
 type Klasa = "A" | "B" | "C";
 
@@ -19,7 +24,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const DATASET_PATH = resolve(ROOT, "state/ocena/zbior.json");
 const LABELS_PATH = resolve(ROOT, "state/ocena/etykiety.json");
 const ENV_PATH = resolve(ROOT, ".env.benchmark.local");
-const REPORT_PATH = resolve(ROOT, "docs/MODEL-BENCHMARK.md");
+const POLICY_MODE = process.argv.includes("--policy=rossmann-v1");
+const REPORT_PATH = resolve(
+  ROOT,
+  POLICY_MODE
+    ? "docs/MODEL-BENCHMARK-POLICY-REGRESSION.md"
+    : "docs/MODEL-BENCHMARK.md",
+);
 
 // Te wartości przypinają dokładnie ten zamrożony zbiór, który właściciel
 // zatwierdził 18.08.2026. Sama liczba rekordów i rozkład klas nie wystarczają,
@@ -130,6 +141,8 @@ interface PredictionResult {
   readonly item: DatasetItem;
   readonly prediction: Prediction;
   readonly usage: Usage;
+  readonly decidedBy: "model" | "business-policy";
+  readonly policyId: string | null;
 }
 
 interface RunResult {
@@ -334,11 +347,45 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.name : "nieznany błąd";
 }
 
+function policyPrediction(item: DatasetItem): PredictionResult | null {
+  if (!POLICY_MODE) return null;
+
+  // Adapter dotyczy wyłącznie zamrożonego benchmarku. Produkcyjne źródło
+  // powinno dostarczyć kanoniczne customerId/eventType, zamiast polegać na
+  // nazwie wyświetlanej nadawcy.
+  const isRossmannFeed = item.nadawca.trim().toLocaleLowerCase("pl-PL") === "rossmann";
+  const orderRef = findOrderRefs(item.temat)
+    .map((found) => found.ref)
+    .find(isOwnOrderShape) ?? null;
+  const decision = classifyByBusinessPolicy({
+    source: "mail",
+    eventType: isRossmannFeed && orderRef ? "new_order" : "message",
+    customerId: isRossmannFeed ? "rossmann" : null,
+    externalRef: orderRef,
+  });
+
+  if (!decision) return null;
+  return {
+    item,
+    prediction: {
+      class: decision.classification,
+      confidence: 1,
+      reason: decision.reason,
+    },
+    usage: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    decidedBy: "business-policy",
+    policyId: decision.policyId,
+  };
+}
+
 async function classifyOne(
   client: Anthropic,
   model: ModelCandidate,
   item: DatasetItem,
 ): Promise<PredictionResult> {
+  const policy = policyPrediction(item);
+  if (policy) return policy;
+
   const message = await client.messages.create({
     model: model.id,
     max_tokens: 256,
@@ -377,6 +424,8 @@ async function classifyOne(
       cacheWrite: message.usage.cache_creation_input_tokens ?? 0,
       cacheRead: message.usage.cache_read_input_tokens ?? 0,
     },
+    decidedBy: "model",
+    policyId: null,
   };
 }
 
@@ -583,6 +632,13 @@ function verdictFor(
 ): { verdict: VerdictName; reason: string } {
   if (metrics.tpA === 4 && metrics.fpA <= 4) {
     if (stability === "passed") {
+      if (POLICY_MODE) {
+        return {
+          verdict: "CONDITIONAL GO",
+          reason:
+            "Metryki spełniają próg GO, ale polityka powstała po analizie błędów na tym samym zbiorze. Ten przebieg jest regresją, nie niezależnym benchmarkiem; formalne GO wymaga świeżego holdoutu.",
+        };
+      }
       return {
         verdict: "GO",
         reason:
@@ -633,12 +689,20 @@ function buildReport(args: {
     ...args.cheapRuns.filter((run) => run.runNumber > 1),
   ];
   const totalCost = allRuns.reduce((sum, run) => sum + run.costUsd, 0);
+  const policyDecisionCount = args.primaryRuns[0]!.predictions.filter(
+    (prediction) => prediction.decidedBy === "business-policy",
+  ).length;
 
   const lines: string[] = [
-    "# BHT — MODEL BENCHMARK",
+    POLICY_MODE
+      ? "# BHT — BUSINESS POLICY REGRESSION"
+      : "# BHT — MODEL BENCHMARK",
     "",
     `Wygenerowano: **${args.runAt.toISOString()}**  `,
     `Prompt: **${CLASSIFIER_PROMPT_VERSION}**  `,
+    POLICY_MODE
+      ? `Tryb: **regresja po analizie błędów**, nie niezależny benchmark. Polityka: **${ROSSMANN_NEW_ORDER_POLICY_ID}**.`
+      : "Tryb: **niezależny benchmark** bez polityk dodanych po analizie wyniku.",
     "Zakres: wyłącznie rola **classify**, zamrożone 50 wiadomości, Claude API (Anthropic).",
     "",
     "## FINAL VERDICT",
@@ -674,6 +738,20 @@ function buildReport(args: {
     "## Baseline",
     "",
     "Obecny system deterministyczny: **TP A=0, FN A=4, FP A=3, recall A=0%, precision A=0%, accuracy 3-klasowa=68%**.",
+    ...(POLICY_MODE
+      ? [
+          "",
+          "Niezależny benchmark v1: **NO-GO**. Sonnet 5: TP A=2, FN A=2, FP A=2, recall A=50%, precision A=50%.",
+          "",
+          "## Jawna polityka biznesowa",
+          "",
+          `- każde znormalizowane nowe zamówienie Rossmann → **A**,`,
+          `- decyzja właściciela: **${ROSSMANN_NEW_ORDER_POLICY_ID}**,`,
+          `- polityka rozstrzygnęła **${policyDecisionCount}/50** wiadomości przed modelem w każdym przebiegu,`,
+          "- dopasowanie wymaga kanonicznego customerId, eventType i numeru zamówienia; samo słowo „Rossmann” nie wystarcza,",
+          "- produkcyjny monitor nie został zmieniony ani przełączony.",
+        ]
+      : []),
     "",
     "## Dataset",
     "",
@@ -682,7 +760,9 @@ function buildReport(args: {
     `- SHA-256 zbior.json: \`${args.datasetHash}\`,`,
     `- SHA-256 etykiety.json: \`${args.labelsHash}\`,`,
     "- skrypt odmawia startu, jeśli którykolwiek hash różni się od zatwierdzonego, zamrożonego pliku,",
-    "- model otrzymał wyłącznie: nadawcę, temat, podgląd dostępny w dataset i datę,",
+    POLICY_MODE
+      ? `- model otrzymał wyłącznie ${50 - policyDecisionCount} wiadomości nierozstrzygniętych przez politykę: nadawcę, temat, podgląd i datę,`
+      : "- model otrzymał wyłącznie: nadawcę, temat, podgląd dostępny w dataset i datę,",
     "- gold labels i pola starego systemu nie były dołączane do żądań API,",
     "- raport nie zawiera surowych tematów, nadawców, podglądów ani uzasadnień modelu; błędy mają tylko anonimowe ID.",
     "",
@@ -775,6 +855,12 @@ function buildReport(args: {
     verdict.reason,
     "",
     "Progi: GO wymaga TP A=4, FP A≤4 oraz trzech stabilnych przebiegów bez pominięcia A i bez przekroczenia FP. CONDITIONAL GO wymaga TP A≥3 i FP A≤8; model bez testu stabilności nie może otrzymać GO.",
+    ...(POLICY_MODE
+      ? [
+          "",
+          "Ponieważ politykę ustalono po obejrzeniu false negatives, ten raport może dać najwyżej CONDITIONAL GO. Następna bramka to świeży, prospektywny holdout.",
+        ]
+      : []),
     "",
     "Benchmark nie przełączył produkcyjnego classifiera, nie wysłał pushy i nie zmienił BHT Copilot, TeaBrew, Railway ani Czat Firmowy.",
     "",
@@ -791,6 +877,10 @@ function writeReport(report: string): void {
 }
 
 async function main(): Promise<void> {
+  const requestedPolicy = process.argv.find((arg) => arg.startsWith("--policy="));
+  if (requestedPolicy && requestedPolicy !== "--policy=rossmann-v1") {
+    stop(`nieznany tryb polityki: ${requestedPolicy}.`);
+  }
   const runAt = new Date();
   const frozen = parseFrozenData();
   const apiKey = parseApiKey();
