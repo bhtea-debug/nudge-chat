@@ -31,7 +31,8 @@
     "wdroz": "bash scripts/deploy-railway.sh",
     "pilne": "tsx --env-file-if-exists=.env src/bin/pilne.ts",
     "push:test": "node scripts/push-test.mjs",
-    "ocena": "tsx --env-file-if-exists=.env src/bin/ocena.ts"
+    "ocena": "tsx --env-file-if-exists=.env src/bin/ocena.ts",
+    "benchmark": "tsx src/bin/benchmark-modeli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
