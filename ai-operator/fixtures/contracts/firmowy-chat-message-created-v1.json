@@ -1,0 +1,36 @@
+{
+  "type": "bht.chat.message-created.v1",
+  "eventId": "firmowy-chat:message:msg_2307348",
+  "occurredAt": 1787068800000,
+  "source": {
+    "app": "firmowy-czat",
+    "conversationId": "conv_operacje",
+    "messageId": "msg_2307348"
+  },
+  "actor": {
+    "userId": "user_ania",
+    "displayName": "Ania",
+    "department": "biuro",
+    "roleTier": "kierownik",
+    "aiAccess": "basic",
+    "scopeKeys": [
+      "conversation:conv_operacje",
+      "department:biuro",
+      "role:kierownik"
+    ]
+  },
+  "conversation": {
+    "type": "channel",
+    "title": "Operacje"
+  },
+  "message": {
+    "body": "Pilne: brak potwierdzenia zamówienia 2307348",
+    "importance": "urgent",
+    "linkedRef": {
+      "kind": "order",
+      "id": "2307348",
+      "label": "Zamówienie 2307348"
+    },
+    "attachments": []
+  }
+}

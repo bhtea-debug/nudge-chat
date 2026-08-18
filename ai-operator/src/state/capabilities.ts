@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { AnyCapability, Capability } from "../capability/types.js";
-import { ISSUE_CATEGORIES, ISSUE_PRIORITIES, ISSUE_STATUSES, OPEN_STATUSES } from "./types.js";
+import {
+  ISSUE_CATEGORIES,
+  ISSUE_PRIORITIES,
+  ISSUE_STATUSES,
+  OPEN_STATUSES,
+  SOURCE_KINDS,
+} from "./types.js";
 import type { CopilotStore, } from "./store.js";
 import { searchableText, viewRef, kindsOf } from "./source-ref.js";
 import { laneCounts, laneOf, LANE_ORDER, missingInErp } from "./lanes.js";
@@ -49,7 +55,7 @@ const IssueBrief = z.object({
    */
   neededFromOwner: z.string().nullable(),
   /** Z których systemów pochodzą dowody w tej sprawie. */
-  sources: z.array(z.enum(["mail", "connecteam"])),
+  sources: z.array(z.enum(SOURCE_KINDS)),
   /**
    * `true` = numer z wiadomości, którego TeaBrew NIE ZNA. Najczęściej znaczy
    * „przyszło, nikt nie wprowadził" — czyli robota, nie usterka.
@@ -187,10 +193,10 @@ const IssueOutput = z.object({
       messageId: z.string(),
       /**
        * Z którego systemu. Claude MUSI to widzieć, bo od tego zależy, czym
-       * dociągnąć treść: `mail` → mail_get_thread, `connecteam` → treści nie
-       * dociągnie wcale i nie wolno mu jej wymyślić.
+       * dociągnąć treść: `mail` → mail_get_thread; źródła czatowe mają tylko
+       * zapisany podgląd i nie wolno wymyślać dalszej treści.
        */
-      source: z.enum(["mail", "connecteam"]),
+      source: z.enum(SOURCE_KINDS),
       subject: z.string(),
       from: z.string().nullable(),
       date: z.string(),

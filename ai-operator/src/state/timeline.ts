@@ -59,12 +59,12 @@ export function buildTimeline(issue: Issue): TimelineEntry[] {
     // Inaczej wychodziło „Ania — Produkcja — nie mamy etykiet", czyli nazwa
     // kanału wciśnięta między autora i to, co napisał. Widać to dopiero na
     // prawdziwym wyjściu, nie w teście na obecność pól.
-    const kanal = v.kind === "connecteam" && v.heading ? ` · ${v.heading}` : "";
+    const kanal = v.kind !== "mail" && v.heading ? ` · ${v.heading}` : "";
     entries.push({
       at: v.date,
       source: `${SOURCE_LABEL[v.kind]}${kanal}`,
       who: v.author ?? "nieznany nadawca",
-      what: v.kind === "connecteam" ? describeRef("", v.preview) : describeRef(v.heading, v.preview),
+      what: v.kind !== "mail" ? describeRef("", v.preview) : describeRef(v.heading, v.preview),
       kind: "komunikacja",
       own: false,
     });

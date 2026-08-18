@@ -24,6 +24,11 @@ import {
 import { Subskrypcje } from "../push/subskrypcje.js";
 import { ikonaPng, manifest, serviceWorker, stronaPush } from "../push/strona.js";
 import { konfiguracjaZeSrodowiska, wyslij, type Waga } from "../push/wyslij.js";
+import {
+  FirmowyChatEvent,
+  ingestFirmowyChatEvent,
+  verifyFirmowyChatSignature,
+} from "../chat/events.js";
 
 /**
  * Remote MCP — ten sam serwer, transport HTTP, dostępny także z telefonu.
@@ -352,6 +357,7 @@ const server = createServer((req, res) => {
         // Liczba urządzeń, nie adresy — te są sekretem subskrypcji.
         push: PUSH !== null,
         pushUrzadzenia: safeIleSubskrypcji(),
+        firmowyChatEvents: Boolean(app.config.firmowyChat.eventsSecret),
       });
       logAccess(200, "health", null, Date.now() - started);
       return;
@@ -423,6 +429,14 @@ const server = createServer((req, res) => {
     if (url.pathname === "/webhook/connecteam") {
       const status = await handleConnecteamWebhook(req, res);
       logAccess(status, "webhook", "connecteam", Date.now() - started);
+      return;
+    }
+
+    // Własny Czat Firmowy ma osobny, wersjonowany kontrakt i obowiązkowy HMAC.
+    // Nie współdzieli luźnego parsera webhooków z zewnętrznym dostawcą.
+    if (url.pathname === "/events/chat") {
+      const status = await handleFirmowyChatEvent(req, res);
+      logAccess(status, "event", "firmowy-chat", Date.now() - started);
       return;
     }
 
@@ -596,6 +610,112 @@ async function handleConnecteamWebhook(req: IncomingMessage, res: ServerResponse
     json(res, 200, { accepted: false, why: "błąd po naszej stronie — zapisany w logu" });
     return 200;
   }
+}
+
+/**
+ * Zdarzenie z własnego Czatu Firmowego. W odróżnieniu od webhooka zewnętrznego
+ * błąd zapisu zwraca 500: nadawca ma trwały outbox i bezpiecznie ponowi request.
+ */
+async function handleFirmowyChatEvent(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<number> {
+  if (req.method !== "POST") {
+    json(res, 405, { error: "użyj POST" });
+    return 405;
+  }
+
+  let raw: string;
+  try {
+    raw = await readBody(req);
+  } catch {
+    json(res, 413, { error: "ładunek za duży" });
+    return 413;
+  }
+
+  const timestamp = singleHeader(req.headers["x-bht-timestamp"]);
+  const signature = singleHeader(req.headers["x-bht-signature"]);
+  const verdict = verifyFirmowyChatSignature({
+    rawBody: raw,
+    timestampHeader: timestamp,
+    signatureHeader: signature,
+    secret: app.config.firmowyChat.eventsSecret,
+  });
+  if (!verdict.ok) {
+    const status = verdict.reason === "not_configured" ? 503 : 401;
+    json(res, status, {
+      error: verdict.reason === "not_configured" ? "integracja nie jest skonfigurowana" : "unauthorized",
+    });
+    process.stderr.write(`[firmowy-chat] odrzucone zdarzenie: ${verdict.reason}\n`);
+    return status;
+  }
+
+  let unknownPayload: unknown;
+  try {
+    unknownPayload = JSON.parse(raw);
+  } catch {
+    json(res, 400, { error: "niepoprawny JSON" });
+    return 400;
+  }
+  const parsed = FirmowyChatEvent.safeParse(unknownPayload);
+  if (!parsed.success) {
+    json(res, 422, { error: "niezgodny kontrakt zdarzenia" });
+    process.stderr.write("[firmowy-chat] odrzucone zdarzenie niezgodne z kontraktem\n");
+    return 422;
+  }
+  const headerEventId = singleHeader(req.headers["x-bht-event-id"]);
+  if (headerEventId !== parsed.data.eventId) {
+    json(res, 400, { error: "identyfikator zdarzenia nie zgadza się z ładunkiem" });
+    return 400;
+  }
+
+  try {
+    const out = ingestFirmowyChatEvent(app.store, parsed.data);
+    let notification: { attempted: boolean; sent: number; errors: number } = {
+      attempted: false,
+      sent: 0,
+      errors: 0,
+    };
+    const issue = out.issueId ? app.store.get(out.issueId) : null;
+    if (
+      issue?.notificationCandidate &&
+      out.outcome !== "duplicate" &&
+      PUSH &&
+      subskrypcje.ile() > 0
+    ) {
+      const result = await wyslij(PUSH, subskrypcje, {
+        tytul: `BHT Copilot · ${issue.title}`,
+        tresc: `${issue.id} · ${issue.notificationReason ?? issue.whyListed}`,
+        waga: "pilne",
+        tag: `issue:${issue.id}`,
+      });
+      notification = {
+        attempted: true,
+        sent: result.wyslane,
+        errors: result.bledy.length,
+      };
+    }
+    json(res, 200, {
+      accepted: out.accepted,
+      outcome: out.outcome,
+      issueId: out.issueId,
+      notification,
+    });
+    process.stdout.write(
+      `[firmowy-chat] ${out.outcome} zdarzenie=${parsed.data.eventId} sprawa=${out.issueId ?? "-"}\n`,
+    );
+    return 200;
+  } catch (error) {
+    process.stderr.write(
+      `[firmowy-chat] błąd ingestu: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    json(res, 500, { error: "nie udało się zapisać zdarzenia" });
+    return 500;
+  }
+}
+
+function singleHeader(value: string | string[] | undefined): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 /**

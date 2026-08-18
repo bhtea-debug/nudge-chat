@@ -24,7 +24,11 @@ export interface AppConfig {
    * dopiero ModelLayer, w momencie realnej potrzeby.
    */
   readonly anthropicApiKey: string;
-  readonly models: { readonly fast: string; readonly reason: string };
+  readonly models: {
+    readonly classify: string;
+    readonly chat: string;
+    readonly reason: string;
+  };
   readonly auditFile: string | undefined;
   /** Pamięć Copilota: katalog stanu i parametry monitora w tle. */
   readonly copilot: {
@@ -67,6 +71,10 @@ export interface AppConfig {
     readonly apiKey: string | null;
     /** Sekret do weryfikacji podpisu webhooka. Brak = webhook przyjmuje bez podpisu. */
     readonly webhookSecret: string | null;
+  };
+  /** Podpisane zdarzenia z własnego Czatu Firmowego. Brak sekretu zamyka endpoint. */
+  readonly firmowyChat: {
+    readonly eventsSecret: string | null;
   };
   readonly mail:
     | { readonly kind: "fixture"; readonly filePath: string }
@@ -115,7 +123,8 @@ export function loadConfig(): AppConfig {
     models: {
       // Role, nie nazwy modeli w miejscach wywołań. Podmiana modelu to zmiana
       // jednej zmiennej środowiskowej, nie przeszukiwanie kodu.
-      fast: opt("MODEL_FAST", "claude-haiku-4-5"),
+      classify: opt("MODEL_CLASSIFY", opt("MODEL_FAST", "claude-haiku-4-5")),
+      chat: opt("MODEL_CHAT", "claude-sonnet-5"),
       reason: opt("MODEL_REASON", "claude-opus-5"),
     },
     auditFile: auditFileRaw ? fromPackageRoot(auditFileRaw) : undefined,
@@ -137,6 +146,9 @@ export function loadConfig(): AppConfig {
     connecteam: {
       apiKey: process.env["CONNECTEAM_API_KEY"]?.trim() || null,
       webhookSecret: process.env["CONNECTEAM_WEBHOOK_SECRET"]?.trim() || null,
+    },
+    firmowyChat: {
+      eventsSecret: process.env["FIRMOWY_CHAT_EVENTS_SECRET"]?.trim() || null,
     },
     mail:
       mode === "live"

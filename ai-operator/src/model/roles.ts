@@ -8,14 +8,14 @@ import { CapabilityError } from "../capability/types.js";
  * W żadnym miejscu logiki agenta nie występuje identyfikator modelu. Zmiana
  * dostawcy albo wersji to zmiana jednej zmiennej środowiskowej.
  *
- * Dwie role wystarczają na MVP:
- *  - "fast"   — klasyfikacja i etykietowanie wielu wiadomości,
- *  - "reason" — łączenie poczty z danymi operacyjnymi i pisanie odpowiedzi.
+ *  - "classify" — klasyfikacja i etykietowanie wielu wiadomości,
+ *  - "chat"     — krótka odpowiedź użytkownikowi w Czat Firmowy,
+ *  - "reason"   — łączenie źródeł i decyzje wymagające głębszego rozumowania.
  *
  * Roli "deep", "vision" i "embeddings" celowo tu nie ma: nic w tym MVP ich
  * nie potrzebuje, a rola bez wywołania to martwy kod.
  */
-export type ModelRole = "fast" | "reason";
+export type ModelRole = "classify" | "chat" | "reason";
 
 export interface RoleProfile {
   readonly model: string;
@@ -45,7 +45,8 @@ export class ModelLayer {
     }
     this.client = new Anthropic({ apiKey: cfg.anthropicApiKey });
     this.profiles = {
-      fast: { model: cfg.models.fast, maxTokens: 2_048 },
+      classify: { model: cfg.models.classify, maxTokens: 2_048 },
+      chat: { model: cfg.models.chat, maxTokens: 2_048 },
       reason: { model: cfg.models.reason, maxTokens: 8_192, thinking: { type: "adaptive" } },
     };
   }

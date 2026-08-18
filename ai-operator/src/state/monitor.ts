@@ -3,6 +3,7 @@ import type { CapabilityContext, Scope } from "../capability/types.js";
 import type { CapabilityRegistry } from "../capability/registry.js";
 import { MemoryAuditSink, newCorrelationId } from "../capability/audit.js";
 import type { ModelLayer } from "../model/roles.js";
+import type { ModelRole } from "../model/roles.js";
 import { MailMessage } from "../mail/types.js";
 import { MONITOR_SYSTEM_PROMPT } from "../agent/prompt.js";
 import { matchIssue } from "./correlate.js";
@@ -59,6 +60,13 @@ export interface MonitorCost {
   readonly modelCalls: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** Jedna pozycja na realne wywołanie: rola i model są częścią rachunku. */
+  readonly modelUsage: readonly {
+    readonly role: ModelRole;
+    readonly model: string;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+  }[];
   readonly erpLookups: number;
   readonly issuesCreated: number;
   readonly issuesUpdated: number;
@@ -156,6 +164,7 @@ export class MailMonitor {
       modelCalls: 0,
       inputTokens: 0,
       outputTokens: 0,
+      modelUsage: [],
       erpLookups: 0,
       issuesCreated: 0,
       issuesUpdated: 0,
@@ -221,6 +230,15 @@ export class MailMonitor {
               modelCalls: cost.modelCalls + 1,
               inputTokens: cost.inputTokens + rows.inputTokens,
               outputTokens: cost.outputTokens + rows.outputTokens,
+              modelUsage: [
+                ...cost.modelUsage,
+                {
+                  role: "classify",
+                  model: rows.model,
+                  inputTokens: rows.inputTokens,
+                  outputTokens: rows.outputTokens,
+                },
+              ],
             };
             for (const r of rows.items) {
               verdicts.set(r.id, {
@@ -556,7 +574,12 @@ export class MailMonitor {
   private async classify(
     messages: readonly z.infer<typeof MailMessage>[],
     signal?: AbortSignal,
-  ): Promise<{ items: z.infer<typeof ClassifiedList>; inputTokens: number; outputTokens: number }> {
+  ): Promise<{
+    items: z.infer<typeof ClassifiedList>;
+    inputTokens: number;
+    outputTokens: number;
+    model: string;
+  }> {
     // Do modelu idzie PODGLĄD, nie pełna treść. Wystarcza do klasyfikacji,
     // a pełne treści nie mają po co przechodzić przez model ani przez log.
     const payload = messages.map((m) => ({
@@ -570,7 +593,7 @@ export class MailMonitor {
     }));
 
     const res = await this.opts.models.completeDetailed({
-      role: "fast",
+      role: "classify",
       system: MONITOR_SYSTEM_PROMPT,
       prompt: `Przeanalizuj ${messages.length} nowych wiadomości:\n\n${JSON.stringify(payload, null, 1)}`,
       ...(signal ? { signal } : {}),
@@ -583,6 +606,7 @@ export class MailMonitor {
       items: parsed.success ? parsed.data : [],
       inputTokens: res.inputTokens,
       outputTokens: res.outputTokens,
+      model: res.model,
     };
   }
 }

@@ -61,7 +61,7 @@ export const OWNER_ONLY_STATUSES: readonly IssueStatus[] = ["resolved"];
  * interesuje go, co się dzieje. Ale system musi wiedzieć, bo od źródła zależy,
  * czym dociągnąć treść i czego NIE wolno twierdzić.
  */
-export const SOURCE_KINDS = ["mail", "connecteam"] as const;
+export const SOURCE_KINDS = ["mail", "connecteam", "firmowy_chat"] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 /**
@@ -107,10 +107,43 @@ const ConnecteamRef = z.object({
   preview: z.string(),
 });
 
-export const SourceRef = z.discriminatedUnion("kind", [MailRef, ConnecteamRef]);
+/**
+ * Wiadomość z własnego Czatu Firmowego. Treść w stanie jest ograniczona do
+ * podglądu; pełny tekst służy wyłącznie podczas bieżącego ingestu. Zakresy są
+ * wyliczone po stronie Czatu, dzięki czemu Copilot nie dostaje dostępu do bazy
+ * ani możliwości rozszerzenia widoczności aktora.
+ */
+const FirmowyChatRef = z.object({
+  kind: z.literal("firmowy_chat"),
+  messageId: z.string(),
+  eventId: z.string(),
+  conversationId: z.string(),
+  conversationName: z.string().nullable(),
+  conversationType: z.enum(["direct", "team", "channel"]),
+  date: z.string(),
+  authorUserId: z.string(),
+  authorName: z.string(),
+  department: z.enum(["hala", "biuro", "zarzad"]),
+  roleTier: z.enum(["pracownik", "kierownik", "admin"]),
+  aiAccess: z.enum(["none", "basic", "full"]),
+  scopeKeys: z.array(z.string()),
+  importance: z.enum(["normal", "important", "urgent"]),
+  replyToMessageId: z.string().nullable(),
+  linkedRef: z
+    .object({
+      kind: z.enum(["order", "lot", "productionOrder"]),
+      id: z.string(),
+      label: z.string(),
+    })
+    .nullable(),
+  preview: z.string(),
+});
+
+export const SourceRef = z.discriminatedUnion("kind", [MailRef, ConnecteamRef, FirmowyChatRef]);
 export type SourceRef = z.infer<typeof SourceRef>;
 export type MailSourceRef = z.infer<typeof MailRef>;
 export type ConnecteamSourceRef = z.infer<typeof ConnecteamRef>;
+export type FirmowyChatSourceRef = z.infer<typeof FirmowyChatRef>;
 
 /** Wpis historii. Odpowiada na „co się z tą sprawą działo", bez treści maili. */
 export const IssueChange = z.object({

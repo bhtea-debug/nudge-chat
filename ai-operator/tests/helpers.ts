@@ -99,7 +99,7 @@ export function scriptedModel(
     profile: (role: ModelRole): RoleProfile =>
       role === "reason"
         ? { model: "test-reason", maxTokens: 1024, thinking: { type: "adaptive" } }
-        : { model: "test-fast", maxTokens: 512 },
+        : { model: role === "chat" ? "test-chat" : "test-classify", maxTokens: 512 },
     complete: async () => opts.completeWith ?? "[]",
   } as unknown as ModelLayer;
 

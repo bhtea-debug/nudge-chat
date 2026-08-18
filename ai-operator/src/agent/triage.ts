@@ -12,7 +12,7 @@ import { MailMessage } from "../mail/types.js";
  * pytania właściciela naraz: co ważnego przyszło, co wymaga odpowiedzi i czy
  * ktoś czeka na pilną decyzję.
  *
- * Klasyfikacja idzie modelem szybkim (rola "fast") — jest tania i wykonuje się
+ * Klasyfikacja idzie rolą "classify" — jest tania i wykonuje się
  * raz na całą paczkę. Dociąganie danych z TeaBrew dotyczy tylko tych wiadomości,
  * w których model wskazał konkretny numer. Nie odpytujemy ERP „na wszelki wypadek".
  */
@@ -209,7 +209,7 @@ export class MailTriage {
     }));
 
     const raw = await this.opts.models.complete({
-      role: "fast",
+      role: "classify",
       system: TRIAGE_SYSTEM_PROMPT,
       prompt: `Zaklasyfikuj ${messages.length} wiadomości:\n\n${JSON.stringify(payload, null, 1)}`,
       ...(signal ? { signal } : {}),

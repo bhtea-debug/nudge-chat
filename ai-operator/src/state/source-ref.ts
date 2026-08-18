@@ -1,4 +1,9 @@
-import type { ConnecteamSourceRef, MailSourceRef, SourceRef } from "./types.js";
+import type {
+  ConnecteamSourceRef,
+  FirmowyChatSourceRef,
+  MailSourceRef,
+  SourceRef,
+} from "./types.js";
 
 /**
  * Jednolity widok na referencję do źródła.
@@ -18,6 +23,7 @@ import type { ConnecteamSourceRef, MailSourceRef, SourceRef } from "./types.js";
 export const SOURCE_LABEL: Record<SourceRef["kind"], string> = {
   mail: "E-mail",
   connecteam: "Connecteam",
+  firmowy_chat: "Czat Firmowy",
 };
 
 export interface RefView {
@@ -45,6 +51,10 @@ export function isConnecteamRef(ref: SourceRef): ref is ConnecteamSourceRef {
   return ref.kind === "connecteam";
 }
 
+export function isFirmowyChatRef(ref: SourceRef): ref is FirmowyChatSourceRef {
+  return ref.kind === "firmowy_chat";
+}
+
 export function viewRef(ref: SourceRef): RefView {
   if (isMailRef(ref)) {
     return {
@@ -60,14 +70,28 @@ export function viewRef(ref: SourceRef): RefView {
       preview: "",
     };
   }
+  if (isConnecteamRef(ref)) {
+    return {
+      kind: "connecteam",
+      messageId: ref.messageId,
+      date: ref.date,
+      heading: ref.conversationName ?? "",
+      author: ref.authorName,
+      groupId: ref.conversationId,
+      location: ref.conversationName,
+      preview: ref.preview,
+    };
+  }
   return {
-    kind: "connecteam",
+    kind: "firmowy_chat",
     messageId: ref.messageId,
     date: ref.date,
     heading: ref.conversationName ?? "",
     author: ref.authorName,
-    groupId: ref.conversationId,
-    location: ref.conversationName,
+    // Wspólny kanał obejmuje wiele tematów. Automatyczne scalanie całego kanału
+    // w jedną sprawę byłoby znacznie gorsze niż okazjonalny duplikat.
+    groupId: ref.conversationType === "direct" ? ref.conversationId : null,
+    location: ref.conversationName ?? ref.conversationId,
     preview: ref.preview,
   };
 }
@@ -91,5 +115,5 @@ export function latestOfKind<K extends SourceRef["kind"]>(
 /** Które systemy zasilają tę sprawę. Kolejność stała, żeby UI nie migał. */
 export function kindsOf(refs: readonly SourceRef[]): SourceRef["kind"][] {
   const present = new Set(refs.map((r) => r.kind));
-  return (["mail", "connecteam"] as const).filter((k) => present.has(k));
+  return (["mail", "connecteam", "firmowy_chat"] as const).filter((k) => present.has(k));
 }
