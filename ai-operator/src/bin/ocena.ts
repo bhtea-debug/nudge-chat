@@ -99,14 +99,35 @@ async function zbierz(ile: number, dni: number): Promise<Pozycja[]> {
     audit: new MemoryAuditSink(app.config.auditFile),
   };
 
+  // Kontrakt capability ogranicza JEDEN odczyt do 50 wiadomości — i to samo
+  // ograniczenie ma monitor, więc system nigdy nie widzi więcej za jednym razem.
+  // Nie podnoszę tego limitu na potrzeby pomiaru: zmiana kontraktu w środku
+  // walidacji znaczyłaby, że mierzę coś innego niż produkt. Zamiast tego czytam
+  // ze WSZYSTKICH skonfigurowanych folderów i podaję dokładną liczbę, którą
+  // udało się zebrać — zadanie wprost to przewiduje.
+  const LIMIT_ODCZYTU = 50;
+  const foldery = [
+    ...app.config.copilot.monitorFolders,
+    ...(app.config.mail.kind === "imap" ? app.config.mail.threadFolders : []),
+  ].filter((f) => f && f !== "auto");
+
   const wszystkie: z.infer<typeof MailMessage>[] = [];
-  for (const folder of app.config.copilot.monitorFolders) {
-    const out = (await app.registry.invoke(
-      "mail_list_recent",
-      { sinceDays: dni, limit: ile, unreadOnly: false, folder },
-      ctx,
-    )) as { messages: z.infer<typeof MailMessage>[] };
-    wszystkie.push(...out.messages);
+  for (const folder of [...new Set(foldery)]) {
+    try {
+      const out = (await app.registry.invoke(
+        "mail_list_recent",
+        { sinceDays: dni, limit: LIMIT_ODCZYTU, unreadOnly: false, folder },
+        ctx,
+      )) as { messages: z.infer<typeof MailMessage>[] };
+      wszystkie.push(...out.messages);
+      process.stdout.write(`  ${folder}: ${out.messages.length}\n`);
+    } catch (err) {
+      // Nieistniejący folder z konfiguracji nie może przerwać pomiaru —
+      // ma być widoczny i pominięty.
+      process.stdout.write(
+        `  ${folder}: pominięty (${err instanceof Error ? err.message.slice(0, 60) : "błąd"})\n`,
+      );
+    }
   }
 
   // Duplikaty techniczne — ta sama wiadomość w dwóch folderach. Nic poza tym
