@@ -21,6 +21,14 @@ const LABELS_PATH = resolve(ROOT, "state/ocena/etykiety.json");
 const ENV_PATH = resolve(ROOT, ".env.benchmark.local");
 const REPORT_PATH = resolve(ROOT, "docs/MODEL-BENCHMARK.md");
 
+// Te wartości przypinają dokładnie ten zamrożony zbiór, który właściciel
+// zatwierdził 18.08.2026. Sama liczba rekordów i rozkład klas nie wystarczają,
+// bo zmieniony plik mógłby nadal spełniać oba warunki.
+const EXPECTED_DATASET_SHA256 =
+  "3c4cc5cd65f939cde7b1ec86157ddcde8132af43026713a0723bb3ad599b960a";
+const EXPECTED_LABELS_SHA256 =
+  "0e2411a61b3115c18fc34f015899fd16dc8b084a6169bf2460b7034aa095aa19";
+
 const PRICING_CHECKED_AT = "2026-08-18";
 const PRICING_SOURCE = "https://platform.claude.com/docs/en/about-claude/pricing";
 const MODELS_SOURCE = "https://platform.claude.com/docs/en/about-claude/models/overview";
@@ -79,6 +87,7 @@ interface ModelCandidate {
   readonly id: string;
   readonly name: string;
   readonly tier: "tani" | "średni" | "referencyjny";
+  readonly disableAdaptiveThinking?: boolean;
   readonly price: (at: Date) => Price;
 }
 
@@ -95,6 +104,7 @@ const CANDIDATES: readonly ModelCandidate[] = [
     id: "claude-sonnet-5",
     name: "Claude Sonnet 5",
     tier: "średni",
+    disableAdaptiveThinking: true,
     price: (at) =>
       at.getTime() < Date.parse("2026-09-01T00:00:00Z")
         ? { input: 2, output: 10, cacheWrite5m: 2.5, cacheRead: 0.2 }
@@ -104,6 +114,7 @@ const CANDIDATES: readonly ModelCandidate[] = [
     id: "claude-opus-5",
     name: "Claude Opus 5",
     tier: "referencyjny",
+    disableAdaptiveThinking: true,
     price: stablePrice({ input: 5, output: 25, cacheWrite5m: 6.25, cacheRead: 0.5 }),
   },
 ] as const;
@@ -141,6 +152,20 @@ interface Metrics {
   readonly falseNegativesA: readonly PredictionResult[];
   readonly falsePositivesA: readonly PredictionResult[];
 }
+
+interface StabilityStats {
+  readonly changedMessages: number;
+  readonly changedAssignments: number;
+  readonly goldAMissedAtLeastOnce: number;
+  readonly averageConfidenceSpread: number;
+  readonly maxConfidenceSpread: number;
+  readonly worstRecallA: number;
+  readonly worstPrecisionA: number;
+  readonly maxFalsePositivesA: number;
+}
+
+type StabilityAssessment = "passed" | "failed" | "not-measured";
+type VerdictName = "GO" | "CONDITIONAL GO" | "NO-GO";
 
 const OUTPUT_SCHEMA = {
   type: "object",
@@ -197,6 +222,15 @@ function parseFrozenData(): {
 } {
   const datasetRaw = readRequiredFile(DATASET_PATH, "zamrożonego datasetu");
   const labelsRaw = readRequiredFile(LABELS_PATH, "zamrożonych etykiet");
+  const datasetHash = sha256(datasetRaw);
+  const labelsHash = sha256(labelsRaw);
+
+  if (datasetHash !== EXPECTED_DATASET_SHA256) {
+    stop("zbior.json nie jest zatwierdzonym, zamrożonym datasetem (SHA-256 nie pasuje).");
+  }
+  if (labelsHash !== EXPECTED_LABELS_SHA256) {
+    stop("etykiety.json nie są zatwierdzonymi gold labels (SHA-256 nie pasuje).");
+  }
 
   let datasetJson: unknown;
   let labelsJson: unknown;
@@ -236,8 +270,8 @@ function parseFrozenData(): {
   return {
     dataset,
     labels,
-    datasetHash: sha256(datasetRaw),
-    labelsHash: sha256(labelsRaw),
+    datasetHash,
+    labelsHash,
   };
 }
 
@@ -305,9 +339,11 @@ async function classifyOne(
 ): Promise<PredictionResult> {
   const message = await client.messages.create({
     model: model.id,
-    max_tokens: 128,
-    temperature: 0,
+    max_tokens: 256,
     service_tier: "standard_only",
+    ...(model.disableAdaptiveThinking
+      ? { thinking: { type: "disabled" as const } }
+      : {}),
     system: CLASSIFIER_PROMPT,
     messages: [{ role: "user", content: modelInput(item) }],
     output_config: {
@@ -417,13 +453,7 @@ function calculateMetrics(
 function stabilitySummary(
   runs: readonly RunResult[],
   labels: Record<string, z.infer<typeof LabelSchema>>,
-): {
-  changedMessages: number;
-  changedAssignments: number;
-  goldAMissedAtLeastOnce: number;
-  averageConfidenceSpread: number;
-  maxConfidenceSpread: number;
-} {
+): StabilityStats {
   const byId = new Map<string, Prediction[]>();
   for (const run of runs) {
     for (const result of run.predictions) {
@@ -449,12 +479,17 @@ function stabilitySummary(
     spreads.push(Math.max(...confidences) - Math.min(...confidences));
   }
 
+  const runMetrics = runs.map((run) => calculateMetrics(run, labels));
+
   return {
     changedMessages,
     changedAssignments,
     goldAMissedAtLeastOnce,
     averageConfidenceSpread: spreads.reduce((sum, value) => sum + value, 0) / spreads.length,
     maxConfidenceSpread: Math.max(...spreads),
+    worstRecallA: Math.min(...runMetrics.map((metrics) => metrics.recallA)),
+    worstPrecisionA: Math.min(...runMetrics.map((metrics) => metrics.precisionA)),
+    maxFalsePositivesA: Math.max(...runMetrics.map((metrics) => metrics.fpA)),
   };
 }
 
@@ -464,10 +499,6 @@ function pct(value: number): string {
 
 function usd(value: number, digits = 4): string {
   return `$${value.toFixed(digits)}`;
-}
-
-function md(value: string, max = 220): string {
-  return value.replace(/[\r\n|]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, max);
 }
 
 function confusionTable(metrics: Metrics): string {
@@ -485,51 +516,95 @@ function errorTable(
   errors: readonly PredictionResult[],
   labels: Record<string, z.infer<typeof LabelSchema>>,
 ): string {
-  const lines = [`#### ${title}`, "", "| ID | Subject | Gold | Prediction | Confidence | Reason |", "| --- | --- | --- | --- | ---: | --- |"];
-  if (errors.length === 0) lines.push("| — | Brak | — | — | — | — |");
+  const lines = [
+    `#### ${title}`,
+    "",
+    "| Anonimowy ID | Gold | Predykcja | Confidence |",
+    "| --- | --- | --- | ---: |",
+  ];
+  if (errors.length === 0) lines.push("| — | — | Brak | — |");
   for (const error of errors) {
     lines.push(
-      `| ${safeId(error.item.id)} | ${md(error.item.temat, 140) || "(brak tematu)"} | ${labels[error.item.id]!.klasa} | ${error.prediction.class} | ${error.prediction.confidence.toFixed(2)} | ${md(error.prediction.reason)} |`,
+      `| ${safeId(error.item.id)} | ${labels[error.item.id]!.klasa} | ${error.prediction.class} | ${error.prediction.confidence.toFixed(2)} |`,
     );
   }
   return lines.join("\n");
 }
 
+function stabilityAssessmentFor(
+  modelId: string,
+  cheapId: string,
+  stability: StabilityStats,
+): StabilityAssessment {
+  if (modelId !== cheapId) return "not-measured";
+  return stability.goldAMissedAtLeastOnce === 0 && stability.maxFalsePositivesA <= 4
+    ? "passed"
+    : "failed";
+}
+
+function verdictRank(verdict: VerdictName): number {
+  if (verdict === "GO") return 2;
+  if (verdict === "CONDITIONAL GO") return 1;
+  return 0;
+}
+
 function chooseWinner(
   primaryRuns: readonly RunResult[],
   metrics: ReadonlyMap<string, Metrics>,
+  cheapId: string,
+  stability: StabilityStats,
 ): RunResult {
   return [...primaryRuns].sort((a, b) => {
     const am = metrics.get(a.model.id)!;
     const bm = metrics.get(b.model.id)!;
+    const aAssessment = stabilityAssessmentFor(a.model.id, cheapId, stability);
+    const bAssessment = stabilityAssessmentFor(b.model.id, cheapId, stability);
+    const aVerdict = verdictFor(am, aAssessment).verdict;
+    const bVerdict = verdictFor(bm, bAssessment).verdict;
+    const aRecall = a.model.id === cheapId ? stability.worstRecallA : am.recallA;
+    const bRecall = b.model.id === cheapId ? stability.worstRecallA : bm.recallA;
+    const aPrecision = a.model.id === cheapId ? stability.worstPrecisionA : am.precisionA;
+    const bPrecision = b.model.id === cheapId ? stability.worstPrecisionA : bm.precisionA;
     return (
-      bm.recallA - am.recallA ||
-      bm.precisionA - am.precisionA ||
+      verdictRank(bVerdict) - verdictRank(aVerdict) ||
+      bRecall - aRecall ||
+      bPrecision - aPrecision ||
       bm.f1A - am.f1A ||
       a.costUsd - b.costUsd
     );
   })[0]!;
 }
 
-function verdictFor(metrics: Metrics): { verdict: "GO" | "CONDITIONAL GO" | "NO-GO"; reason: string } {
+function verdictFor(
+  metrics: Metrics,
+  stability: StabilityAssessment,
+): { verdict: VerdictName; reason: string } {
   if (metrics.tpA === 4 && metrics.fpA <= 4) {
+    if (stability === "passed") {
+      return {
+        verdict: "GO",
+        reason:
+          "Kandydat wykrył wszystkie cztery alarmy, miał najwyżej cztery false positives w każdym z trzech przebiegów i ani razu nie pominął gold A. To zgoda wyłącznie na kolejny, kontrolowany etap walidacji — nie na produkcyjne alerty.",
+      };
+    }
     return {
-      verdict: "GO",
-      reason:
-        "Najlepszy kandydat wykrył wszystkie cztery alarmy przy liczbie fałszywych alarmów pozwalającej przejść do kolejnego, kontrolowanego etapu walidacji. To nie jest zgoda na produkcyjne alerty.",
+      verdict: "CONDITIONAL GO",
+      reason: stability === "failed"
+        ? "Pierwszy przebieg wykrył wszystkie alarmy przy akceptowalnej liczbie false positives, ale test stabilności ujawnił pominięcie gold A albo nadmiar false positives. Potrzebna jest dalsza walidacja bez uruchamiania alertów produkcyjnych."
+        : "Pojedynczy przebieg wykrył wszystkie alarmy przy akceptowalnej liczbie false positives, ale stabilność tego modelu nie została zmierzona. Potrzebne są powtórzenia przed automatycznymi alertami.",
     };
   }
-  if (metrics.tpA >= 3) {
+  if (metrics.tpA >= 3 && metrics.fpA <= 8) {
     return {
       verdict: "CONDITIONAL GO",
       reason:
-        "Wynik jest obiecujący, ale przy zaledwie czterech alarmach oraz co najmniej jednym przeoczeniu lub nadmiarze false positives potrzeba większego, zamrożonego zbioru przed automatycznymi alertami.",
+        "Wynik jest obiecujący, ale obejmuje co najmniej jedno przeoczenie albo 5–8 false positives. Potrzeba większego, zamrożonego zbioru i kolejnych prób przed automatycznymi alertami.",
     };
   }
   return {
     verdict: "NO-GO",
     reason:
-      "Żaden kandydat nie wykrył praktycznie wszystkich alarmów. Nie ma podstaw do dalszej walidacji produkcyjnej klasyfikatora.",
+      "Kandydat wykrył mniej niż trzy z czterech alarmów albo wygenerował ponad osiem false positives. Nie ma podstaw do dalszej walidacji produkcyjnej klasyfikatora.",
   };
 }
 
@@ -544,11 +619,12 @@ function buildReport(args: {
   const metricsByModel = new Map(
     args.primaryRuns.map((run) => [run.model.id, calculateMetrics(run, args.labels)]),
   );
-  const winner = chooseWinner(args.primaryRuns, metricsByModel);
-  const winnerMetrics = metricsByModel.get(winner.model.id)!;
-  const verdict = verdictFor(winnerMetrics);
   const stability = stabilitySummary(args.cheapRuns, args.labels);
   const cheapId = args.cheapRuns[0]!.model.id;
+  const winner = chooseWinner(args.primaryRuns, metricsByModel, cheapId, stability);
+  const winnerMetrics = metricsByModel.get(winner.model.id)!;
+  const winnerStability = stabilityAssessmentFor(winner.model.id, cheapId, stability);
+  const verdict = verdictFor(winnerMetrics, winnerStability);
 
   const allRuns = [
     ...args.primaryRuns,
@@ -580,9 +656,12 @@ function buildReport(args: {
     const perMessage = run.costUsd / run.predictions.length;
     const stabilityCell =
       run.model.id === cheapId
-        ? `${stability.changedMessages}/50 zmieniło klasę; A pominięte w ≥1 przebiegu: ${stability.goldAMissedAtLeastOnce}`
+        ? `${stability.changedMessages}/50 zmieniło klasę; A pominięte w ≥1 przebiegu: ${stability.goldAMissedAtLeastOnce}; max FP: ${stability.maxFalsePositivesA}`
         : "1 przebieg (nie mierzono)";
-    const modelVerdict = verdictFor(metrics).verdict;
+    const modelVerdict = verdictFor(
+      metrics,
+      stabilityAssessmentFor(run.model.id, cheapId, stability),
+    ).verdict;
     lines.push(
       `| ${run.model.name} | ${pct(metrics.recallA)} | ${pct(metrics.precisionA)} | ${metrics.fnA} | ${metrics.fpA} | ${stabilityCell} | ${usd(perMessage * 100)} | ${usd(perMessage * 3_000)} | ${modelVerdict} |`,
     );
@@ -600,8 +679,10 @@ function buildReport(args: {
     "- gold labels właściciela: **A=4, B=18, C=28**,",
     `- SHA-256 zbior.json: \`${args.datasetHash}\`,`,
     `- SHA-256 etykiety.json: \`${args.labelsHash}\`,`,
+    "- skrypt odmawia startu, jeśli którykolwiek hash różni się od zatwierdzonego, zamrożonego pliku,",
     "- model otrzymał wyłącznie: nadawcę, temat, podgląd dostępny w dataset i datę,",
-    "- gold labels i pola starego systemu nie były dołączane do żądań API.",
+    "- gold labels i pola starego systemu nie były dołączane do żądań API,",
+    "- raport nie zawiera surowych tematów, nadawców, podglądów ani uzasadnień modelu; błędy mają tylko anonimowe ID.",
     "",
     "## Modele i ceny",
     "",
@@ -630,7 +711,7 @@ function buildReport(args: {
     CLASSIFIER_PROMPT,
     "```",
     "",
-    "Każdy model dostał identyczny prompt, temperaturę 0 i ten sam JSON Schema.",
+    "Każdy model dostał identyczny prompt i ten sam JSON Schema. Parametry próbkowania pozostawiono domyślne, ponieważ Sonnet 5 i Opus 5 odrzucają wartości inne niż domyślne; ich adaptacyjne myślenie wyłączono dla krótkiej klasyfikacji.",
     "",
     "## Wyniki",
   );
@@ -660,6 +741,9 @@ function buildReport(args: {
     `- wiadomości, które zmieniły klasę między przebiegami: **${stability.changedMessages}/50**,`,
     `- zmienione przypisania względem pierwszego przebiegu: **${stability.changedAssignments}/100**,`,
     `- gold A pominięte co najmniej raz: **${stability.goldAMissedAtLeastOnce}/4**,`,
+    `- najgorszy recall A w trzech przebiegach: **${pct(stability.worstRecallA)}**,`,
+    `- najgorsza precision A w trzech przebiegach: **${pct(stability.worstPrecisionA)}**,`,
+    `- największa liczba false positives w przebiegu: **${stability.maxFalsePositivesA}**,`,
     `- średni rozrzut confidence: **${stability.averageConfidenceSpread.toFixed(3)}**,`,
     `- maksymalny rozrzut confidence: **${stability.maxConfidenceSpread.toFixed(3)}**.`,
     "",
@@ -684,9 +768,11 @@ function buildReport(args: {
     "",
     "## Rekomendacja",
     "",
-    `**${verdict.verdict}: ${winner.model.name}** jest najlepszym kandydatem według kolejności: recall A, precision A, F1 A, a następnie koszt.`,
+    `**${verdict.verdict}: ${winner.model.name}** jest najlepszym kandydatem według kolejności: werdykt, najgorszy zmierzony recall A, precision A, F1 A, a następnie koszt.`,
     "",
     verdict.reason,
+    "",
+    "Progi: GO wymaga TP A=4, FP A≤4 oraz trzech stabilnych przebiegów bez pominięcia A i bez przekroczenia FP. CONDITIONAL GO wymaga TP A≥3 i FP A≤8; model bez testu stabilności nie może otrzymać GO.",
     "",
     "Benchmark nie przełączył produkcyjnego classifiera, nie wysłał pushy i nie zmienił BHT Copilot, TeaBrew, Railway ani Czat Firmowy.",
     "",
