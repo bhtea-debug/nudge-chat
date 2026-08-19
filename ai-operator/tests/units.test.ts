@@ -260,6 +260,7 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
       "teabrew_find_product",
       "teabrew_get_order_status",
       "teabrew_get_production_status",
+      "teabrew_get_sales_summary",
       "teabrew_get_stock",
     ]);
   });

@@ -8,6 +8,7 @@ import {
   ProductSearchResponse,
   ProductionResponse,
   ROUTES,
+  SalesSummaryResponse,
   StockResponse,
 } from "./contract.js";
 
@@ -21,6 +22,13 @@ import {
 export interface TeabrewReader {
   readonly id: string;
   getOrder(args: { query: string; limit: number; signal?: AbortSignal }): Promise<z.infer<typeof OrderResponse>["data"]>;
+  getSalesSummary(args: {
+    from: string;
+    to: string;
+    sources: readonly ("medusa" | "allegro")[];
+    topLimit: number;
+    signal?: AbortSignal;
+  }): Promise<z.infer<typeof SalesSummaryResponse>["data"]>;
   getStock(args: {
     codes: readonly string[];
     profile: "finished_goods" | "all_locations";
@@ -60,6 +68,28 @@ export class HttpTeabrewReader implements TeabrewReader {
   async getOrder(args: { query: string; limit: number; signal?: AbortSignal }) {
     return (
       await this.get(OrderResponse, ROUTES.order, { ref: args.query, limit: String(args.limit) }, args.signal)
+    ).data;
+  }
+
+  async getSalesSummary(args: {
+    from: string;
+    to: string;
+    sources: readonly ("medusa" | "allegro")[];
+    topLimit: number;
+    signal?: AbortSignal;
+  }) {
+    return (
+      await this.get(
+        SalesSummaryResponse,
+        ROUTES.salesSummary,
+        {
+          from: args.from,
+          to: args.to,
+          sources: args.sources.join(","),
+          topLimit: String(args.topLimit),
+        },
+        args.signal,
+      )
     ).data;
   }
 
@@ -216,6 +246,40 @@ export class FixtureTeabrewReader implements TeabrewReader {
     return { matchedBy: "none" as const, query: args.query, count: 0, orders: [] };
   }
 
+  async getSalesSummary(args: {
+    from: string;
+    to: string;
+    sources: readonly ("medusa" | "allegro")[];
+  }) {
+    const saved = this.data.salesSummaries.find(
+      (summary) => summary.from === args.from && summary.to === args.to,
+    );
+    if (saved) return saved;
+    return {
+      from: args.from,
+      to: args.to,
+      timezone: "Europe/Warsaw" as const,
+      definition: {
+        included: "opłacone zamówienia, według daty złożenia",
+        excluded: "anulowane i nieopłacone; zwroty nie są odejmowane",
+      },
+      orderCount: 0,
+      grossSalesPLN: 0,
+      unitsSold: 0,
+      averageOrderPLN: 0,
+      channels: args.sources.map((source) => ({
+        source,
+        orderCount: 0,
+        grossSalesPLN: 0,
+        unitsSold: 0,
+      })),
+      daily: [],
+      topProducts: [],
+      productsTruncated: false,
+      dataQuality: { unmappedLines: 0, ordersWithoutTotal: 0 },
+    };
+  }
+
   async getStock(args: { codes: readonly string[]; profile: "finished_goods" | "all_locations" }) {
     const wanted = args.codes.map((c) => c.trim()).filter(Boolean);
     const items = wanted
@@ -270,6 +334,7 @@ const FixtureSchema = z.object({
   materials: z.array(ProductSearchResponse.shape.data.shape.materials.element).default([]),
   production: z.array(ProductionResponse.shape.data.shape.orders.element).default([]),
   activeRuns: z.array(ProductionResponse.shape.data.shape.activeRuns.element).default([]),
+  salesSummaries: z.array(SalesSummaryResponse.shape.data).default([]),
 });
 
 type FixtureData = z.infer<typeof FixtureSchema>;

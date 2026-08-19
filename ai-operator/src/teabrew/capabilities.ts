@@ -4,6 +4,7 @@ import {
   OrderResponse,
   ProductSearchResponse,
   ProductionResponse,
+  SalesSummaryResponse,
   StockResponse,
 } from "./contract.js";
 import type { TeabrewReader } from "./client.js";
@@ -63,9 +64,54 @@ const ProductionInput = z.object({
     .describe("Opcjonalny filtr statusu zlecenia produkcyjnego. Pomiń, żeby zobaczyć wszystkie."),
 });
 
+const IsoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "oczekiwano daty YYYY-MM-DD");
+
+const SalesSummaryInput = z.object({
+  from: IsoDay.describe("Pierwszy dzień raportu w strefie Europe/Warsaw"),
+  to: IsoDay.describe("Ostatni dzień raportu włącznie, w strefie Europe/Warsaw"),
+  sources: z
+    .array(z.enum(["medusa", "allegro"]))
+    .min(1)
+    .max(2)
+    .default(["medusa", "allegro"])
+    .describe("medusa = sklep internetowy, allegro = Allegro"),
+  topLimit: z.number().int().min(1).max(25).default(10),
+});
+
 export function createTeabrewCapabilities(
   getReader: () => Promise<TeabrewReader>,
 ): AnyCapability[] {
+  const getSalesSummary: Capability<
+    z.infer<typeof SalesSummaryInput>,
+    z.infer<typeof SalesSummaryResponse>["data"]
+  > = {
+    name: "teabrew_get_sales_summary",
+    version: "1.0.0",
+    description:
+      "Czyta bezpośrednio z TeaBrew raport sprzedaży sklepu internetowego (Medusa) i Allegro " +
+      "dla dnia lub zakresu dat: liczbę opłaconych zamówień, wartość sprzedaży, liczbę sztuk, " +
+      "kanały i najlepiej sprzedające się produkty. Użyj zawsze przy pytaniach ile było zamówień " +
+      "w sklepie/Allegro albo co się sprzedało. Wynik nie zawiera danych klientów i jest read-only.",
+    scope: "erp:read",
+    effectClass: "read",
+    input: SalesSummaryInput,
+    output: SalesSummaryResponse.shape.data,
+    auditRefs: (input, output) => ({
+      from: input.from,
+      to: input.to,
+      sources: input.sources.join(","),
+      orders: output?.orderCount ?? 0,
+    }),
+    handler: async (input, ctx) =>
+      (await getReader()).getSalesSummary({
+        from: input.from,
+        to: input.to,
+        sources: input.sources,
+        topLimit: input.topLimit,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      }),
+  };
+
   const getOrderStatus: Capability<
     z.infer<typeof OrderInput>,
     z.infer<typeof OrderResponse>["data"]
@@ -178,5 +224,5 @@ export function createTeabrewCapabilities(
       }),
   };
 
-  return [getOrderStatus, getStock, findProduct, getProductionStatus];
+  return [getOrderStatus, getSalesSummary, getStock, findProduct, getProductionStatus];
 }

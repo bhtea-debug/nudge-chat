@@ -19,6 +19,7 @@ export const CONTRACT_ID = "teabrew.ai-operator.read.v1";
 /** Ścieżki HTTP. Nazwane po konsumencie, jak wszystkie istniejące trasy w convex/http.ts. */
 export const ROUTES = {
   order: "/ai-operator/order",
+  salesSummary: "/ai-operator/sales-summary",
   stock: "/ai-operator/stock",
   productSearch: "/ai-operator/product-search",
   production: "/ai-operator/production",
@@ -104,6 +105,47 @@ export const OrderResponse = Envelope(
   }),
 );
 export type OrderResponse = z.infer<typeof OrderResponse>;
+
+// ---------- sprzedaż detaliczna ----------
+
+export const SalesSource = z.enum(["medusa", "allegro"]);
+
+const SalesBucket = z.object({
+  orderCount: z.number().int().nonnegative(),
+  grossSalesPLN: z.number(),
+  unitsSold: z.number().nonnegative(),
+});
+
+export const SalesSummaryResponse = Envelope(
+  z.object({
+    from: z.string(),
+    to: z.string(),
+    timezone: z.literal("Europe/Warsaw"),
+    definition: z.object({ included: z.string(), excluded: z.string() }),
+    orderCount: z.number().int().nonnegative(),
+    grossSalesPLN: z.number(),
+    unitsSold: z.number().nonnegative(),
+    averageOrderPLN: z.number(),
+    channels: z.array(SalesBucket.extend({ source: SalesSource })),
+    daily: z.array(SalesBucket.extend({ date: z.string() })),
+    topProducts: z.array(
+      z.object({
+        skuCode: z.string().nullable(),
+        name: z.string(),
+        unitsSold: z.number().nonnegative(),
+        grossSalesPLN: z.number(),
+        orderCount: z.number().int().nonnegative(),
+        unmapped: z.boolean(),
+      }),
+    ),
+    productsTruncated: z.boolean(),
+    dataQuality: z.object({
+      unmappedLines: z.number().int().nonnegative(),
+      ordersWithoutTotal: z.number().int().nonnegative(),
+    }),
+  }),
+);
+export type SalesSummaryResponse = z.infer<typeof SalesSummaryResponse>;
 
 // ---------- stan magazynowy ----------
 
