@@ -4,6 +4,7 @@ import {
   OrderResponse,
   ProductSearchResponse,
   ProductionResponse,
+  SalesSummaryResponse,
   StockResponse,
 } from "./contract.js";
 import type { TeabrewReader } from "./client.js";
@@ -61,6 +62,20 @@ const ProductionInput = z.object({
     .string()
     .optional()
     .describe("Opcjonalny filtr statusu zlecenia produkcyjnego. Pomiń, żeby zobaczyć wszystkie."),
+});
+
+const IsoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+const SalesSummaryInput = z.object({
+  from: IsoDay.describe("Pierwszy dzień raportu, YYYY-MM-DD, w czasie Europe/Warsaw"),
+  to: IsoDay.describe("Ostatni dzień raportu włącznie, YYYY-MM-DD, w czasie Europe/Warsaw"),
+  sources: z
+    .array(z.enum(["medusa", "allegro"]))
+    .min(1)
+    .max(2)
+    .default(["medusa", "allegro"])
+    .describe("medusa = sklep internetowy, allegro = Allegro"),
+  topLimit: z.number().int().min(1).max(25).default(10),
 });
 
 export function createTeabrewCapabilities(
@@ -178,5 +193,36 @@ export function createTeabrewCapabilities(
       }),
   };
 
-  return [getOrderStatus, getStock, findProduct, getProductionStatus];
+  const getSalesSummary: Capability<
+    z.infer<typeof SalesSummaryInput>,
+    z.infer<typeof SalesSummaryResponse>["data"]
+  > = {
+    name: "teabrew_get_sales_summary",
+    version: "1.0.0",
+    description:
+      "Raportuje opłaconą sprzedaż detaliczną z TeaBrew dla zakresu dni: liczbę zamówień, " +
+      "wartość brutto, sprzedane sztuki, średnią, rozbicie sklep internetowy/Allegro, " +
+      "sprzedaż dzienną i najlepiej sprzedające się produkty. Nie zwraca danych klientów. " +
+      "Nie liczy anulowanych ani nieopłaconych zamówień i nie odejmuje zwrotów.",
+    scope: "erp:read",
+    effectClass: "read",
+    input: SalesSummaryInput,
+    output: SalesSummaryResponse.shape.data,
+    auditRefs: (input, output) => ({
+      from: input.from,
+      to: input.to,
+      sources: input.sources.join(","),
+      orders: output?.orderCount ?? 0,
+    }),
+    handler: async (input, ctx) =>
+      (await getReader()).getSalesSummary({
+        from: input.from,
+        to: input.to,
+        sources: input.sources,
+        topLimit: input.topLimit,
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      }),
+  };
+
+  return [getOrderStatus, getStock, findProduct, getProductionStatus, getSalesSummary];
 }

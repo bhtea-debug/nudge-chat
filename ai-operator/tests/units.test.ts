@@ -254,6 +254,7 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
       "teabrew_find_product",
       "teabrew_get_order_status",
       "teabrew_get_production_status",
+      "teabrew_get_sales_summary",
       "teabrew_get_stock",
     ]);
   });
@@ -270,6 +271,10 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
     const props = stock.input_schema["properties"] as Record<string, unknown>;
     expect(Object.keys(props).sort()).toEqual(["codes", "profile"]);
     expect(stock.input_schema["required"]).toEqual(["codes"]);
+    const sales = tools.find((t) => t.name === "teabrew_get_sales_summary")!;
+    const salesProps = sales.input_schema["properties"] as Record<string, unknown>;
+    expect(Object.keys(salesProps).sort()).toEqual(["from", "sources", "to", "topLimit"]);
+    expect(sales.input_schema["required"]).toEqual(["from", "to"]);
   });
 
   it("OpenAPI powstaje dla wszystkich capability i wymusza bearer", () => {

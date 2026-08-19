@@ -22,6 +22,7 @@ export const ROUTES = {
   stock: "/ai-operator/stock",
   productSearch: "/ai-operator/product-search",
   production: "/ai-operator/production",
+  salesSummary: "/ai-operator/sales-summary",
   health: "/ai-operator/health",
 } as const;
 
@@ -203,6 +204,47 @@ export const ProductionResponse = Envelope(
   }),
 );
 export type ProductionResponse = z.infer<typeof ProductionResponse>;
+
+// ---------- sprzedaż detaliczna ----------
+
+export const SalesSource = z.enum(["medusa", "allegro"]);
+
+const SalesBucket = z.object({
+  orderCount: z.number().int().nonnegative(),
+  grossSalesPLN: z.number().nonnegative(),
+  unitsSold: z.number().nonnegative(),
+});
+
+export const SalesSummaryResponse = Envelope(
+  z.object({
+    from: z.string(),
+    to: z.string(),
+    timezone: z.literal("Europe/Warsaw"),
+    definition: z.object({ included: z.string(), excluded: z.string() }),
+    orderCount: z.number().int().nonnegative(),
+    grossSalesPLN: z.number().nonnegative(),
+    unitsSold: z.number().nonnegative(),
+    averageOrderPLN: z.number().nonnegative(),
+    channels: z.array(SalesBucket.extend({ source: SalesSource })),
+    daily: z.array(SalesBucket.extend({ date: z.string() })),
+    topProducts: z.array(
+      z.object({
+        skuCode: z.string().nullable(),
+        name: z.string(),
+        unitsSold: z.number().nonnegative(),
+        grossSalesPLN: z.number().nonnegative(),
+        orderCount: z.number().int().nonnegative(),
+        unmapped: z.boolean(),
+      }),
+    ),
+    productsTruncated: z.boolean(),
+    dataQuality: z.object({
+      unmappedLines: z.number().int().nonnegative(),
+      ordersWithoutTotal: z.number().int().nonnegative(),
+    }),
+  }),
+);
+export type SalesSummaryResponse = z.infer<typeof SalesSummaryResponse>;
 
 // ---------- health ----------
 

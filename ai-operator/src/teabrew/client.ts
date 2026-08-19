@@ -7,6 +7,7 @@ import {
   OrderResponse,
   ProductSearchResponse,
   ProductionResponse,
+  SalesSummaryResponse,
   ROUTES,
   StockResponse,
 } from "./contract.js";
@@ -32,6 +33,13 @@ export interface TeabrewReader {
     status?: string;
     signal?: AbortSignal;
   }): Promise<z.infer<typeof ProductionResponse>["data"]>;
+  getSalesSummary(args: {
+    from: string;
+    to: string;
+    sources: readonly ("medusa" | "allegro")[];
+    topLimit: number;
+    signal?: AbortSignal;
+  }): Promise<z.infer<typeof SalesSummaryResponse>["data"]>;
   health(args?: { signal?: AbortSignal }): Promise<z.infer<typeof HealthResponse>["data"]>;
 }
 
@@ -95,6 +103,28 @@ export class HttpTeabrewReader implements TeabrewReader {
         ProductionResponse,
         ROUTES.production,
         { limit: String(args.limit), ...(args.status ? { status: args.status } : {}) },
+        args.signal,
+      )
+    ).data;
+  }
+
+  async getSalesSummary(args: {
+    from: string;
+    to: string;
+    sources: readonly ("medusa" | "allegro")[];
+    topLimit: number;
+    signal?: AbortSignal;
+  }) {
+    return (
+      await this.get(
+        SalesSummaryResponse,
+        ROUTES.salesSummary,
+        {
+          from: args.from,
+          to: args.to,
+          sources: args.sources.join(","),
+          topLimit: String(args.topLimit),
+        },
         args.signal,
       )
     ).data;
@@ -259,6 +289,36 @@ export class FixtureTeabrewReader implements TeabrewReader {
       orders: orders.slice(0, args.limit),
       activeRuns: this.data.activeRuns,
       truncated: orders.length > args.limit,
+    };
+  }
+
+  async getSalesSummary(args: {
+    from: string;
+    to: string;
+    sources: readonly ("medusa" | "allegro")[];
+  }) {
+    return {
+      from: args.from,
+      to: args.to,
+      timezone: "Europe/Warsaw" as const,
+      definition: {
+        included: "opłacone zamówienia, według daty złożenia",
+        excluded: "anulowane i nieopłacone; zwroty nie są odejmowane",
+      },
+      orderCount: 0,
+      grossSalesPLN: 0,
+      unitsSold: 0,
+      averageOrderPLN: 0,
+      channels: args.sources.map((source) => ({
+        source,
+        orderCount: 0,
+        grossSalesPLN: 0,
+        unitsSold: 0,
+      })),
+      daily: [],
+      topProducts: [],
+      productsTruncated: false,
+      dataQuality: { unmappedLines: 0, ordersWithoutTotal: 0 },
     };
   }
 }

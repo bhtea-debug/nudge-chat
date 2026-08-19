@@ -1,6 +1,6 @@
 # Łatka read-only dla TeaBrew v2
 
-Te pliki dodają do TeaBrew v2 **pięć tras GET tylko do czytania**, z których
+Te pliki opisują kontrakt TeaBrew v2 obejmujący **sześć tras GET tylko do czytania**, z których
 korzysta agent `inbox-operator`. Nie zmieniają istniejącego zachowania i nie
 dodają ani jednej mutacji.
 
@@ -16,6 +16,7 @@ Leżą tutaj jako **źródło kontraktu** — ten sam kształt opisuje
 | `GET /ai-operator/stock?codes=&profile=` | czy mamy ten towar i ile jest dostępne |
 | `GET /ai-operator/product-search?query=` | jak się nazywa i jaki kod ma to, o czym pisze klient |
 | `GET /ai-operator/production?limit=&status=` | jak wygląda bieżąca produkcja |
+| `GET /ai-operator/sales-summary?from=&to=&sources=` | ile i czego sprzedano w sklepie internetowym oraz na Allegro |
 
 Nazwy tras są nazwane po konsumencie — tak samo jak istniejące `/medusa/*`,
 `/b2b/*` i `/budzeciek/*`.
@@ -75,8 +76,8 @@ bramka dla człowieka; nie obchodź jej `convex deploy` ani `convex codegen`.
    convex/queries/aiOperator.ts
    ```
 
-   Zawiera cztery `internalQuery`: `orderByRef`, `stockByCodes`, `findProduct`,
-   `productionStatus`. Żadnej mutacji.
+   Zawiera sześć zapytań `internalQuery`, w tym raport sprzedaży
+   `salesSummary`. Żadnej mutacji.
 
    `internalQuery`, a nie `query`, jest tu istotne: publiczne `query` byłoby
    wywoływalne przez **każdego**, kto zna adres wdrożenia, bez naszego tokenu.
@@ -95,7 +96,7 @@ bramka dla człowieka; nie obchodź jej `convex deploy` ani `convex codegen`.
 
    - funkcję `authorizeAiOperator`,
    - stałą `AI_OPERATOR_CONTRACT_VERSION` i funkcje `aiOperatorOk`, `intParam`,
-   - pięć bloków `http.route({...})`.
+   - sześć bloków `http.route({...})`.
 
    Wszystko **przed** `export default http;`.
 
@@ -122,9 +123,9 @@ bramka dla człowieka; nie obchodź jej `convex deploy` ani `convex codegen`.
    npm run verify:teabrew
    ```
 
-   17 sprawdzeń w czterech grupach:
+   Sprawdzenia w czterech grupach:
 
-   - **bezpieczeństwo** — brak tokenu na każdej z pięciu tras, zły token, token
+   - **bezpieczeństwo** — brak tokenu na każdej z sześciu tras, zły token, token
      w query stringu (musi być bezsilny), brak metod zapisu (POST/PUT/PATCH/DELETE),
      brak nieudokumentowanych tras `/ai-operator/*`;
    - **kontrakt** — kształt każdej odpowiedzi wobec schematu zod, walidacja
@@ -138,7 +139,7 @@ bramka dla człowieka; nie obchodź jej `convex deploy` ani `convex codegen`.
 
    Grupa „bezpieczeństwo" jest tu ważniejsza od pozytywnych: wyłapuje endpoint,
    który zwraca dane bez autoryzacji, i potwierdza, że agent nie dostał niczego
-   poza pięcioma trasami.
+   poza sześcioma trasami.
 
 ## Decyzje projektowe warte utrzymania
 
@@ -164,5 +165,5 @@ i **mówi w odpowiedzi, po którym polu dopasował**.
 
 Usuń `AI_OPERATOR_API_TOKEN` ze zmiennych Convex. Trasy zaczną zwracać 500
 i agent straci dostęp natychmiast, bez wdrożenia. Pełne wycofanie to skasowanie
-`convex/queries/aiOperator.ts` i pięciu bloków `http.route` — nic innego w
+`convex/queries/aiOperator.ts` i sześciu bloków `http.route` — nic innego w
 TeaBrew z nich nie korzysta.
