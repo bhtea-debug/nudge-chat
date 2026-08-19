@@ -60,3 +60,89 @@ export const MarketingTasksResponse = z.object({
   generatedAt: z.string(),
   data: MarketingTasksData,
 });
+
+export const MarketingCampaignView = z.enum([
+  "open",
+  "planned",
+  "active",
+  "done",
+  "all",
+]);
+export type MarketingCampaignView = z.infer<typeof MarketingCampaignView>;
+
+export const MarketingCampaign = z.object({
+  id: z.string(),
+  name: z.string(),
+  brief: z.string().nullable(),
+  goal: z.string().nullable(),
+  status: z.string(),
+  statusLabel: z.string(),
+  startDate: z.string().nullable(),
+  endDate: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  entries: z.number().int().nonnegative(),
+  tasks: z.object({
+    done: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    overdue: z.number().int().nonnegative(),
+  }),
+});
+
+export const MarketingScheduleEntry = z.object({
+  id: z.string(),
+  title: z.string(),
+  brief: z.string().nullable(),
+  type: z.string(),
+  typeLabel: z.string(),
+  channel: z.string(),
+  startDate: z.string(),
+  endDate: z.string().nullable(),
+  startTime: z.string().nullable(),
+  status: z.string(),
+  statusLabel: z.string(),
+  campaignName: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  tasks: z.object({
+    done: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+});
+
+export const MarketingScheduleData = z.object({
+  timezone: z.literal("Europe/Warsaw"),
+  filter: z.object({ from: z.string(), to: z.string() }),
+  summary: z.object({
+    entries: z.number().int().nonnegative(),
+    campaigns: z.number().int().nonnegative(),
+    byStatus: z.record(z.string(), z.number().int().nonnegative()),
+  }),
+  truncated: z.boolean(),
+  entries: z.array(MarketingScheduleEntry),
+  campaigns: z.array(MarketingCampaign),
+});
+export type MarketingScheduleData = z.infer<typeof MarketingScheduleData>;
+
+export const MarketingCampaignsData = z.object({
+  timezone: z.literal("Europe/Warsaw"),
+  filter: z.object({ view: MarketingCampaignView, today: z.string() }),
+  summary: z.object({
+    returned: z.number().int().nonnegative(),
+    active: z.number().int().nonnegative(),
+    planned: z.number().int().nonnegative(),
+  }),
+  truncated: z.boolean(),
+  campaigns: z.array(MarketingCampaign),
+});
+export type MarketingCampaignsData = z.infer<typeof MarketingCampaignsData>;
+
+export const MarketingScheduleResponse = z.object({
+  ok: z.literal(true),
+  generatedAt: z.string(),
+  data: MarketingScheduleData,
+});
+
+export const MarketingCampaignsResponse = z.object({
+  ok: z.literal(true),
+  generatedAt: z.string(),
+  data: MarketingCampaignsData,
+});

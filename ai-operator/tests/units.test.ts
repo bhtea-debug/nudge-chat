@@ -252,6 +252,8 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
       "mail_list_recent",
       "mail_search",
       "marketing_get_my_tasks",
+      "marketing_get_schedule",
+      "marketing_list_campaigns",
       "teabrew_find_product",
       "teabrew_get_order_status",
       "teabrew_get_production_status",
@@ -275,6 +277,13 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
     const marketingProps = marketing.input_schema["properties"] as Record<string, unknown>;
     expect(Object.keys(marketingProps).sort()).toEqual(["dueFrom", "dueTo", "limit", "view"]);
     expect(marketing.input_schema["required"]).toBeUndefined();
+    const schedule = tools.find((t) => t.name === "marketing_get_schedule")!;
+    const scheduleProps = schedule.input_schema["properties"] as Record<string, unknown>;
+    expect(Object.keys(scheduleProps).sort()).toEqual(["from", "limit", "to"]);
+    expect(schedule.input_schema["required"]).toEqual(["from", "to"]);
+    const campaigns = tools.find((t) => t.name === "marketing_list_campaigns")!;
+    expect(Object.keys(campaigns.input_schema["properties"] as Record<string, unknown>).sort())
+      .toEqual(["limit", "view"]);
   });
 
   it("OpenAPI powstaje dla wszystkich capability i wymusza bearer", () => {
