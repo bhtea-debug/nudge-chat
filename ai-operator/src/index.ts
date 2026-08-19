@@ -13,6 +13,12 @@ import { MailTriage } from "./agent/triage.js";
 import { CopilotStore } from "./state/store.js";
 import { createIssueCapabilities } from "./state/capabilities.js";
 import { MailMonitor } from "./state/monitor.js";
+import { createMarketingCapabilities } from "./marketing/capabilities.js";
+import {
+  HttpMarketingPlannerReader,
+  UnavailableMarketingPlannerReader,
+  type MarketingPlannerReader,
+} from "./marketing/client.js";
 
 /**
  * Zakresy przyznane agentowi. Wszystkie są tylko do czytania.
@@ -22,7 +28,12 @@ import { MailMonitor } from "./state/monitor.js";
  * store bezpośrednio, wołany przez monitor i przez adapter. Dzięki temu
  * `effectClass: "read"` pozostaje prawdą dla każdego narzędzia w rejestrze.
  */
-export const AGENT_SCOPES: readonly Scope[] = ["mail:read", "erp:read", "issues:read"];
+export const AGENT_SCOPES: readonly Scope[] = [
+  "mail:read",
+  "erp:read",
+  "issues:read",
+  "planner:read",
+];
 
 export interface App {
   readonly config: AppConfig;
@@ -52,6 +63,7 @@ export interface App {
 export function createApp(config: AppConfig = loadConfig()): App {
   let mailProvider: MailProvider | null = null;
   let teabrewReader: TeabrewReader | null = null;
+  let marketingPlannerReader: MarketingPlannerReader | null = null;
 
   const getMail = async (): Promise<MailProvider> => {
     if (mailProvider) return mailProvider;
@@ -78,6 +90,18 @@ export function createApp(config: AppConfig = loadConfig()): App {
     return teabrewReader;
   };
 
+  const getMarketingPlanner = async (): Promise<MarketingPlannerReader> => {
+    if (marketingPlannerReader) return marketingPlannerReader;
+    marketingPlannerReader =
+      config.marketingPlanner.kind === "http"
+        ? new HttpMarketingPlannerReader({
+            baseUrl: config.marketingPlanner.baseUrl,
+            token: config.marketingPlanner.token,
+          })
+        : new UnavailableMarketingPlannerReader();
+    return marketingPlannerReader;
+  };
+
   // Stan Copilota jest leniwy: `npm run caps` i `openapi` nie mają po co
   // otwierać dziennika, a MCP otwiera go dopiero przy pierwszym pytaniu o sprawy.
   let store: CopilotStore | null = null;
@@ -87,6 +111,7 @@ export function createApp(config: AppConfig = loadConfig()): App {
   const registry = new CapabilityRegistry().registerAll([
     ...createMailCapabilities(getMail),
     ...createTeabrewCapabilities(getTeabrew),
+    ...createMarketingCapabilities(getMarketingPlanner),
     ...createIssueCapabilities(getStore),
   ]);
 
@@ -155,6 +180,7 @@ export function createRegistryForProjections(): CapabilityRegistry {
   const caps: AnyCapability[] = [
     ...createMailCapabilities(unreachable),
     ...createTeabrewCapabilities(unreachable),
+    ...createMarketingCapabilities(unreachable),
     ...createIssueCapabilities(() => {
       throw new Error("rejestr do projekcji nie otwiera stanu");
     }),

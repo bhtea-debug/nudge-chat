@@ -20,7 +20,8 @@ export type Scope =
    * i ERP: dane tutaj NIE są systemem prawdy firmy, więc uprawnienie do ich
    * czytania nie mówi nic o dostępie do poczty ani do TeaBrew, i odwrotnie.
    */
-  | "issues:read";
+  | "issues:read"
+  | "planner:read";
 
 export interface CapabilityContext {
   /** Kto wywołuje. W MVP zawsze jeden agent: "inbox-operator". */

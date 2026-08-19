@@ -90,6 +90,9 @@ export interface AppConfig {
   readonly teabrew:
     | { readonly kind: "fixture"; readonly filePath: string }
     | { readonly kind: "http"; readonly baseUrl: string; readonly token: string };
+  readonly marketingPlanner:
+    | { readonly kind: "disabled" }
+    | { readonly kind: "http"; readonly baseUrl: string; readonly token: string };
 }
 
 function req(name: string): string {
@@ -116,6 +119,14 @@ export function loadConfig(): AppConfig {
   // Od katalogu pakietu, nie od katalogu roboczego — patrz paths.ts.
   const fixturesDir = fromPackageRoot(opt("FIXTURES_DIR", "fixtures"));
   const auditFileRaw = process.env["AUDIT_FILE"]?.trim();
+  const marketingPlannerBaseUrl = process.env["MARKETING_PLANNER_BASE_URL"]?.trim();
+  const marketingPlannerToken = process.env["MARKETING_PLANNER_TOKEN"]?.trim();
+  if (Boolean(marketingPlannerBaseUrl) !== Boolean(marketingPlannerToken)) {
+    throw new CapabilityError(
+      "not_configured",
+      "MARKETING_PLANNER_BASE_URL i MARKETING_PLANNER_TOKEN muszą być ustawione razem",
+    );
+  }
 
   return {
     mode,
@@ -176,5 +187,13 @@ export function loadConfig(): AppConfig {
             token: req("TEABREW_AI_OPERATOR_TOKEN"),
           }
         : { kind: "fixture", filePath: `${fixturesDir}/teabrew/erp.json` },
+    marketingPlanner:
+      marketingPlannerBaseUrl && marketingPlannerToken
+        ? {
+            kind: "http",
+            baseUrl: marketingPlannerBaseUrl,
+            token: marketingPlannerToken,
+          }
+        : { kind: "disabled" },
   };
 }
