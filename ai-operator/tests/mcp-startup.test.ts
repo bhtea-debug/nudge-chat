@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
  * Trzymane w jednym miejscu, bo ta liczba rośnie i rozjazd w dwóch testach
  * kosztowałby więcej niż stała.
  */
-const EXPECTED_TOOLS = 14;
+const EXPECTED_TOOLS = 17;
 
 const operatorDir = fileURLToPath(new URL("..", import.meta.url));
 const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));

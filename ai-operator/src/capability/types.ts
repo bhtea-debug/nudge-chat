@@ -21,7 +21,8 @@ export type Scope =
    * czytania nie mówi nic o dostępie do poczty ani do TeaBrew, i odwrotnie.
    */
   | "issues:read"
-  | "planner:read";
+  | "planner:read"
+  | "budget:read";
 
 export interface CapabilityContext {
   /** Kto wywołuje. W MVP zawsze jeden agent: "inbox-operator". */

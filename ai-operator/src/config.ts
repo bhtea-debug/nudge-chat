@@ -93,6 +93,9 @@ export interface AppConfig {
   readonly marketingPlanner:
     | { readonly kind: "disabled" }
     | { readonly kind: "http"; readonly baseUrl: string; readonly token: string };
+  readonly budzecik:
+    | { readonly kind: "disabled" }
+    | { readonly kind: "http"; readonly baseUrl: string; readonly token: string };
 }
 
 function req(name: string): string {
@@ -125,6 +128,14 @@ export function loadConfig(): AppConfig {
     throw new CapabilityError(
       "not_configured",
       "MARKETING_PLANNER_BASE_URL i MARKETING_PLANNER_TOKEN muszą być ustawione razem",
+    );
+  }
+  const budzecikBaseUrl = process.env["BUDZECIK_BASE_URL"]?.trim();
+  const budzecikToken = process.env["BUDZECIK_COPILOT_TOKEN"]?.trim();
+  if (Boolean(budzecikBaseUrl) !== Boolean(budzecikToken)) {
+    throw new CapabilityError(
+      "not_configured",
+      "BUDZECIK_BASE_URL i BUDZECIK_COPILOT_TOKEN muszą być ustawione razem",
     );
   }
 
@@ -194,6 +205,10 @@ export function loadConfig(): AppConfig {
             baseUrl: marketingPlannerBaseUrl,
             token: marketingPlannerToken,
           }
+        : { kind: "disabled" },
+    budzecik:
+      budzecikBaseUrl && budzecikToken
+        ? { kind: "http", baseUrl: budzecikBaseUrl, token: budzecikToken }
         : { kind: "disabled" },
   };
 }

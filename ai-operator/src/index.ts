@@ -19,6 +19,12 @@ import {
   UnavailableMarketingPlannerReader,
   type MarketingPlannerReader,
 } from "./marketing/client.js";
+import { createBudzecikCapabilities } from "./budzecik/capabilities.js";
+import {
+  HttpBudzecikReader,
+  UnavailableBudzecikReader,
+  type BudzecikReader,
+} from "./budzecik/client.js";
 
 /**
  * Zakresy przyznane agentowi. Wszystkie są tylko do czytania.
@@ -33,6 +39,7 @@ export const AGENT_SCOPES: readonly Scope[] = [
   "erp:read",
   "issues:read",
   "planner:read",
+  "budget:read",
 ];
 
 export interface App {
@@ -64,6 +71,7 @@ export function createApp(config: AppConfig = loadConfig()): App {
   let mailProvider: MailProvider | null = null;
   let teabrewReader: TeabrewReader | null = null;
   let marketingPlannerReader: MarketingPlannerReader | null = null;
+  let budzecikReader: BudzecikReader | null = null;
 
   const getMail = async (): Promise<MailProvider> => {
     if (mailProvider) return mailProvider;
@@ -102,6 +110,17 @@ export function createApp(config: AppConfig = loadConfig()): App {
     return marketingPlannerReader;
   };
 
+  const getBudzecik = async (): Promise<BudzecikReader> => {
+    if (budzecikReader) return budzecikReader;
+    budzecikReader = config.budzecik.kind === "http"
+      ? new HttpBudzecikReader({
+          baseUrl: config.budzecik.baseUrl,
+          token: config.budzecik.token,
+        })
+      : new UnavailableBudzecikReader();
+    return budzecikReader;
+  };
+
   // Stan Copilota jest leniwy: `npm run caps` i `openapi` nie mają po co
   // otwierać dziennika, a MCP otwiera go dopiero przy pierwszym pytaniu o sprawy.
   let store: CopilotStore | null = null;
@@ -112,6 +131,7 @@ export function createApp(config: AppConfig = loadConfig()): App {
     ...createMailCapabilities(getMail),
     ...createTeabrewCapabilities(getTeabrew),
     ...createMarketingCapabilities(getMarketingPlanner),
+    ...createBudzecikCapabilities(getBudzecik),
     ...createIssueCapabilities(getStore),
   ]);
 
@@ -181,6 +201,7 @@ export function createRegistryForProjections(): CapabilityRegistry {
     ...createMailCapabilities(unreachable),
     ...createTeabrewCapabilities(unreachable),
     ...createMarketingCapabilities(unreachable),
+    ...createBudzecikCapabilities(unreachable),
     ...createIssueCapabilities(() => {
       throw new Error("rejestr do projekcji nie otwiera stanu");
     }),
