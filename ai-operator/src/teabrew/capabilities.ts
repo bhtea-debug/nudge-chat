@@ -1,6 +1,15 @@
 import { z } from "zod";
-import type { AnyCapability, Capability } from "../capability/types.js";
 import {
+  CapabilityError,
+  type AnyCapability,
+  type Capability,
+  type CapabilityContext,
+} from "../capability/types.js";
+import {
+  CustomerCaseMessagesResponse,
+  CustomerCaseResponse,
+  CustomerCasesResponse,
+  CustomerCaseSearchResponse,
   OrderResponse,
   ProductSearchResponse,
   ProductionResponse,
@@ -77,6 +86,93 @@ const SalesSummaryInput = z.object({
     .describe("medusa = sklep internetowy, allegro = Allegro"),
   topLimit: z.number().int().min(1).max(25).default(10),
 });
+
+export const CustomerContentPurpose = z.enum([
+  "authorized_chat_view",
+  "user_requested_review",
+  "user_requested_summary",
+  "user_requested_draft",
+]);
+
+const ContentRequestFields = {
+  includeContent: z.boolean().default(false),
+  purpose: CustomerContentPurpose.optional().describe(
+    "Wymagane przy includeContent=true. Widok pokazuje treść tylko uprawnionemu użytkownikowi; " +
+      "review/summary/draft oznaczają jawne żądanie użytkownika i zwracają tekst zminimalizowany dla modelu.",
+  ),
+} as const;
+
+const ListCustomerCasesInput = z
+  .object({
+    state: z.enum(["new", "open", "all"]).default("open"),
+    limit: z.number().int().min(1).max(100).default(30),
+    ...ContentRequestFields,
+  })
+  .superRefine(requirePurposeForContent);
+
+const CustomerCaseDetailInput = z
+  .object({
+    id: z.string().min(1).max(128),
+    ...ContentRequestFields,
+  })
+  .superRefine(requirePurposeForContent);
+
+const CustomerCaseMessagesInput = z.object({
+  id: z.string().min(1).max(128),
+  limit: z.number().int().min(1).max(100).default(50),
+  purpose: CustomerContentPurpose.describe(
+    "Historia zawiera treść klienta, dlatego cel odczytu jest obowiązkowy.",
+  ),
+});
+
+const SearchCustomerCasesInput = z
+  .object({
+    query: z.string().min(1).max(128),
+    by: z.enum(["order", "buyer"]),
+    limit: z.number().int().min(1).max(100).default(30),
+    ...ContentRequestFields,
+  })
+  .superRefine(requirePurposeForContent);
+
+function requirePurposeForContent(
+  input: { includeContent: boolean; purpose?: z.infer<typeof CustomerContentPurpose> },
+  ctx: z.RefinementCtx,
+): void {
+  if (input.includeContent && !input.purpose) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["purpose"],
+      message: "purpose jest wymagane, gdy includeContent=true",
+    });
+  }
+}
+
+function requireCustomerContent(
+  ctx: CapabilityContext,
+  purpose?: z.infer<typeof CustomerContentPurpose>,
+): void {
+  if (!ctx.scopes.includes("customer_cases:content")) {
+    throw new CapabilityError(
+      "forbidden_scope",
+      "odczyt treści klienta wymaga osobnego zakresu customer_cases:content",
+    );
+  }
+  if (
+    purpose === "authorized_chat_view" &&
+    !ctx.scopes.includes("customer_cases:display")
+  ) {
+    throw new CapabilityError(
+      "forbidden_scope",
+      "niezredagowany widok klienta jest dostępny wyłącznie zaufanemu firmowemu czatowi",
+    );
+  }
+}
+
+function contentMode(
+  purpose: z.infer<typeof CustomerContentPurpose> | undefined,
+): "display" | "model" {
+  return purpose === "authorized_chat_view" ? "display" : "model";
+}
 
 export function createTeabrewCapabilities(
   getReader: () => Promise<TeabrewReader>,
@@ -224,5 +320,151 @@ export function createTeabrewCapabilities(
       }),
   };
 
-  return [getOrderStatus, getSalesSummary, getStock, findProduct, getProductionStatus];
+  const listAllegroCustomerCases: Capability<
+    z.infer<typeof ListCustomerCasesInput>,
+    z.infer<typeof CustomerCasesResponse>["data"]
+  > = {
+    name: "teabrew_list_allegro_customer_cases",
+    version: "1.0.0",
+    description:
+      "Czyta z TeaBrew jedną kolejkę nowych lub otwartych zapytań klientów Allegro z Centrum " +
+      "Wiadomości i starych Dyskusji. Zwraca źródło, status, priorytet P0/P1/P2, termin odpowiedzi " +
+      "i stan SLA. Domyślnie nie zwraca treści. Treść wolno pobrać wyłącznie dla uprawnionego " +
+      "widoku albo po jawnym żądaniu analizy; nigdy automatycznie. Zawsze pokaż użytkownikowi " +
+      "freshness, szczególnie missing_scope/reconnect_required/stale/error. Narzędzie niczego nie " +
+      "wysyła do Allegro i nie zmienia spraw.",
+    scope: "customer_cases:read",
+    effectClass: "read",
+    input: ListCustomerCasesInput,
+    output: CustomerCasesResponse.shape.data,
+    auditRefs: (input, output) => ({
+      state: input.state,
+      count: output?.count ?? 0,
+      contentIncluded: output?.contentIncluded ?? false,
+      ...(input.purpose ? { purpose: input.purpose } : {}),
+    }),
+    handler: async (input, ctx) => {
+      if (input.includeContent) requireCustomerContent(ctx, input.purpose);
+      return (await getReader()).listCustomerCases({
+        state: input.state,
+        limit: input.limit,
+        includeContent: input.includeContent,
+        contentMode: contentMode(input.purpose),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
+    },
+  };
+
+  const getAllegroCustomerCase: Capability<
+    z.infer<typeof CustomerCaseDetailInput>,
+    z.infer<typeof CustomerCaseResponse>["data"]
+  > = {
+    name: "teabrew_get_allegro_customer_case",
+    version: "1.0.0",
+    description:
+      "Czyta szczegóły jednej sprawy klienta Allegro z cache TeaBrew. Domyślnie zwraca wyłącznie " +
+      "metadane; treść wymaga jawnego purpose i osobnego zakresu. Sprawdź found oraz freshness i " +
+      "nie przedstawiaj nieświeżych danych jako bieżących. Nie wysyła odpowiedzi ani komentarzy.",
+    scope: "customer_cases:read",
+    effectClass: "read",
+    input: CustomerCaseDetailInput,
+    output: CustomerCaseResponse.shape.data,
+    auditRefs: (input, output) => ({
+      caseId: input.id,
+      found: output?.found ?? false,
+      contentIncluded: output?.contentIncluded ?? false,
+      ...(input.purpose ? { purpose: input.purpose } : {}),
+    }),
+    handler: async (input, ctx) => {
+      if (input.includeContent) requireCustomerContent(ctx, input.purpose);
+      return (await getReader()).getCustomerCase({
+        id: input.id,
+        includeContent: input.includeContent,
+        contentMode: contentMode(input.purpose),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
+    },
+  };
+
+  const getAllegroCustomerCaseMessages: Capability<
+    z.infer<typeof CustomerCaseMessagesInput>,
+    z.infer<typeof CustomerCaseMessagesResponse>["data"]
+  > = {
+    name: "teabrew_get_allegro_customer_case_messages",
+    version: "1.0.0",
+    description:
+      "Czyta historię wiadomości jednej sprawy Allegro wyłącznie na jawne żądanie uprawnionego " +
+      "użytkownika. Dla analizy/podsumowania/szkicu TeaBrew zwraca tekst zminimalizowany i " +
+      "zredagowany; załączniki nigdy nie trafiają do modelu. attachmentsExcluded=true oznacza, " +
+      "że narzędzie nie udostępnia plików. Zawsze pokaż freshness. Brak jakiejkolwiek funkcji wysyłki.",
+    scope: "customer_cases:content",
+    effectClass: "read",
+    input: CustomerCaseMessagesInput,
+    output: CustomerCaseMessagesResponse.shape.data,
+    auditRefs: (input, output) => ({
+      caseId: input.id,
+      count: output?.count ?? 0,
+      purpose: input.purpose,
+      mode: contentMode(input.purpose),
+    }),
+    handler: async (input, ctx) => {
+      requireCustomerContent(ctx, input.purpose);
+      return (await getReader()).getCustomerCaseMessages({
+        id: input.id,
+        limit: input.limit,
+        contentMode: contentMode(input.purpose),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
+    },
+  };
+
+  const searchAllegroCustomerCases: Capability<
+    z.infer<typeof SearchCustomerCasesInput>,
+    z.infer<typeof CustomerCaseSearchResponse>["data"]
+  > = {
+    name: "teabrew_search_allegro_customer_cases",
+    version: "1.0.0",
+    description:
+      "Wyszukuje sprawy Allegro po numerze zamówienia albo loginie kupującego w cache TeaBrew. " +
+      "Domyślnie ukrywa treść i dane wyświetlane klienta. Treść wymaga osobnego uprawnienia oraz " +
+      "jawnego celu. Fraza wyszukiwania nie jest zapisywana w audycie. Zawsze raportuj freshness; " +
+      "narzędzie jest wyłącznie do odczytu.",
+    scope: "customer_cases:read",
+    effectClass: "read",
+    input: SearchCustomerCasesInput,
+    output: CustomerCaseSearchResponse.shape.data,
+    auditRefs: (input, output) => ({
+      by: input.by,
+      count: output?.count ?? 0,
+      contentIncluded: output?.contentIncluded ?? false,
+      ...(input.purpose ? { purpose: input.purpose } : {}),
+    }),
+    handler: async (input, ctx) => {
+      // Login kupującego jest danymi klienta również wtedy, gdy wynik zwraca
+      // tylko metadane. Samo wyszukanie po loginie wymaga zakresu treści.
+      if (input.by === "buyer" || input.includeContent) {
+        requireCustomerContent(ctx, input.purpose);
+      }
+      return (await getReader()).searchCustomerCases({
+        query: input.query,
+        by: input.by,
+        limit: input.limit,
+        includeContent: input.includeContent,
+        contentMode: contentMode(input.purpose),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
+      });
+    },
+  };
+
+  return [
+    getOrderStatus,
+    getSalesSummary,
+    getStock,
+    findProduct,
+    getProductionStatus,
+    listAllegroCustomerCases,
+    getAllegroCustomerCase,
+    getAllegroCustomerCaseMessages,
+    searchAllegroCustomerCases,
+  ];
 }

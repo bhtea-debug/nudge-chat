@@ -218,7 +218,8 @@ describe("MCP jest adapterem, nie drugim systemem", () => {
   it("audyt i korelacja są zachowane", () => {
     expect(CORE.includes("MemoryAuditSink")).toBe(true);
     expect(CORE.includes("correlationId")).toBe(true);
-    expect(CORE.includes("scopes: AGENT_SCOPES")).toBe(true);
+    expect(CORE.includes("scopes: grantedScopes")).toBe(true);
+    expect(CORE.includes("AGENT_SCOPES")).toBe(true);
   });
 
   it("„to już pokazałem” zapisuje adapter, nie capability", () => {

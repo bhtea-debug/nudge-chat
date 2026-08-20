@@ -3,6 +3,10 @@ import { z } from "zod";
 import { CapabilityError } from "../capability/types.js";
 import {
   CONTRACT_VERSION,
+  CustomerCaseMessagesResponse,
+  CustomerCaseResponse,
+  CustomerCasesResponse,
+  CustomerCaseSearchResponse,
   HealthResponse,
   OrderResponse,
   ProductSearchResponse,
@@ -40,6 +44,33 @@ export interface TeabrewReader {
     status?: string;
     signal?: AbortSignal;
   }): Promise<z.infer<typeof ProductionResponse>["data"]>;
+  listCustomerCases(args: {
+    state: "new" | "open" | "all";
+    limit: number;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }): Promise<z.infer<typeof CustomerCasesResponse>["data"]>;
+  getCustomerCase(args: {
+    id: string;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }): Promise<z.infer<typeof CustomerCaseResponse>["data"]>;
+  getCustomerCaseMessages(args: {
+    id: string;
+    limit: number;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }): Promise<z.infer<typeof CustomerCaseMessagesResponse>["data"]>;
+  searchCustomerCases(args: {
+    query: string;
+    by: "order" | "buyer";
+    limit: number;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }): Promise<z.infer<typeof CustomerCaseSearchResponse>["data"]>;
   health(args?: { signal?: AbortSignal }): Promise<z.infer<typeof HealthResponse>["data"]>;
 }
 
@@ -130,6 +161,88 @@ export class HttpTeabrewReader implements TeabrewReader {
     ).data;
   }
 
+  async listCustomerCases(args: {
+    state: "new" | "open" | "all";
+    limit: number;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }) {
+    return (
+      await this.get(
+        CustomerCasesResponse,
+        ROUTES.customerCases,
+        {
+          state: args.state,
+          limit: String(args.limit),
+          includeContent: String(args.includeContent),
+          contentMode: args.contentMode,
+        },
+        args.signal,
+      )
+    ).data;
+  }
+
+  async getCustomerCase(args: {
+    id: string;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }) {
+    return (
+      await this.get(
+        CustomerCaseResponse,
+        ROUTES.customerCase,
+        {
+          id: args.id,
+          includeContent: String(args.includeContent),
+          contentMode: args.contentMode,
+        },
+        args.signal,
+      )
+    ).data;
+  }
+
+  async getCustomerCaseMessages(args: {
+    id: string;
+    limit: number;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }) {
+    return (
+      await this.get(
+        CustomerCaseMessagesResponse,
+        ROUTES.customerCaseMessages,
+        { id: args.id, limit: String(args.limit), contentMode: args.contentMode },
+        args.signal,
+      )
+    ).data;
+  }
+
+  async searchCustomerCases(args: {
+    query: string;
+    by: "order" | "buyer";
+    limit: number;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+    signal?: AbortSignal;
+  }) {
+    return (
+      await this.get(
+        CustomerCaseSearchResponse,
+        ROUTES.customerCaseSearch,
+        {
+          query: args.query,
+          by: args.by,
+          limit: String(args.limit),
+          includeContent: String(args.includeContent),
+          contentMode: args.contentMode,
+        },
+        args.signal,
+      )
+    ).data;
+  }
+
   async health(args?: { signal?: AbortSignal }) {
     return (await this.get(HealthResponse, ROUTES.health, {}, args?.signal)).data;
   }
@@ -172,6 +285,13 @@ export class HttpTeabrewReader implements TeabrewReader {
       throw new CapabilityError(
         "forbidden_scope",
         `TeaBrew odrzucił token agenta (${res.status}) na ${path}`,
+      );
+    }
+    if (res.status === 429) {
+      const retryAfter = res.headers.get("retry-after");
+      throw new CapabilityError(
+        "upstream_error",
+        `TeaBrew ograniczył odczyt (HTTP 429) na ${path}; spróbuj ponownie${retryAfter ? ` za ${retryAfter} s` : " później"}`,
       );
     }
     if (!res.ok) {
@@ -325,6 +445,109 @@ export class FixtureTeabrewReader implements TeabrewReader {
       truncated: orders.length > args.limit,
     };
   }
+
+  async listCustomerCases(args: {
+    state: "new" | "open" | "all";
+    limit: number;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+  }) {
+    const matching = this.data.customerCases
+      .filter((customerCase) => {
+        if (args.state === "all") return true;
+        if (args.state === "new") {
+          return customerCase.status.toLowerCase() === "new" || !customerCase.isRead;
+        }
+        return customerCaseIsOpen(customerCase.status);
+      })
+      .sort(compareCustomerCases);
+    const cases = matching
+      .slice(0, args.limit)
+      .map((customerCase) => presentFixtureCase(customerCase, args.includeContent, args.contentMode));
+    return {
+      freshness: this.data.customerCasesFreshness,
+      cases,
+      count: cases.length,
+      truncated: matching.length > args.limit,
+      contentIncluded: args.includeContent,
+      contentMode: args.includeContent ? args.contentMode : ("none" as const),
+    };
+  }
+
+  async getCustomerCase(args: {
+    id: string;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+  }) {
+    const found = this.data.customerCases.find((customerCase) => customerCase.id === args.id);
+    return {
+      freshness: this.data.customerCasesFreshness,
+      found: Boolean(found),
+      case: found ? presentFixtureCase(found, args.includeContent, args.contentMode) : null,
+      contentIncluded: args.includeContent,
+      contentMode: args.includeContent ? args.contentMode : ("none" as const),
+    };
+  }
+
+  async getCustomerCaseMessages(args: {
+    id: string;
+    limit: number;
+    contentMode: "display" | "model";
+  }) {
+    const matching = this.data.customerCaseMessages
+      .filter((message) => message.caseId === args.id)
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    const selected = matching.slice(Math.max(0, matching.length - args.limit));
+    const messages = selected.map(({ caseId: _caseId, ...message }) =>
+      args.contentMode === "model"
+        ? {
+            ...message,
+            authorLogin: null,
+            text: redactCustomerText(message.text),
+            subject: redactCustomerText(message.subject),
+            attachments: [],
+          }
+        : message,
+    );
+    return {
+      freshness: this.data.customerCasesFreshness,
+      caseId: args.id,
+      messages,
+      count: messages.length,
+      truncated: matching.length > args.limit,
+      contentIncluded: true,
+      contentMode: args.contentMode,
+      attachmentsExcluded: true as const,
+    };
+  }
+
+  async searchCustomerCases(args: {
+    query: string;
+    by: "order" | "buyer";
+    limit: number;
+    includeContent: boolean;
+    contentMode: "display" | "model";
+  }) {
+    const query = args.query.trim().toLowerCase();
+    const matching = this.data.customerCases
+      .filter((customerCase) =>
+        args.by === "order"
+          ? (customerCase.orderId ?? "").toLowerCase().includes(query)
+          : (customerCase.buyerLogin ?? "").toLowerCase().includes(query),
+      )
+      .sort(compareCustomerCases);
+    const cases = matching
+      .slice(0, args.limit)
+      .map((customerCase) => presentFixtureCase(customerCase, args.includeContent, args.contentMode));
+    return {
+      freshness: this.data.customerCasesFreshness,
+      cases,
+      count: cases.length,
+      truncated: matching.length > args.limit,
+      contentIncluded: args.includeContent,
+      contentMode: args.includeContent ? args.contentMode : ("none" as const),
+    };
+  }
 }
 
 const FixtureSchema = z.object({
@@ -335,10 +558,73 @@ const FixtureSchema = z.object({
   production: z.array(ProductionResponse.shape.data.shape.orders.element).default([]),
   activeRuns: z.array(ProductionResponse.shape.data.shape.activeRuns.element).default([]),
   salesSummaries: z.array(SalesSummaryResponse.shape.data).default([]),
+  customerCases: z.array(CustomerCasesResponse.shape.data.shape.cases.element).default([]),
+  customerCaseMessages: z
+    .array(CustomerCaseMessagesResponse.shape.data.shape.messages.element.extend({ caseId: z.string() }))
+    .default([]),
+  customerCasesFreshness: CustomerCasesResponse.shape.data.shape.freshness.default({
+    status: "ready",
+    lastSuccessfulSyncAt: null,
+    nextAttemptAt: null,
+    ageMs: null,
+    stale: false,
+    scopeState: "ready",
+    message: null,
+  }),
 });
 
 type FixtureData = z.infer<typeof FixtureSchema>;
 export type FixtureDataInput = z.input<typeof FixtureSchema>;
+
+function customerCaseIsOpen(status: string): boolean {
+  return !["closed", "resolved", "ended", "finished"].includes(status.toLowerCase());
+}
+
+function compareCustomerCases(
+  left: FixtureData["customerCases"][number],
+  right: FixtureData["customerCases"][number],
+): number {
+  const priorityRank = { P0: 0, P1: 1, P2: 2 } as const;
+  const leftRank = left.priority ? priorityRank[left.priority] : 3;
+  const rightRank = right.priority ? priorityRank[right.priority] : 3;
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  const leftDeadline = left.responseDueAt ?? Number.POSITIVE_INFINITY;
+  const rightDeadline = right.responseDueAt ?? Number.POSITIVE_INFINITY;
+  if (leftDeadline !== rightDeadline) return leftDeadline - rightDeadline;
+  return (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0);
+}
+
+function presentFixtureCase(
+  customerCase: FixtureData["customerCases"][number],
+  includeContent: boolean,
+  contentMode: "display" | "model",
+): FixtureData["customerCases"][number] {
+  if (!includeContent) {
+    return {
+      ...customerCase,
+      buyerLogin: null,
+      offerName: null,
+      subject: null,
+      lastMessagePreview: null,
+    };
+  }
+  if (contentMode === "display") return customerCase;
+  return {
+    ...customerCase,
+    buyerLogin: null,
+    subject: redactCustomerText(customerCase.subject),
+    lastMessagePreview: redactCustomerText(customerCase.lastMessagePreview),
+  };
+}
+
+function redactCustomerText(value: string | null): string | null {
+  if (value === null) return null;
+  return value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/(?:\+?48[\s.-]?)?(?:\d[\s.-]?){9}\b/g, "[telefon]")
+    .replace(/\b\d{2}-\d{3}\b/g, "[kod pocztowy]")
+    .replace(/\b\d{11}\b/g, "[identyfikator]");
+}
 
 /**
  * Fikstury ERP zapisują znaczniki czasu względnie: "{{+2d}}", "{{-1d}}", "{{-4h}}".

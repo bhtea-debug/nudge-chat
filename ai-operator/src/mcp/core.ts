@@ -4,7 +4,7 @@ import { toMcpToolList } from "../capability/projections.js";
 import { MemoryAuditSink, newCorrelationId } from "../capability/audit.js";
 import { AGENT_ID } from "../agent/prompt.js";
 import { presentedIds } from "../state/capabilities.js";
-import type { CapabilityContext } from "../capability/types.js";
+import type { CapabilityContext, Scope } from "../capability/types.js";
 
 /**
  * Rdzeń MCP — JEDNA implementacja dla obu transportów.
@@ -76,6 +76,15 @@ export const SERVER_INSTRUCTIONS = [
   "Zwróć uwagę na pole staleNote: gdy jest niepuste, monitor poczty mógł nie",
   "działać i „brak zmian” nie znaczy „nic nie przyszło”. Powiedz o tym.",
   "",
+  "Zapytania klientów Allegro są domeną wrażliwą. Przy ogólnym pytaniu czytaj tylko",
+  "metadane kolejki (includeContent=false). Treść pobierz dopiero, gdy użytkownik jawnie",
+  "poprosi o przegląd, podsumowanie lub szkic; wtedy podaj właściwy user_requested_*",
+  "purpose. authorized_chat_view jest zastrzeżony dla principal-a firmowego czatu —",
+  "model nigdy nie może go wybierać. Używaj trybu z redakcją i nigdy załączników.",
+  "Zawsze pokaż freshness i komunikat o brakującym scope/reconnect/starych danych.",
+  "Nie ma narzędzia wysyłki do Allegro. Wewnętrznego komentarza ani szkicu nigdy nie",
+  "traktuj jako wiadomości klienta i nie próbuj przekazać ich do zewnętrznego API.",
+  "",
   "Wszystkie narzędzia są tylko do czytania. Nie możesz wysłać maila, zmienić statusu,",
   "ceny, stanu magazynu ani utworzyć zamówienia. Nie możesz też zamknąć sprawy —",
   "najdalej stwierdzić, że wygląda na załatwioną. Jeśli uważasz, że coś należy zrobić,",
@@ -92,14 +101,29 @@ export interface McpCore {
 
 type Started = { app: ReturnType<typeof createApp>; audit: MemoryAuditSink };
 
+export interface McpCoreOptions {
+  /**
+   * Wyłącznie principal firmowego czatu, uwierzytelniony oddzielnym tokenem
+   * serwisowym, może pobrać niezredagowany tryb display. Publiczny MCP/model
+   * nigdy nie dostaje tego zakresu.
+   */
+  trustedFirmowyChat?: boolean;
+}
+
 /**
  * @param sessionId Identyfikator korelacji. Jedna sesja = jedna rozmowa, bo
  *        pytanie brzmi „co Claude sprawdził, zanim odpowiedział", a osobny
  *        identyfikator na wywołanie nie pozwala tego zebrać razem.
  */
-export function createMcpCore(sessionId: string = newCorrelationId()): McpCore {
+export function createMcpCore(
+  sessionId: string = newCorrelationId(),
+  options: McpCoreOptions = {},
+): McpCore {
   let started: Started | null = null;
   let startupError: string | null = null;
+  const grantedScopes: readonly Scope[] = options.trustedFirmowyChat
+    ? [...AGENT_SCOPES, "customer_cases:display"]
+    : AGENT_SCOPES;
 
   // Start NIE MOŻE przewracać procesu. Przy stdio śmierć przed odpowiedzią na
   // `initialize` daje klientowi wyłącznie „Server disconnected" — bez żadnej
@@ -125,7 +149,7 @@ export function createMcpCore(sessionId: string = newCorrelationId()): McpCore {
    */
   const publishedTools = () =>
     started
-      ? started.app.registry.listForScopes(AGENT_SCOPES).filter((c) => c.effectClass === "read")
+      ? started.app.registry.listForScopes(grantedScopes).filter((c) => c.effectClass === "read")
       : [];
 
   const textResult = (text: string, isError: boolean): Record<string, unknown> => ({
@@ -201,7 +225,7 @@ export function createMcpCore(sessionId: string = newCorrelationId()): McpCore {
         const ctx: CapabilityContext = {
           agent: `${AGENT_ID}/mcp`,
           correlationId: sessionId,
-          scopes: AGENT_SCOPES,
+          scopes: grantedScopes,
           audit: started.audit,
         };
 

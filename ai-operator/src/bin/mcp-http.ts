@@ -91,6 +91,9 @@ const WERSJA_KODU: string | null = (() => {
   }
 })();
 const TOKEN = (process.env["MCP_BEARER_TOKEN"] ?? "").trim();
+const TRUSTED_FIRMOWY_CHAT_TOKEN = (
+  process.env["MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN"] ?? ""
+).trim();
 const MONITOR_IN_PROCESS = (process.env["MONITOR_IN_PROCESS"] ?? "1") !== "0";
 const COST_LOG = fromPackageRoot(process.env["COST_LOG"] ?? "state/koszty.jsonl");
 
@@ -122,6 +125,24 @@ if (TOKEN.length > 0 && !MCP_ENABLED) {
       "Wygeneruj: openssl rand -base64 48\n" +
       "Serwer NIE wstaje — token ustawiony po części jest gorszy niż brak tokenu,\n" +
       "bo wygląda na zabezpieczenie, którym nie jest.\n",
+  );
+  process.exit(1);
+}
+
+if (
+  TRUSTED_FIRMOWY_CHAT_TOKEN.length > 0 &&
+  TRUSTED_FIRMOWY_CHAT_TOKEN.length < MIN_TOKEN_LENGTH
+) {
+  process.stderr.write(
+    `[${SERVER_NAME}] MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN jest za krótki ` +
+      `(${TRUSTED_FIRMOWY_CHAT_TOKEN.length} znaków, wymagane min. ${MIN_TOKEN_LENGTH}).\n`,
+  );
+  process.exit(1);
+}
+
+if (TRUSTED_FIRMOWY_CHAT_TOKEN && TRUSTED_FIRMOWY_CHAT_TOKEN === TOKEN) {
+  process.stderr.write(
+    `[${SERVER_NAME}] token firmowego czatu musi być inny niż publiczny MCP_BEARER_TOKEN.\n`,
   );
   process.exit(1);
 }
@@ -217,6 +238,14 @@ function tokenMatches(provided: string): boolean {
   return timingSafeEqual(a, b);
 }
 
+function trustedFirmowyChatTokenMatches(provided: string): boolean {
+  if (!TRUSTED_FIRMOWY_CHAT_TOKEN) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(TRUSTED_FIRMOWY_CHAT_TOKEN);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
 function bearerOf(req: IncomingMessage): string | null {
   const header = req.headers["authorization"];
   if (typeof header !== "string") return null;
@@ -233,8 +262,11 @@ function bearerOf(req: IncomingMessage): string | null {
 const sessions = new Map<string, ReturnType<typeof createMcpCore>>();
 const SESSION_LIMIT = 32;
 
-function coreFor(sessionId: string | null): ReturnType<typeof createMcpCore> {
-  const key = sessionId ?? newCorrelationId();
+function coreFor(
+  sessionId: string | null,
+  trustedFirmowyChat: boolean,
+): ReturnType<typeof createMcpCore> {
+  const key = `${trustedFirmowyChat ? "firmowy-chat" : "model"}:${sessionId ?? newCorrelationId()}`;
   const existing = sessions.get(key);
   if (existing) return existing;
   if (sessions.size >= SESSION_LIMIT) {
@@ -243,7 +275,7 @@ function coreFor(sessionId: string | null): ReturnType<typeof createMcpCore> {
     const oldest = sessions.keys().next().value;
     if (oldest) sessions.delete(oldest);
   }
-  const core = createMcpCore(key);
+  const core = createMcpCore(key, { trustedFirmowyChat });
   sessions.set(key, core);
   return core;
 }
@@ -332,7 +364,7 @@ const server = createServer((req, res) => {
     // i ile narzędzi wystawia. Platformy hostingowe wymagają takiego endpointu,
     // a brak w nim danych firmy jest warunkiem jego istnienia.
     if (url.pathname === "/health") {
-      const probe = coreFor("health");
+      const probe = coreFor("health", false);
       json(res, 200, {
         ok: probe.startupError() === null,
         server: SERVER_NAME,
@@ -447,12 +479,14 @@ const server = createServer((req, res) => {
     }
 
     const provided = bearerOf(req);
-    // Dwie drogi: statyczny token (curl, diagnostyka, klienci umiejące nagłówek)
-    // oraz token wydany przez nasz OAuth (Claude — bo jego okno konektora nie
-    // ma pola na token). Obie prowadzą do tych samych, wyłącznie odczytowych
-    // narzędzi; różni je tylko sposób, w jaki klient udowadnia, że to on.
-    const wpuszczony =
+    // Publiczny statyczny token i OAuth prowadzą do zredagowanego profilu
+    // modelowego. Osobny token serwisowy firmowego czatu daje dodatkowy zakres
+    // display; nigdy nie może być współdzielony z Claude ani diagnostyką.
+    const trustedFirmowyChat =
+      provided !== null && trustedFirmowyChatTokenMatches(provided);
+    const standardMcp =
       provided !== null && (tokenMatches(provided) || verifyAccessToken(oauthFor(req), provided));
+    const wpuszczony = trustedFirmowyChat || standardMcp;
 
     if (!wpuszczony) {
       // Nagłówek MUSI wskazać metadane zasobu — bez tego klient dostaje samo
@@ -498,7 +532,7 @@ const server = createServer((req, res) => {
     }
 
     const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? null;
-    const core = coreFor(sessionId);
+    const core = coreFor(sessionId, trustedFirmowyChat);
     const batch = Array.isArray(parsed) ? parsed : [parsed];
     const firstTool =
       batch.find((r) => r.method === "tools/call")?.params?.["name"];
@@ -1007,7 +1041,7 @@ async function monitorTick(): Promise<void> {
 }
 
 server.listen(PORT, () => {
-  const probe = coreFor("boot");
+  const probe = coreFor("boot", false);
   // Pierwsze linie muszą odpowiadać na „co właściwie wstało i gdzie mam wejść",
   // bo to jedyne, co właściciel widzi po uruchomieniu.
   process.stdout.write(

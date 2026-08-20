@@ -23,6 +23,10 @@ export const ROUTES = {
   stock: "/ai-operator/stock",
   productSearch: "/ai-operator/product-search",
   production: "/ai-operator/production",
+  customerCases: "/ai-operator/customer-cases",
+  customerCase: "/ai-operator/customer-case",
+  customerCaseMessages: "/ai-operator/customer-case-messages",
+  customerCaseSearch: "/ai-operator/customer-case-search",
   health: "/ai-operator/health",
 } as const;
 
@@ -43,6 +47,143 @@ export const ErrorEnvelope = z.object({
 
 /** Znacznik czasu w ms albo null — nigdy zgadywana data. */
 const Ts = z.number().int().nullable();
+
+// ---------- zapytania klientów z Allegro ----------
+
+export const CustomerCasesFreshness = z.object({
+  status: z.enum([
+    "ready",
+    "syncing",
+    "stale",
+    "rate_limited",
+    "missing_scope",
+    "reconnect_required",
+    "not_connected",
+    "error",
+  ]),
+  lastSuccessfulSyncAt: Ts,
+  nextAttemptAt: Ts,
+  ageMs: z.number().int().nonnegative().nullable(),
+  stale: z.boolean(),
+  scopeState: z.enum(["ready", "missing_scope", "reconnect_required", "not_connected"]),
+  message: z.string().nullable(),
+});
+
+export const CustomerCaseSource = z.enum(["messaging", "sale_issue"]);
+export const CustomerContentMode = z.enum(["none", "display", "model"]);
+
+export const CustomerCase = z.object({
+  id: z.string(),
+  externalId: z.string(),
+  source: CustomerCaseSource,
+  sourceType: z.string(),
+  status: z.string(),
+  isRead: z.boolean(),
+  buyerLogin: z.string().nullable(),
+  orderId: z.string().nullable(),
+  offerId: z.string().nullable(),
+  offerName: z.string().nullable(),
+  subject: z.string().nullable(),
+  createdAt: Ts,
+  updatedAt: Ts,
+  lastMessageAt: Ts,
+  lastMessagePreview: z.string().nullable(),
+  hasAttachments: z.boolean(),
+  // Pola SOP P0. Są opcjonalne w czasie zgodnego wdrażania obu repozytoriów.
+  category: z
+    .enum([
+      "discussion",
+      "complaint",
+      "buyer_protection",
+      "reopened_discussion",
+      "post_purchase",
+      "shipping",
+      "payment",
+      "product_question",
+      "other",
+    ])
+    .nullable()
+    .optional(),
+  priority: z.enum(["P0", "P1", "P2"]).nullable().optional(),
+  responseDueAt: Ts.optional(),
+  waitingSince: Ts.optional(),
+  waitingMs: z.number().int().nonnegative().nullable().optional(),
+  serviceTargetAt: Ts.optional(),
+  serviceMaxAt: Ts.optional(),
+  slaState: z.enum(["ok", "yellow", "red", "critical", "overdue"]).nullable().optional(),
+  requiresResponse: z.boolean().optional(),
+  answeredAt: Ts.optional(),
+});
+
+export const CustomerCaseMessage = z.object({
+  id: z.string(),
+  kind: z.string(),
+  direction: z.enum(["incoming", "outgoing", "system", "unknown"]),
+  authorRole: z.string(),
+  authorLogin: z.string().nullable(),
+  text: z.string().nullable(),
+  subject: z.string().nullable(),
+  createdAt: Ts,
+  orderId: z.string().nullable(),
+  offerId: z.string().nullable(),
+  attachments: z.array(
+    z.object({
+      id: z.string(),
+      fileName: z.string().nullable(),
+      mimeType: z.string().nullable(),
+      status: z.string().nullable(),
+    }),
+  ),
+});
+
+export const CustomerCasesResponse = Envelope(
+  z.object({
+    freshness: CustomerCasesFreshness,
+    cases: z.array(CustomerCase),
+    count: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    contentIncluded: z.boolean(),
+    contentMode: CustomerContentMode,
+  }),
+);
+export type CustomerCasesResponse = z.infer<typeof CustomerCasesResponse>;
+
+export const CustomerCaseResponse = Envelope(
+  z.object({
+    freshness: CustomerCasesFreshness,
+    found: z.boolean(),
+    case: CustomerCase.nullable(),
+    contentIncluded: z.boolean(),
+    contentMode: CustomerContentMode,
+  }),
+);
+export type CustomerCaseResponse = z.infer<typeof CustomerCaseResponse>;
+
+export const CustomerCaseMessagesResponse = Envelope(
+  z.object({
+    freshness: CustomerCasesFreshness,
+    caseId: z.string(),
+    messages: z.array(CustomerCaseMessage),
+    count: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    contentIncluded: z.boolean(),
+    contentMode: CustomerContentMode,
+    attachmentsExcluded: z.literal(true),
+  }),
+);
+export type CustomerCaseMessagesResponse = z.infer<typeof CustomerCaseMessagesResponse>;
+
+export const CustomerCaseSearchResponse = Envelope(
+  z.object({
+    freshness: CustomerCasesFreshness,
+    cases: z.array(CustomerCase),
+    count: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    contentIncluded: z.boolean(),
+    contentMode: CustomerContentMode,
+  }),
+);
+export type CustomerCaseSearchResponse = z.infer<typeof CustomerCaseSearchResponse>;
 
 // ---------- zamówienie ----------
 
