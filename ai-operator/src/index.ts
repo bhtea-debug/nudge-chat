@@ -40,6 +40,8 @@ export const AGENT_SCOPES: readonly Scope[] = [
   "issues:read",
   "planner:read",
   "budget:read",
+  "customer_cases:read",
+  "customer_cases:content",
 ];
 
 export interface App {

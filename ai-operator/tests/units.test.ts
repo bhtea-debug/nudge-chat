@@ -258,10 +258,14 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
       "marketing_get_schedule",
       "marketing_list_campaigns",
       "teabrew_find_product",
+      "teabrew_get_allegro_customer_case",
+      "teabrew_get_allegro_customer_case_messages",
       "teabrew_get_order_status",
       "teabrew_get_production_status",
       "teabrew_get_sales_summary",
       "teabrew_get_stock",
+      "teabrew_list_allegro_customer_cases",
+      "teabrew_search_allegro_customer_cases",
     ]);
   });
 

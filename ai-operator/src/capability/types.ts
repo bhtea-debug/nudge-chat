@@ -22,7 +22,13 @@ export type Scope =
    */
   | "issues:read"
   | "planner:read"
-  | "budget:read";
+  | "budget:read"
+  /** Metadane kolejki Allegro bez treści klienta. */
+  | "customer_cases:read"
+  /** Treść klienta; przyznawana oddzielnie od widoczności kolejki. */
+  | "customer_cases:content"
+  /** Niezredagowany widok tylko dla zaufanego firmowego czatu, nie dla modelu. */
+  | "customer_cases:display";
 
 export interface CapabilityContext {
   /** Kto wywołuje. W MVP zawsze jeden agent: "inbox-operator". */

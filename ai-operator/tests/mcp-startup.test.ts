@@ -16,11 +16,11 @@ import { describe, expect, it } from "vitest";
  */
 
 /**
- * Ile narzędzi publikuje MCP: 3 poczta + 4 TeaBrew + 4 sprawy Copilota.
+ * Ile narzędzi publikuje MCP: istniejące narzędzia + 4 odczyty spraw Allegro.
  * Trzymane w jednym miejscu, bo ta liczba rośnie i rozjazd w dwóch testach
  * kosztowałby więcej niż stała.
  */
-const EXPECTED_TOOLS = 18;
+const EXPECTED_TOOLS = 22;
 
 const operatorDir = fileURLToPath(new URL("..", import.meta.url));
 const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
@@ -219,6 +219,15 @@ describe("start serwera HTTP", () => {
     const b = await boot({ MCP_BEARER_TOKEN: "krotki" }, 8842);
     expect(b.exitCode).toBe(1);
     expect(b.stderr).toContain("za krótki");
+  }, 20_000);
+
+  it("odrzuca współdzielenie tokenu modelu z principal-em firmowego czatu", async () => {
+    const b = await boot({
+      MCP_BEARER_TOKEN: TOKEN,
+      MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN: TOKEN,
+    }, 8844);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("musi być inny");
   }, 20_000);
 
   it("bez tokenu nie wstaje wcale — Claude jest jedynym interfejsem", async () => {

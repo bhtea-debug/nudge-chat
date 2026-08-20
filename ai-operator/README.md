@@ -97,7 +97,7 @@ Nie prośbą w promptcie, tylko trzema mechanizmami w `src/agent/evidence.ts`:
 3. **Ostrzeżenie jest widoczne** dla człowieka w odpowiedzi. `npm run ask`
    kończy się kodem `3`, gdy kontrola coś zgłosi.
 
-## Capability (7, wszystkie read)
+## Capability (22, wszystkie read)
 
 ```bash
 npm run caps            # tabela
@@ -114,13 +114,19 @@ npm run openapi         # projekcja HTTP/OpenAPI
 | `teabrew_get_stock` | stan i dostępność po kodach |
 | `teabrew_find_product` | nazwa handlowa → kod SKU/materiału |
 | `teabrew_get_production_status` | zlecenia i uruchomione ruchy produkcyjne |
+| `teabrew_list_allegro_customer_cases` | kolejka Allegro, priorytet P0/P1/P2, termin i świeżość |
+| `teabrew_get_allegro_customer_case` | szczegóły jednej sprawy, domyślnie bez treści |
+| `teabrew_get_allegro_customer_case_messages` | historia wyłącznie po jawnym celu i z osobnym zakresem |
+| `teabrew_search_allegro_customer_cases` | wyszukiwanie po zamówieniu lub loginie bez zapisu frazy w audycie |
 
 Jedna deklaracja capability (`nazwa, opis, input, output, wersja, zakres,
 effectClass`) daje **klienta TypeScript, JSON Schema dla function callingu,
 dokument OpenAPI i listę narzędzi MCP**. Nie ma drugiego miejsca opisującego tę
 samą funkcję.
 
-TeaBrew v2 ma ponad sto tabel. Agent widzi cztery pytania, nie sto tabel.
+TeaBrew v2 ma ponad sto tabel. Agent widzi wąskie pytania domenowe, nie tabele
+ani tokeny Allegro. Zasady prywatności i kontrakt pilota opisuje
+[`docs/ALLEGRO-CUSTOMER-CASES-PILOT.md`](docs/ALLEGRO-CUSTOMER-CASES-PILOT.md).
 
 ## Audyt
 
@@ -192,7 +198,7 @@ Settings → Developer.
 Kształt wpisu do wglądu jest w `claude-desktop.example.json`.
 
 W obu przypadkach sekrety zostają po stronie serwera, w `.env`. Klient nie widzi
-hasła IMAP ani tokenu TeaBrew — widzi siedem narzędzi read-only.
+hasła IMAP ani tokenu TeaBrew — widzi wyłącznie narzędzia read-only.
 
 ### Dlaczego to jest adapter, nie drugi system
 
