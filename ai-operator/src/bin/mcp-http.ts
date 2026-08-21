@@ -107,6 +107,7 @@ const TEABREW_AI_OPERATOR_REPLY_TOKEN = (
   process.env["TEABREW_AI_OPERATOR_REPLY_TOKEN"] ?? ""
 ).trim();
 const TEABREW_BASE_URL = (process.env["TEABREW_BASE_URL"] ?? "").trim();
+const MODE = (process.env["MODE"] ?? "fixture").trim();
 const TEABREW_AI_OPERATOR_READ_TOKEN = (
   process.env["TEABREW_AI_OPERATOR_TOKEN"] ?? ""
 ).trim();
@@ -188,6 +189,7 @@ for (const [name, value] of [
 }
 
 const REPLY_BRIDGE_ENABLED = CUSTOMER_CASE_REPLY_BRIDGE_TOKEN.length >= MIN_TOKEN_LENGTH;
+let REPLY_BRIDGE_UPSTREAM_ORIGIN = "";
 
 if (REPLY_BRIDGE_ENABLED && !TEABREW_BASE_URL) {
   process.stderr.write(
@@ -199,13 +201,25 @@ if (REPLY_BRIDGE_ENABLED && !TEABREW_BASE_URL) {
 if (REPLY_BRIDGE_ENABLED) {
   try {
     const upstream = new URL(TEABREW_BASE_URL);
-    if (!/^https?:$/.test(upstream.protocol) || upstream.username || upstream.password) {
+    const fixtureLoopback =
+      MODE !== "live" &&
+      upstream.protocol === "http:" &&
+      (upstream.hostname === "127.0.0.1" || upstream.hostname === "localhost");
+    if (
+      (upstream.protocol !== "https:" && !fixtureLoopback) ||
+      upstream.username ||
+      upstream.password ||
+      upstream.pathname !== "/" ||
+      upstream.search ||
+      upstream.hash
+    ) {
       throw new Error("invalid");
     }
+    REPLY_BRIDGE_UPSTREAM_ORIGIN = upstream.origin;
   } catch {
     process.stderr.write(
-      `[${SERVER_NAME}] TEABREW_BASE_URL dla bridge'a musi być poprawnym adresem HTTP(S) ` +
-        "bez danych logowania.\n",
+      `[${SERVER_NAME}] TEABREW_BASE_URL dla bridge'a musi być originem HTTPS bez ` +
+        "danych logowania, ścieżki, query ani fragmentu (HTTP tylko loopback poza MODE=live).\n",
     );
     process.exit(1);
   }
@@ -230,7 +244,7 @@ if (REPLY_BRIDGE_ENABLED) {
 }
 
 const REPLY_BRIDGE_UPSTREAM: ReplyBridgeUpstreamConfig | null = REPLY_BRIDGE_ENABLED
-  ? { baseUrl: TEABREW_BASE_URL, token: TEABREW_AI_OPERATOR_REPLY_TOKEN }
+  ? { baseUrl: REPLY_BRIDGE_UPSTREAM_ORIGIN, token: TEABREW_AI_OPERATOR_REPLY_TOKEN }
   : null;
 
 if (!MCP_ENABLED) {

@@ -261,6 +261,33 @@ describe("start serwera HTTP", () => {
     expect(b.stderr).toContain("muszą mieć osobne wartości");
   }, 20_000);
 
+  it("w MODE=live odrzuca plaintext HTTP dla tokenu odpowiedzi", async () => {
+    const b = await boot({
+      MODE: "live",
+      MCP_BEARER_TOKEN: TOKEN,
+      CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: "b".repeat(48),
+      TEABREW_AI_OPERATOR_REPLY_TOKEN: "u".repeat(48),
+      TEABREW_AI_OPERATOR_TOKEN: "r".repeat(48),
+      TEABREW_BASE_URL: "http://127.0.0.1:8872",
+      MAIL_IMAP_HOST: "imap.example",
+      MAIL_IMAP_USER: "test@example",
+      MAIL_IMAP_PASSWORD: "test-password",
+    }, 8848);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("originem HTTPS");
+  }, 20_000);
+
+  it("odrzuca ścieżkę, query i fragment w bazowym URL TeaBrew", async () => {
+    const b = await boot({
+      MCP_BEARER_TOKEN: TOKEN,
+      CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: "b".repeat(48),
+      TEABREW_AI_OPERATOR_REPLY_TOKEN: "u".repeat(48),
+      TEABREW_BASE_URL: "https://teabrew.example/ukryta-sciezka?x=1#fragment",
+    }, 8849);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("ścieżki, query ani fragmentu");
+  }, 20_000);
+
   it("bez tokenu nie wstaje wcale — Claude jest jedynym interfejsem", async () => {
     // Monitor bez wystawionego MCP zbierałby dane, których nikt nie zobaczy.
     const b = await boot({}, 8843);

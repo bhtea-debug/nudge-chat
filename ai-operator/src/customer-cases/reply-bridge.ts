@@ -11,6 +11,10 @@ import { z } from "zod";
 export const CUSTOMER_CASE_REPLY_BRIDGE_PATH = "/internal/customer-cases/allegro/reply";
 export const TEABREW_CUSTOMER_CASE_REPLY_PATH = "/ai-operator/customer-case-reply";
 export const CUSTOMER_CASE_REPLY_CONFIRMATION = "SEND_ALLEGRO_CUSTOMER_REPLY";
+export const CUSTOMER_CASE_REPLY_CHECK_CONFIRMATION = "CHECK_ALLEGRO_CUSTOMER_REPLY";
+export const CUSTOMER_CASE_REPLY_RESOLVE_SENT_CONFIRMATION = "CONFIRM_ALLEGRO_REPLY_WAS_SENT";
+export const CUSTOMER_CASE_REPLY_RESOLVE_NOT_SENT_CONFIRMATION =
+  "CONFIRM_ALLEGRO_REPLY_WAS_NOT_SENT";
 export const HUMAN_CONFIRMATION_HEADER_VALUE = "confirmed";
 
 const RequestId = z
@@ -23,19 +27,45 @@ const RequestId = z
  * Brak `attachments` jest częścią kontraktu, nie konwencją UI: `.strict()`
  * odrzuca zarówno to pole, jak i każde inne nieznane pole.
  */
-export const CustomerCaseReplyRequest = z
-  .object({
+const CustomerCaseReplyBase = {
     requestId: RequestId,
-    caseId: z.string().trim().min(1).max(128),
+    caseId: z
+      .string()
+      .min(1)
+      .max(128)
+      .refine((value) => value === value.trim() && !/[\s\0]/.test(value)),
     text: z
       .string()
       .min(1)
       .max(2_000)
-      .refine((value) => value.trim().length > 0 && !value.includes("\0")),
+      .refine(
+        (value) => value === value.trim() && value.length > 0 && !value.includes("\0"),
+      ),
     expectedLastMessageAt: z.number().int().positive().nullable(),
+};
+
+export const CustomerCaseReplyRequest = z.discriminatedUnion("operation", [
+  z.object({
+    ...CustomerCaseReplyBase,
+    operation: z.literal("send"),
     confirmation: z.literal(CUSTOMER_CASE_REPLY_CONFIRMATION),
-  })
-  .strict();
+  }).strict(),
+  z.object({
+    ...CustomerCaseReplyBase,
+    operation: z.literal("check"),
+    confirmation: z.literal(CUSTOMER_CASE_REPLY_CHECK_CONFIRMATION),
+  }).strict(),
+  z.object({
+    ...CustomerCaseReplyBase,
+    operation: z.literal("resolve_sent"),
+    confirmation: z.literal(CUSTOMER_CASE_REPLY_RESOLVE_SENT_CONFIRMATION),
+  }).strict(),
+  z.object({
+    ...CustomerCaseReplyBase,
+    operation: z.literal("resolve_not_sent"),
+    confirmation: z.literal(CUSTOMER_CASE_REPLY_RESOLVE_NOT_SENT_CONFIRMATION),
+  }).strict(),
+]);
 
 export type CustomerCaseReplyRequest = z.infer<typeof CustomerCaseReplyRequest>;
 
@@ -76,11 +106,74 @@ function ambiguous(status: number, error: string): ReplyBridgeOutcome {
   return { status, body: { ok: false, error, ambiguous: true } };
 }
 
-function definitiveUpstreamError(): ReplyBridgeOutcome {
+function definitiveUpstreamError(request: CustomerCaseReplyRequest): ReplyBridgeOutcome {
+  if (request.operation !== "send") {
+    return ambiguous(502, "upstream_check_rejected");
+  }
   return {
-    status: 502,
-    body: { ok: false, error: "upstream_rejected", ambiguous: false },
+    status: 409,
+    body: {
+      ok: true,
+      ts: Date.now(),
+      contractVersion: "v1",
+      data: {
+        status: "failed",
+        requestId: request.requestId,
+        idempotent: false,
+        externalMessageId: null,
+        sentAt: null,
+        code: "upstream_rejected",
+        message: "TeaBrew odrzucił żądanie przed potwierdzoną wysyłką",
+      },
+    },
   };
+}
+
+async function discardResponse(response: Response): Promise<void> {
+  if (!response.body) return;
+  try {
+    await response.body.cancel();
+  } catch {
+    // Zamknięcie odrzuconego strumienia nie zmienia jednoznaczności wyniku.
+  }
+}
+
+async function readLimitedJson(response: Response): Promise<unknown | null> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_UPSTREAM_RESPONSE) {
+    await discardResponse(response);
+    return null;
+  }
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_UPSTREAM_RESPONSE) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    try {
+      await reader.cancel();
+    } catch {
+      // Odrzucony strumień nie może zmienić wyniku na jednoznaczny.
+    }
+    return null;
+  }
 }
 
 /**
@@ -93,7 +186,10 @@ export async function forwardCustomerCaseReply(
   config: ReplyBridgeUpstreamConfig,
 ): Promise<ReplyBridgeOutcome> {
   const fetchImpl = config.fetchImpl ?? fetch;
-  const timeout = AbortSignal.timeout(config.timeoutMs ?? 15_000);
+  // TeaBrew może najpierw poczekać na single-flight OAuth, potem sprawdzić
+  // wszystkie źródła i dopiero wykonać jeden POST. Bridge ma większy budżet
+  // niż pełny upstream, inaczej sam tworzyłby fałszywy wynik ambiguous.
+  const timeout = AbortSignal.timeout(config.timeoutMs ?? 150_000);
   const url = new URL(
     config.baseUrl.replace(/\/+$/, "") + TEABREW_CUSTOMER_CASE_REPLY_PATH,
   );
@@ -122,29 +218,25 @@ export async function forwardCustomerCaseReply(
   // Każde 5xx jest niejednoznaczne, niezależnie od treści odpowiedzi.
   // Nie ufamy też jej jako komunikatowi dla użytkownika.
   if (response.status >= 500) {
+    await discardResponse(response);
     return ambiguous(502, "upstream_server_error");
   }
 
   // Autoryzacja i walidacja po stronie TeaBrew kończą się przed próbą wysyłki.
   // Nie przekazujemy ich surowych odpowiedzi (mogą zawierać detale systemu),
   // ale zachowujemy jednoznaczną informację, że retry nie jest potrzebny.
+  const definitePreActionStatuses = new Set([400, 401, 403, 404, 413, 415, 422]);
+  if (definitePreActionStatuses.has(response.status)) {
+    await discardResponse(response);
+    return definitiveUpstreamError(request);
+  }
   if (response.status >= 400 && response.status < 500 && response.status !== 409) {
-    return definitiveUpstreamError();
+    await discardResponse(response);
+    return ambiguous(502, "upstream_client_error_ambiguous");
   }
 
-  const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_UPSTREAM_RESPONSE) {
-    return ambiguous(502, "invalid_upstream_response");
-  }
-
-  let unknownBody: unknown;
-  try {
-    const raw = await response.text();
-    if (Buffer.byteLength(raw) > MAX_UPSTREAM_RESPONSE) {
-      return ambiguous(502, "invalid_upstream_response");
-    }
-    unknownBody = JSON.parse(raw);
-  } catch {
+  const unknownBody = await readLimitedJson(response);
+  if (unknownBody === null) {
     return ambiguous(502, "invalid_upstream_response");
   }
 

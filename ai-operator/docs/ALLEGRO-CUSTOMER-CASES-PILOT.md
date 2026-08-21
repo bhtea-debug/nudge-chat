@@ -116,7 +116,9 @@ tokenu Allegro; jedyną bramą zewnętrzną pozostaje TeaBrew.
 - `caseId` — identyfikator sprawy TeaBrew, max 128 znaków,
 - `text` — niepusty tekst, max 2000 znaków,
 - `expectedLastMessageAt` — czas ostatniej znanej wiadomości w ms lub `null`,
-- `confirmation: "SEND_ALLEGRO_CUSTOMER_REPLY"`.
+- `operation: "send"` + `confirmation: "SEND_ALLEGRO_CUSTOMER_REPLY"` albo
+  `operation: "check"` + `confirmation: "CHECK_ALLEGRO_CUSTOMER_REPLY"`, albo
+  ręczne `resolve_sent` / `resolve_not_sent` z osobnym, ścisłym potwierdzeniem.
 
 Nieznane pola i `attachments` są odrzucane. Bridge nie zapisuje ani nie loguje
 tekstu. Odpowiedź TeaBrew też przechodzi strict schema i allowlistę pól; surowa
@@ -126,11 +128,19 @@ Nie ma automatycznego retry. HTTP 200 (`sent`), 202 (`uncertain`) i 409
 (`failed`) przechodzą po sprawdzeniu kontraktu. Timeout, błąd sieci, 5xx lub
 niezgodna odpowiedź kończą się bez drugiego requestu jako `ambiguous: true` —
 operator musi najpierw odświeżyć wątek. Odrzucenie 4xx przed akcją jest
-sanityzowane jako jednoznaczny błąd upstreamu.
+sanityzowane jako jednoznaczny błąd wyłącznie dla `send`; w trybie `check`
+pozostaje `ambiguous`, aby awaria autoryzacji lub konfiguracji nie zwolniła
+blokady wcześniejszej, potencjalnie dostarczonej wiadomości. TeaBrew w trybie
+`check` nigdy nie wykonuje POST-u; brak ledgera tworzy terminalny tombstone,
+który zatrzymuje również spóźniony pierwotny `send`. Ręczne rozstrzygnięcie
+zmienia wyłącznie istniejący ledger i także nie wywołuje Allegro.
 
 Bridge jest wyłączony, dopóki oba nowe tokeny nie są ustawione. Konfiguracja
 połowiczna, token krótszy niż 32 znaki albo ponowne użycie tokenu MCP/read-only
 zatrzymują proces przy starcie zamiast otworzyć słabszą ścieżkę.
+W `MODE=live` bazowy URL TeaBrew musi być czystym originem HTTPS bez danych
+logowania, ścieżki, query ani fragmentu; endpoint jest budowany z `origin`, aby
+token odpowiedzi nie mógł trafić plaintextem ani na przypadkową ścieżkę.
 
 ## Jedyny ręczny krok integracyjny
 

@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   CUSTOMER_CASE_REPLY_BRIDGE_PATH,
+  CUSTOMER_CASE_REPLY_CHECK_CONFIRMATION,
   CUSTOMER_CASE_REPLY_CONFIRMATION,
+  CUSTOMER_CASE_REPLY_RESOLVE_NOT_SENT_CONFIRMATION,
+  CUSTOMER_CASE_REPLY_RESOLVE_SENT_CONFIRMATION,
   CustomerCaseReplyRequest,
   forwardCustomerCaseReply,
   type CustomerCaseReplyRequest as ReplyRequest,
@@ -17,6 +20,7 @@ const REQUEST: ReplyRequest = {
   caseId: "case-123",
   text: "Dziękujemy za wiadomość.",
   expectedLastMessageAt: 1_777_000_000_000,
+  operation: "send",
   confirmation: CUSTOMER_CASE_REPLY_CONFIRMATION,
 };
 
@@ -53,12 +57,42 @@ describe("kontrakt bridge'a odpowiedzi Allegro", () => {
     expect(CustomerCaseReplyRequest.safeParse({ ...REQUEST, text: "   " }).success).toBe(
       false,
     );
+    expect(CustomerCaseReplyRequest.safeParse({ ...REQUEST, text: " tekst" }).success).toBe(
+      false,
+    );
+    expect(CustomerCaseReplyRequest.safeParse({ ...REQUEST, caseId: ` ${REQUEST.caseId}` }).success)
+      .toBe(false);
     expect(
       CustomerCaseReplyRequest.safeParse({ ...REQUEST, confirmation: "YES" }).success,
     ).toBe(false);
     expect(
       CustomerCaseReplyRequest.safeParse({ ...REQUEST, expectedLastMessageAt: null }).success,
     ).toBe(true);
+    expect(CustomerCaseReplyRequest.safeParse({
+      ...REQUEST,
+      operation: "check",
+      confirmation: CUSTOMER_CASE_REPLY_CHECK_CONFIRMATION,
+    }).success).toBe(true);
+    expect(CustomerCaseReplyRequest.safeParse({
+      ...REQUEST,
+      operation: "check",
+      confirmation: CUSTOMER_CASE_REPLY_CONFIRMATION,
+    }).success).toBe(false);
+    expect(CustomerCaseReplyRequest.safeParse({
+      ...REQUEST,
+      operation: "resolve_sent",
+      confirmation: CUSTOMER_CASE_REPLY_RESOLVE_SENT_CONFIRMATION,
+    }).success).toBe(true);
+    expect(CustomerCaseReplyRequest.safeParse({
+      ...REQUEST,
+      operation: "resolve_not_sent",
+      confirmation: CUSTOMER_CASE_REPLY_RESOLVE_NOT_SENT_CONFIRMATION,
+    }).success).toBe(true);
+    expect(CustomerCaseReplyRequest.safeParse({
+      ...REQUEST,
+      operation: "resolve_sent",
+      confirmation: CUSTOMER_CASE_REPLY_RESOLVE_NOT_SENT_CONFIRMATION,
+    }).success).toBe(false);
   });
 
   it("wykonuje dokładnie jeden POST z osobnym tokenem i nagłówkiem potwierdzenia", async () => {
@@ -111,6 +145,62 @@ describe("kontrakt bridge'a odpowiedzi Allegro", () => {
     expect(outcome).toMatchObject({ status, body: { data: { status: state } } });
   });
 
+  it("zamienia definitywne 4xx TeaBrew na bezpieczny kontrakt failed", async () => {
+    const outcome = await forwardCustomerCaseReply(REQUEST, {
+      baseUrl: "https://teabrew.example",
+      token: "upstream-reply-token",
+      fetchImpl: async () => new Response("szczegóły autoryzacji", { status: 401 }),
+    });
+
+    expect(outcome).toEqual({
+      status: 409,
+      body: {
+        ok: true,
+        ts: expect.any(Number),
+        contractVersion: "v1",
+        data: {
+          status: "failed",
+          requestId: REQUEST.requestId,
+          idempotent: false,
+          externalMessageId: null,
+          sentAt: null,
+          code: "upstream_rejected",
+          message: "TeaBrew odrzucił żądanie przed potwierdzoną wysyłką",
+        },
+      },
+    });
+  });
+
+  it("podczas sprawdzenia 4xx nie zwalnia blokady jako definitywne failed", async () => {
+    const checkRequest: ReplyRequest = {
+      ...REQUEST,
+      operation: "check",
+      confirmation: CUSTOMER_CASE_REPLY_CHECK_CONFIRMATION,
+    };
+    const outcome = await forwardCustomerCaseReply(checkRequest, {
+      baseUrl: "https://teabrew.example",
+      token: "upstream-reply-token",
+      fetchImpl: async () => new Response("odrzucono sprawdzenie", { status: 401 }),
+    });
+
+    expect(outcome).toEqual({
+      status: 502,
+      body: { ok: false, error: "upstream_check_rejected", ambiguous: true },
+    });
+  });
+
+  it("nieznany 4xx po przekazaniu requestu pozostaje niejednoznaczny", async () => {
+    const outcome = await forwardCustomerCaseReply(REQUEST, {
+      baseUrl: "https://teabrew.example",
+      token: "upstream-reply-token",
+      fetchImpl: async () => new Response("timeout upstreamu", { status: 408 }),
+    });
+    expect(outcome).toEqual({
+      status: 502,
+      body: { ok: false, error: "upstream_client_error_ambiguous", ambiguous: true },
+    });
+  });
+
   it("nie ponawia timeoutu i oznacza wynik jako niejednoznaczny", async () => {
     const fetchMock = vi.fn(async () => {
       throw new DOMException("timeout", "TimeoutError");
@@ -152,6 +242,21 @@ describe("kontrakt bridge'a odpowiedzi Allegro", () => {
         }),
     });
     expect(invalid).toEqual({
+      status: 502,
+      body: { ok: false, error: "invalid_upstream_response", ambiguous: true },
+    });
+
+    const oversized = await forwardCustomerCaseReply(REQUEST, {
+      baseUrl: "https://teabrew.example",
+      token: "upstream-reply-token",
+      fetchImpl: async () => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(65 * 1024));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    expect(oversized).toEqual({
       status: 502,
       body: { ok: false, error: "invalid_upstream_response", ambiguous: true },
     });
