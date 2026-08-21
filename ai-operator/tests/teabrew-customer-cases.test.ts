@@ -47,6 +47,7 @@ const fixture = {
       waitingMs: 1_800_000,
       slaState: "ok",
       requiresResponse: true,
+      pendingAction: true,
       answeredAt: null,
       responseState: "needs_response",
       responseClassificationVersion: 2,
@@ -77,6 +78,7 @@ const fixture = {
       serviceMaxAt: NOW - 10 * 3_600_000,
       slaState: "critical",
       requiresResponse: true,
+      pendingAction: false,
       answeredAt: null,
       responseState: "needs_response",
       responseClassificationVersion: 2,
@@ -143,6 +145,11 @@ describe("sprawy klientów Allegro — prywatność i kolejka P0", () => {
       lastMessagePreview: null,
       responseState: "needs_response",
       responseClassificationVersion: 2,
+      pendingAction: false,
+    });
+    expect(result.cases[1]).toMatchObject({
+      requiresResponse: true,
+      pendingAction: true,
     });
     expect(result.contentIncluded).toBe(false);
     expect(result.contentMode).toBe("none");

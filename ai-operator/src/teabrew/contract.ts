@@ -119,6 +119,8 @@ export const CustomerCase = z.object({
   serviceMaxAt: Ts.optional(),
   slaState: z.enum(["ok", "yellow", "red", "critical", "overdue"]).nullable().optional(),
   requiresResponse: z.boolean().optional(),
+  // Niezależne od potrzeby odpowiedzi: firma ma jeszcze wykonać obiecaną czynność.
+  pendingAction: z.boolean().optional(),
   answeredAt: Ts.optional(),
   responseState: CustomerCaseResponseState.nullable().optional(),
   responseClassificationVersion: z.number().int().positive().nullable().optional(),

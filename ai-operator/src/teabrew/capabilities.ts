@@ -341,7 +341,8 @@ export function createTeabrewCapabilities(
     description:
       "Czyta z TeaBrew jedną kolejkę nowych lub otwartych zapytań klientów Allegro z Centrum " +
       "Wiadomości i starych Dyskusji. Zwraca źródło, status, priorytet P0/P1/P2, termin odpowiedzi " +
-      "stan SLA oraz wersjonowaną klasyfikację potrzeby odpowiedzi. Domyślnie nie zwraca treści. " +
+      "stan SLA oraz wersjonowaną klasyfikację potrzeby odpowiedzi i oczekującej realizacji. " +
+      "Domyślnie nie zwraca treści. " +
       "Treść wolno pobrać wyłącznie dla uprawnionego " +
       "widoku albo po jawnym żądaniu analizy; nigdy automatycznie. Zawsze pokaż użytkownikowi " +
       "freshness, szczególnie missing_scope/reconnect_required/stale/error. Narzędzie niczego nie " +
