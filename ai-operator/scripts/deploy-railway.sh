@@ -23,7 +23,9 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
-ENV_FILE=".env"
+ENV_FILE="${BHT_COPILOT_ENV_FILE:-.env}"
+ENV_EXTERNAL=0
+[ -n "${BHT_COPILOT_ENV_FILE:-}" ] && ENV_EXTERNAL=1
 MOUNT="/data"
 
 # Nazwa usługi wewnątrz projektu. Railway wiąże z NIĄ wolumen, zmienne
@@ -31,6 +33,18 @@ MOUNT="/data"
 # bez `--service` kończy się błędem. Pierwsza wersja skryptu tego nie tworzyła
 # i właśnie na tym stanęła.
 SERVICE="bht-copilot"
+PRODUCTION_MODE="${BHT_COPILOT_PRODUCTION:-0}"
+CONFIGURE_REPLY_ONLY="${BHT_COPILOT_CONFIGURE_REPLY_ONLY:-0}"
+EXPECTED_PROJECT_ID="bd311917-f3d7-419f-aeba-79bf5b4dafe4"
+EXPECTED_ENVIRONMENT_ID="e8e60c09-4de2-4fb3-a11d-6e9048371e54"
+EXPECTED_SERVICE_ID="c4a9c0ad-7c0e-4494-a16e-321e0e382b6c"
+EXPECTED_REMOTE="https://github.com/bhtea-debug/nudge-chat"
+PRODUCTION_TARGET_ARGS=(--project "$EXPECTED_PROJECT_ID" --environment "$EXPECTED_ENVIRONMENT_ID")
+
+if [ "$CONFIGURE_REPLY_ONLY" = "1" ] && [ "$PRODUCTION_MODE" != "1" ]; then
+  printf 'Tryb BHT_COPILOT_CONFIGURE_REPLY_ONLY wymaga BHT_COPILOT_PRODUCTION=1.\n' >&2
+  exit 1
+fi
 
 # Ustawiane na 1, gdy wolumenu nie udało się dodać. Wdrożenie idzie dalej —
 # trwały dysk jest wymagany do codziennej pracy, ale NIE do rozstrzygnięcia,
@@ -68,10 +82,31 @@ stop() {
 # Wynik ostatniej próby zostaje w /tmp/bht-out, żeby wywołujący mógł go pokazać.
 zservice() {
   local cmd="$1"; shift
+  if [ "$PRODUCTION_MODE" = "1" ]; then
+    $RAILWAY "$cmd" "${PRODUCTION_TARGET_ARGS[@]}" --service "$EXPECTED_SERVICE_ID" "$@" >/tmp/bht-out 2>&1
+    return $?
+  fi
   $RAILWAY "$cmd" --service "$SERVICE" "$@" >/tmp/bht-out 2>&1 && return 0
   grep -q "unexpected argument" /tmp/bht-out || return 1
   # Ta wersja CLI nie chce flagi w tym miejscu — przy jednej usłudze zbędna.
   $RAILWAY "$cmd" "$@" >/tmp/bht-out 2>&1
+}
+
+railway_variable_list_json() {
+  if [ "$PRODUCTION_MODE" = "1" ]; then
+    $RAILWAY variable list "${PRODUCTION_TARGET_ARGS[@]}" --service "$EXPECTED_SERVICE_ID" --json
+  else
+    $RAILWAY variable list --service "$SERVICE" --json
+  fi
+}
+
+railway_variable_set_stdin() {
+  local key="$1"
+  if [ "$PRODUCTION_MODE" = "1" ]; then
+    $RAILWAY variable set "$key" --stdin --skip-deploys "${PRODUCTION_TARGET_ARGS[@]}" --service "$EXPECTED_SERVICE_ID"
+  else
+    $RAILWAY variable set "$key" --stdin --skip-deploys --service "$SERVICE"
+  fi
 }
 
 # ── 0. wymagania ──────────────────────────────────────────────────────────────
@@ -105,14 +140,56 @@ else
 fi
 ok "railway: $($RAILWAY --version 2>/dev/null | tail -1 || echo '?')"
 
-[ -f "$ENV_FILE" ] || stop "Nie ma pliku .env w $(pwd). Bez niego nie wiem, jak łączyć się z pocztą i TeaBrew."
+if [ -n "${BHT_COPILOT_ENV_FILE:-}" ] && [[ "$ENV_FILE" != /* ]]; then
+  stop "BHT_COPILOT_ENV_FILE musi być ścieżką bezwzględną."
+fi
+[ -L "$ENV_FILE" ] && stop "Plik $ENV_FILE nie może być dowiązaniem symbolicznym."
+[ -f "$ENV_FILE" ] || stop "Nie ma pliku $ENV_FILE. Bez niego nie wiem, jak łączyć się z pocztą i TeaBrew."
+ENV_MODE="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo '?')"
+[ "$ENV_MODE" = "600" ] || stop "Plik $ENV_FILE musi mieć prawa 600; wykryto $ENV_MODE."
+ENV_UID="$(stat -f '%u' "$ENV_FILE" 2>/dev/null || stat -c '%u' "$ENV_FILE" 2>/dev/null || echo '?')"
+[ "$ENV_UID" = "$(id -u)" ] || stop "Plik $ENV_FILE musi należeć do bieżącego użytkownika."
 ok "$ENV_FILE"
 
-# Na serwer leci zawartość TEGO katalogu, a nie to, co jest na GitHubie. Raz już
-# wdrożyliśmy tą drogą starą wersję i wyglądało to na pełny sukces, bo /health
-# odpowiadał — odpowiadał poprzedni kontener. Sprawdzamy to ZANIM cokolwiek
-# wyślemy, bo po wysłaniu kosztuje to całą rundę.
-if git rev-parse --git-dir >/dev/null 2>&1; then
+# Na produkcji odmawiamy przy najmniejszej niejednoznaczności repo/celu.
+if [ "$PRODUCTION_MODE" = "1" ]; then
+  git rev-parse --git-dir >/dev/null 2>&1 || stop "Tryb produkcyjny wymaga repozytorium git."
+  git fetch --quiet origin main || stop "Nie udało się pobrać aktualnego origin/main; produkcyjny deploy jest zablokowany."
+  REMOTE="$(git remote get-url origin 2>/dev/null | sed -E 's#^git@github.com:#https://github.com/#; s#\.git$##; s#/$##')"
+  [ "$REMOTE" = "$EXPECTED_REMOTE" ] || stop "origin to $REMOTE, oczekiwano $EXPECTED_REMOTE."
+  [ -z "$(git status --porcelain)" ] || stop "Worktree produkcyjny musi być całkowicie czysty."
+  HEAD_COMMIT="$(git rev-parse HEAD)"
+  MAIN_COMMIT="$(git rev-parse origin/main)"
+  [ "$HEAD_COMMIT" = "$MAIN_COMMIT" ] || stop "HEAD nie jest dokładnym aktualnym origin/main."
+
+  STATUS_JSON="$($RAILWAY status "${PRODUCTION_TARGET_ARGS[@]}" --json 2>/dev/null)" || stop "Nie można odczytać dokładnego projektu Railway production."
+  if ! printf '%s' "$STATUS_JSON" | EXPECTED_PROJECT_ID="$EXPECTED_PROJECT_ID" EXPECTED_ENVIRONMENT_ID="$EXPECTED_ENVIRONMENT_ID" EXPECTED_SERVICE_ID="$EXPECTED_SERVICE_ID" node -e '
+    let raw = "";
+    process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+      try {
+        const value = JSON.parse(raw);
+        const environment = value.environments?.edges?.find(
+          (edge) => edge.node?.id === process.env.EXPECTED_ENVIRONMENT_ID && edge.node?.name === "production",
+        )?.node;
+        const service = environment?.serviceInstances?.edges?.find(
+          (edge) => edge.node?.serviceId === process.env.EXPECTED_SERVICE_ID && edge.node?.serviceName === "bht-copilot",
+        )?.node;
+        if (value.id !== process.env.EXPECTED_PROJECT_ID || value.name !== "heartfelt-spontaneity" || !service) {
+          process.exit(1);
+        }
+      } catch {
+        process.exit(1);
+      }
+    });
+  '; then
+    unset STATUS_JSON
+    stop "Railway link nie wskazuje dokładnie heartfelt-spontaneity / production / bht-copilot."
+  fi
+  unset STATUS_JSON
+  ok "produkcyjny target jednoznaczny: heartfelt-spontaneity / production / bht-copilot"
+  ok "wdrażam $(git rev-parse --short HEAD): $(git log -1 --format=%s 2>/dev/null | cut -c1-58)"
+elif git rev-parse --git-dir >/dev/null 2>&1; then
+  # Zachowujemy historyczny tryb pomocniczy poza produkcją.
   GALAZ="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
   if git fetch --quiet origin "$GALAZ" 2>/dev/null; then
     ZA_STARE="$(git rev-list --count "HEAD..origin/$GALAZ" 2>/dev/null || echo 0)"
@@ -147,6 +224,7 @@ kropka "2/8  Token, którym Claude wchodzi do danych"
 if grep -q '^MCP_BEARER_TOKEN=.\{32,\}' "$ENV_FILE" 2>/dev/null; then
   ok "token już jest w .env (nie generuję nowego, żeby nie odciąć podłączonych klientów)"
 else
+  [ "$ENV_EXTERNAL" = "1" ] && stop "Brak bezpiecznego MCP_BEARER_TOKEN w zewnętrznym env; ten tryb nigdy nie modyfikuje pliku źródłowego."
   TOKEN_NOWY="$(openssl rand -base64 48 | tr -d '\n')"
   # Usuwamy ewentualną pustą albo za krótką linię, dopisujemy właściwą.
   if [ -s "$ENV_FILE" ] && [ "$(tail -c 1 "$ENV_FILE" | wc -l)" -eq 0 ]; then printf '\n' >> "$ENV_FILE"; fi
@@ -169,6 +247,7 @@ kropka "2b/8  Haslo do ekranu zgody (OAuth)"
 if grep -q '^COPILOT_AUTH_PASSWORD=.\{8,\}' "$ENV_FILE" 2>/dev/null; then
   ok "hasło już jest w .env"
 else
+  [ "$ENV_EXTERNAL" = "1" ] && stop "Brak COPILOT_AUTH_PASSWORD w zewnętrznym env; ten tryb nigdy nie modyfikuje pliku źródłowego."
   # Bez znaków mylących na ekranie telefonu (0/O, 1/l/I) i bez znaków, które
   # trzeba przełączać klawiaturą.
   HASLO_NOWE="$(LC_ALL=C tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' </dev/urandom | head -c 12)"
@@ -191,7 +270,12 @@ kropka "2c/8  Klucze powiadomien (VAPID)"
 
 # Generuje tylko wtedy, gdy ich nie ma: rotacja unieważniłaby subskrypcje
 # i właściciel musiałby włączać powiadomienia od nowa na każdym urządzeniu.
-if VAPID_WYNIK="$(node scripts/generuj-vapid.mjs 2>&1)"; then
+if [ "$ENV_EXTERNAL" = "1" ]; then
+  for VAPID_KEY in VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY; do
+    grep -q "^${VAPID_KEY}=." "$ENV_FILE" || stop "Brak $VAPID_KEY w zewnętrznym env; ten tryb nigdy nie modyfikuje pliku źródłowego."
+  done
+  ok "klucze VAPID są obecne w zewnętrznym env (wartości ukryte; istniejący subject pozostaje bez zmian)"
+elif VAPID_WYNIK="$(node scripts/generuj-vapid.mjs 2>&1)"; then
   ok "$VAPID_WYNIK"
 else
   zle "Nie udało się przygotować kluczy VAPID."
@@ -203,7 +287,9 @@ unset VAPID_WYNIK
 # ── 3. projekt ────────────────────────────────────────────────────────────────
 kropka "3/8  Projekt w Railwayu"
 
-if $RAILWAY status >/dev/null 2>&1; then
+if [ "$PRODUCTION_MODE" = "1" ]; then
+  ok "produkcyjny projekt został zweryfikowany fail-closed w preflight"
+elif $RAILWAY status >/dev/null 2>&1; then
   ok "katalog jest już powiązany z projektem"
 else
   printf '  Zakładam projekt. Jeśli CLI zapyta o nazwę, wpisz np. bht-copilot.\n'
@@ -216,7 +302,9 @@ kropka "3b/8  Usluga $SERVICE w projekcie"
 
 # Railway wiąże wolumen, zmienne i wdrożenie z USŁUGĄ, nie z projektem.
 # Świeży projekt nie ma żadnej, więc trzeba ją najpierw utworzyć.
-if $RAILWAY status 2>/dev/null | grep -q "$SERVICE"; then
+if [ "$PRODUCTION_MODE" = "1" ]; then
+  ok "produkcyjna usługa $SERVICE została zweryfikowana fail-closed w preflight"
+elif $RAILWAY status 2>/dev/null | grep -q "$SERVICE"; then
   ok "usługa już istnieje"
 elif $RAILWAY add --service "$SERVICE" >/tmp/bht-add 2>&1; then
   ok "usługa utworzona"
@@ -244,7 +332,31 @@ kropka "4/8  Trwały wolumen ($MOUNT)"
 # montowania, i samo słowo „volume" w wyjściu. Wolumen dodany ręcznie w panelu
 # może być wypisany inaczej, a druga próba dodania kończy się paniką CLI —
 # lepiej pominąć krok, który już ktoś wykonał, niż wywalić cały skrypt.
-if $RAILWAY volume list 2>/dev/null | grep -qi "$MOUNT\|volume"; then
+if [ "$PRODUCTION_MODE" = "1" ]; then
+  STATUS_JSON="$($RAILWAY status "${PRODUCTION_TARGET_ARGS[@]}" --json 2>/dev/null)" || stop "Nie można potwierdzić produkcyjnego wolumenu."
+  if ! printf '%s' "$STATUS_JSON" | EXPECTED_ENVIRONMENT_ID="$EXPECTED_ENVIRONMENT_ID" EXPECTED_SERVICE_ID="$EXPECTED_SERVICE_ID" node -e '
+    let raw = "";
+    process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+      try {
+        const value = JSON.parse(raw);
+        const environment = value.environments?.edges?.find(
+          (edge) => edge.node?.id === process.env.EXPECTED_ENVIRONMENT_ID,
+        )?.node;
+        const volume = environment?.volumeInstances?.edges?.find(
+          (edge) => edge.node?.serviceId === process.env.EXPECTED_SERVICE_ID && edge.node?.mountPath === "/data" && edge.node?.state === "READY",
+        )?.node;
+        if (!volume || volume.sizeMB < 5000) process.exit(1);
+      } catch {
+        process.exit(1);
+      }
+    });
+  '; then
+    unset STATUS_JSON
+    stop "Brak jednoznacznie gotowego produkcyjnego wolumenu /data (minimum 5000 MB)."
+  fi
+  unset STATUS_JSON
+  ok "produkcyjny wolumen /data jest READY"
+elif $RAILWAY volume list 2>/dev/null | grep -qi "$MOUNT\|volume"; then
   ok "wolumen już istnieje (pomijam)"
 else
   # Trzy rzeczy ustalone na żywym CLI, wszystkie sprzeczne z jego własną pomocą:
@@ -322,22 +434,25 @@ POTRZEBNE=(
   BUDZECIK_BASE_URL BUDZECIK_COPILOT_TOKEN
   CONNECTEAM_API_KEY CONNECTEAM_WEBHOOK_SECRET
 )
+if [ "$CONFIGURE_REPLY_ONLY" = "1" ]; then
+  POTRZEBNE=(CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN)
+  ok "wąski tryb aktywacji: setter dotknie wyłącznie 2 tokenów odpowiedzi Allegro"
+fi
 
-ARGS=()
 BRAK=()
+DO_USTAWIENIA=()
 for KLUCZ in "${POTRZEBNE[@]}"; do
   LINIA="$(grep -m1 "^${KLUCZ}=" "$ENV_FILE" 2>/dev/null || true)"
   WARTOSC="${LINIA#*=}"
   if [ -n "$LINIA" ] && [ -n "$WARTOSC" ]; then
-    ARGS+=(--set "${KLUCZ}=${WARTOSC}")
+    DO_USTAWIENIA+=("$KLUCZ")
     ok "$KLUCZ"                       # nazwa, NIGDY wartość
   else
     BRAK+=("$KLUCZ")
   fi
 done
 
-# MODE=live i ścieżki stanu są stałymi wdrożenia, nie sekretami z .env.
-ARGS+=(--set "MODE=live" --set "MONITOR_IN_PROCESS=1")
+# MODE=live i monitor są stałymi wdrożenia, nie sekretami z .env.
 ok "MODE=live, monitor w procesie"
 
 if [ ${#BRAK[@]} -gt 0 ]; then
@@ -359,15 +474,96 @@ if [ "$REPLY_BRIDGE_IN" -ne "$REPLY_BRIDGE_OUT" ]; then
   stop "Bridge odpowiedzi wymaga razem CUSTOMER_CASE_REPLY_BRIDGE_TOKEN i TEABREW_AI_OPERATOR_REPLY_TOKEN."
 fi
 
-zservice variables "${ARGS[@]}" || {
-  zle "Nie udało się ustawić zmiennych."
-  printf '\n  Co powiedziało CLI:\n\n'
-  sed 's/^/    /' /tmp/bht-out
-  printf '\n  Pomoc komendy:\n\n'
-  $RAILWAY variables --help 2>&1 | sed 's/^/    /'
-  exit 1
-}
-ok "zmienne przeniesione (wartości nie były nigdzie wypisane)"
+# Każda wartość idzie przez stdin, nigdy przez argv ani telemetry CLI. Wszystkie
+# zmiany są staged bez restartu; dopiero `railway up` poniżej uruchamia jeden
+# kontener z kompletnym zestawem. Błąd dowolnego settera zatrzymuje deploy.
+export RAILWAY_NO_TELEMETRY=1
+REPLY_REMOTE_STATE="not_checked"
+if [ "$CONFIGURE_REPLY_ONLY" = "1" ]; then
+  [ ${#BRAK[@]} -eq 0 ] || stop "Wąski tryb wymaga obu lokalnych tokenów odpowiedzi."
+  REMOTE_VARIABLES_JSON="$(railway_variable_list_json 2>/dev/null)" || stop "Nie można bezpiecznie odczytać stanu tokenów Railway."
+  REPLY_REMOTE_STATE="$(printf '%s' "$REMOTE_VARIABLES_JSON" | REPLY_ENV_FILE="$ENV_FILE" node -e '
+    const { readFileSync } = require("node:fs");
+    const { parseEnv } = require("node:util");
+    let raw = "";
+    process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+      try {
+        const remote = JSON.parse(raw);
+        const local = parseEnv(readFileSync(process.env.REPLY_ENV_FILE, "utf8"));
+        const names = ["CUSTOMER_CASE_REPLY_BRIDGE_TOKEN", "TEABREW_AI_OPERATOR_REPLY_TOKEN"];
+        const remoteValues = names.map((name) => String(remote[name] ?? "").trim());
+        const localValues = names.map((name) => String(local[name] ?? "").trim());
+        if (remoteValues.every((value) => value === "")) process.stdout.write("absent");
+        else if (remoteValues.every((value, index) => value === localValues[index])) process.stdout.write("match");
+        else process.exit(2);
+      } catch {
+        process.exit(1);
+      }
+    });
+  ' 2>/dev/null)" || {
+    unset REMOTE_VARIABLES_JSON
+    stop "Istniejące tokeny Railway są częściowe albo różnią się od bezpiecznego źródła; odmowa nadpisania."
+  }
+  unset REMOTE_VARIABLES_JSON
+  if [ "$REPLY_REMOTE_STATE" = "match" ]; then
+    DO_USTAWIENIA=()
+    ok "oba tokeny Railway już odpowiadają źródłu; setter pozostaje idempotentny"
+  elif [ "$REPLY_REMOTE_STATE" = "absent" ]; then
+    ok "oba tokeny Railway są nieobecne; przygotowuję pierwsze ustawienie"
+  else
+    stop "Nieznany wynik preflightu tokenów Railway."
+  fi
+fi
+
+for KLUCZ in "${DO_USTAWIENIA[@]}"; do
+  LINIA="$(grep -m1 "^${KLUCZ}=" "$ENV_FILE" 2>/dev/null || true)"
+  WARTOSC="${LINIA#*=}"
+  if ! printf '%s' "$WARTOSC" | railway_variable_set_stdin "$KLUCZ" >/tmp/bht-out 2>&1; then
+    unset WARTOSC LINIA
+    if [ "$CONFIGURE_REPLY_ONLY" = "1" ]; then
+      ROLLBACK_OK=1
+      for COFNIJ in CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN; do
+        printf '' | railway_variable_set_stdin "$COFNIJ" >/dev/null 2>&1 || ROLLBACK_OK=0
+      done
+      VERIFY_ROLLBACK_JSON="$(railway_variable_list_json 2>/dev/null)" || ROLLBACK_OK=0
+      if [ "$ROLLBACK_OK" = "1" ]; then
+        if ! printf '%s' "$VERIFY_ROLLBACK_JSON" | node -e '
+          let raw = "";
+          process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+            try {
+              const value = JSON.parse(raw);
+              const names = ["CUSTOMER_CASE_REPLY_BRIDGE_TOKEN", "TEABREW_AI_OPERATOR_REPLY_TOKEN"];
+              if (!names.every((name) => String(value[name] ?? "").trim() === "")) process.exit(1);
+            } catch { process.exit(1); }
+          });
+        ' >/dev/null 2>&1; then
+          ROLLBACK_OK=0
+        fi
+      fi
+      unset VERIFY_ROLLBACK_JSON
+      if [ "$ROLLBACK_OK" != "1" ]; then
+        zle "KRYTYCZNE: nie potwierdzono wyzerowania obu staged tokenów; nie uruchamiaj kolejnego deployu przed ręczną korektą."
+      fi
+    fi
+    zle "Nie udało się bezpiecznie ustawić $KLUCZ."
+    printf '\n  Co powiedziało CLI (wartość nie była w argv):\n\n'
+    sed 's/^/    /' /tmp/bht-out
+    exit 1
+  fi
+  unset WARTOSC LINIA
+done
+if [ "$CONFIGURE_REPLY_ONLY" != "1" ]; then
+  for PARA in "MODE=live" "MONITOR_IN_PROCESS=1"; do
+    KLUCZ="${PARA%%=*}"
+    WARTOSC="${PARA#*=}"
+    if ! printf '%s' "$WARTOSC" | railway_variable_set_stdin "$KLUCZ" >/tmp/bht-out 2>&1; then
+      unset WARTOSC
+      stop "Nie udało się ustawić stałej wdrożenia $KLUCZ."
+    fi
+    unset WARTOSC
+  done
+fi
+ok "zmienne staged przez stdin (wartości nie trafiły do argv ani logów)"
 
 # ── 6. wdrożenie ──────────────────────────────────────────────────────────────
 kropka "6/8  Wdrożenie"
@@ -425,7 +621,9 @@ ok "https://$ADRES"
 # Zapisujemy adres lokalnie, żeby `npm run push:test` nie wymagał od właściciela
 # wklejania go za każdym razem. To nie jest sekret — trafia do .env wyłącznie
 # dlatego, że tam już mieszka reszta konfiguracji tej instalacji.
-if ! grep -q "^COPILOT_PUBLIC_URL=https://$ADRES$" "$ENV_FILE" 2>/dev/null; then
+if [ "$ENV_EXTERNAL" = "1" ]; then
+  ok "zewnętrzny env pozostaje tylko do odczytu; COPILOT_PUBLIC_URL nie jest modyfikowany"
+elif ! grep -q "^COPILOT_PUBLIC_URL=https://$ADRES$" "$ENV_FILE" 2>/dev/null; then
   grep -v '^COPILOT_PUBLIC_URL=' "$ENV_FILE" > "$ENV_FILE.tmp" 2>/dev/null || true
   printf 'COPILOT_PUBLIC_URL=https://%s\n' "$ADRES" >> "$ENV_FILE.tmp"
   mv "$ENV_FILE.tmp" "$ENV_FILE"
