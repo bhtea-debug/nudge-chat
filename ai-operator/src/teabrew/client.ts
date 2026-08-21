@@ -47,6 +47,7 @@ export interface TeabrewReader {
   listCustomerCases(args: {
     state: "new" | "open" | "all";
     limit: number;
+    cursor?: string;
     includeContent: boolean;
     contentMode: "display" | "model";
     signal?: AbortSignal;
@@ -164,6 +165,7 @@ export class HttpTeabrewReader implements TeabrewReader {
   async listCustomerCases(args: {
     state: "new" | "open" | "all";
     limit: number;
+    cursor?: string;
     includeContent: boolean;
     contentMode: "display" | "model";
     signal?: AbortSignal;
@@ -175,6 +177,7 @@ export class HttpTeabrewReader implements TeabrewReader {
         {
           state: args.state,
           limit: String(args.limit),
+          ...(args.cursor ? { cursor: args.cursor } : {}),
           includeContent: String(args.includeContent),
           contentMode: args.contentMode,
         },
@@ -449,6 +452,7 @@ export class FixtureTeabrewReader implements TeabrewReader {
   async listCustomerCases(args: {
     state: "new" | "open" | "all";
     limit: number;
+    cursor?: string;
     includeContent: boolean;
     contentMode: "display" | "model";
   }) {
@@ -469,6 +473,7 @@ export class FixtureTeabrewReader implements TeabrewReader {
       cases,
       count: cases.length,
       truncated: matching.length > args.limit,
+      nextCursor: null,
       contentIncluded: args.includeContent,
       contentMode: args.includeContent ? args.contentMode : ("none" as const),
     };

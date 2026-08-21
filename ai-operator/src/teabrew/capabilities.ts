@@ -106,9 +106,21 @@ const ListCustomerCasesInput = z
   .object({
     state: z.enum(["new", "open", "all"]).default("open"),
     limit: z.number().int().min(1).max(100).default(30),
+    cursor: z.string().min(1).max(4_096).optional().describe(
+      "Nieprzezroczysty kursor kolejnej strony; tylko dla state=all.",
+    ),
     ...ContentRequestFields,
   })
-  .superRefine(requirePurposeForContent);
+  .superRefine((input, ctx) => {
+    requirePurposeForContent(input, ctx);
+    if (input.cursor && input.state !== "all") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["cursor"],
+        message: "cursor jest obsługiwany tylko dla state=all",
+      });
+    }
+  });
 
 const CustomerCaseDetailInput = z
   .object({
@@ -329,7 +341,8 @@ export function createTeabrewCapabilities(
     description:
       "Czyta z TeaBrew jedną kolejkę nowych lub otwartych zapytań klientów Allegro z Centrum " +
       "Wiadomości i starych Dyskusji. Zwraca źródło, status, priorytet P0/P1/P2, termin odpowiedzi " +
-      "i stan SLA. Domyślnie nie zwraca treści. Treść wolno pobrać wyłącznie dla uprawnionego " +
+      "stan SLA oraz wersjonowaną klasyfikację potrzeby odpowiedzi. Domyślnie nie zwraca treści. " +
+      "Treść wolno pobrać wyłącznie dla uprawnionego " +
       "widoku albo po jawnym żądaniu analizy; nigdy automatycznie. Zawsze pokaż użytkownikowi " +
       "freshness, szczególnie missing_scope/reconnect_required/stale/error. Narzędzie niczego nie " +
       "wysyła do Allegro i nie zmienia spraw.",
@@ -348,6 +361,7 @@ export function createTeabrewCapabilities(
       return (await getReader()).listCustomerCases({
         state: input.state,
         limit: input.limit,
+        ...(input.cursor ? { cursor: input.cursor } : {}),
         includeContent: input.includeContent,
         contentMode: contentMode(input.purpose),
         ...(ctx.signal ? { signal: ctx.signal } : {}),

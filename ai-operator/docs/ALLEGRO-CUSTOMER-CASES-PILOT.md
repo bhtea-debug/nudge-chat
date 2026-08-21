@@ -61,6 +61,13 @@ SOP operacyjny: P0/P1/P2 oraz progi żółty 12 h, czerwony 4 h, krytyczny 2 h i
 przekroczenie. Copilot prezentuje wyliczenie TeaBrew; nie klasyfikuje ponownie
 treści klienta automatycznie.
 
+`responseState` i `responseClassificationVersion` przenoszą wersjonowaną
+decyzję TeaBrew: wymaga odpowiedzi, odpowiedziane, samodzielne podziękowanie,
+zamknięte źródłowo albo brak wiadomości. MCP nie próbuje samodzielnie zmieniać
+tej oceny i nadal nie udostępnia żadnego narzędzia wysyłki.
+Dla metadanych `state=all` przenosi także opcjonalne `nextCursor`; kursor nie
+jest logowany w audycie i służy wyłącznie do read-only paginacji backfillu.
+
 `serviceTargetAt` reprezentuje cel pierwszej merytorycznej odpowiedzi w ciągu
 2 godzin dyżuru. Dopóki TeaBrew nie ma wiarygodnego kalendarza dyżurów, wartość
 pozostaje `null` zamiast zgadywanej daty. `serviceMaxAt` wskazuje absolutne 12 h

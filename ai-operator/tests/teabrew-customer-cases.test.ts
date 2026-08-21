@@ -48,6 +48,8 @@ const fixture = {
       slaState: "ok",
       requiresResponse: true,
       answeredAt: null,
+      responseState: "needs_response",
+      responseClassificationVersion: 2,
     },
     {
       id: "case-discussion",
@@ -76,6 +78,8 @@ const fixture = {
       slaState: "critical",
       requiresResponse: true,
       answeredAt: null,
+      responseState: "needs_response",
+      responseClassificationVersion: 2,
     },
   ],
   customerCaseMessages: [
@@ -137,6 +141,8 @@ describe("sprawy klientów Allegro — prywatność i kolejka P0", () => {
       buyerLogin: null,
       subject: null,
       lastMessagePreview: null,
+      responseState: "needs_response",
+      responseClassificationVersion: 2,
     });
     expect(result.contentIncluded).toBe(false);
     expect(result.contentMode).toBe("none");
@@ -272,6 +278,7 @@ describe("klient HTTP TeaBrew — kontrakt tylko do odczytu", () => {
             cases: [],
             count: 0,
             truncated: false,
+            nextCursor: null,
             contentIncluded: false,
             contentMode: "none",
           },
@@ -299,6 +306,17 @@ describe("klient HTTP TeaBrew — kontrakt tylko do odczytu", () => {
     expect(String(url)).not.toContain("sekretny-token");
     expect(init?.method).toBe("GET");
     expect(init?.headers).toMatchObject({ authorization: "Bearer sekretny-token" });
+
+    await reader.listCustomerCases({
+      state: "all",
+      limit: 100,
+      cursor: "opaque-next-page",
+      includeContent: false,
+      contentMode: "model",
+    });
+    expect(String(fetchMock.mock.calls[1]![0])).toBe(
+      "https://teabrew.example/ai-operator/customer-cases?state=all&limit=100&cursor=opaque-next-page&includeContent=false&contentMode=model",
+    );
   });
 
   it("przekazuje jednoznaczny stan braku scope/reautoryzacji", async () => {

@@ -71,6 +71,13 @@ export const CustomerCasesFreshness = z.object({
 
 export const CustomerCaseSource = z.enum(["messaging", "sale_issue"]);
 export const CustomerContentMode = z.enum(["none", "display", "model"]);
+export const CustomerCaseResponseState = z.enum([
+  "needs_response",
+  "answered",
+  "acknowledged",
+  "closed",
+  "no_messages",
+]);
 
 export const CustomerCase = z.object({
   id: z.string(),
@@ -113,6 +120,8 @@ export const CustomerCase = z.object({
   slaState: z.enum(["ok", "yellow", "red", "critical", "overdue"]).nullable().optional(),
   requiresResponse: z.boolean().optional(),
   answeredAt: Ts.optional(),
+  responseState: CustomerCaseResponseState.nullable().optional(),
+  responseClassificationVersion: z.number().int().positive().nullable().optional(),
 });
 
 export const CustomerCaseMessage = z.object({
@@ -142,6 +151,7 @@ export const CustomerCasesResponse = Envelope(
     cases: z.array(CustomerCase),
     count: z.number().int().nonnegative(),
     truncated: z.boolean(),
+    nextCursor: z.string().min(1).max(4_096).nullable().optional().default(null),
     contentIncluded: z.boolean(),
     contentMode: CustomerContentMode,
   }),
