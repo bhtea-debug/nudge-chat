@@ -29,6 +29,12 @@ import {
   ingestFirmowyChatEvent,
   verifyFirmowyChatSignature,
 } from "../chat/events.js";
+import {
+  CUSTOMER_CASE_REPLY_BRIDGE_PATH,
+  CustomerCaseReplyRequest,
+  forwardCustomerCaseReply,
+  type ReplyBridgeUpstreamConfig,
+} from "../customer-cases/reply-bridge.js";
 
 /**
  * Remote MCP — ten sam serwer, transport HTTP, dostępny także z telefonu.
@@ -94,6 +100,16 @@ const TOKEN = (process.env["MCP_BEARER_TOKEN"] ?? "").trim();
 const TRUSTED_FIRMOWY_CHAT_TOKEN = (
   process.env["MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN"] ?? ""
 ).trim();
+const CUSTOMER_CASE_REPLY_BRIDGE_TOKEN = (
+  process.env["CUSTOMER_CASE_REPLY_BRIDGE_TOKEN"] ?? ""
+).trim();
+const TEABREW_AI_OPERATOR_REPLY_TOKEN = (
+  process.env["TEABREW_AI_OPERATOR_REPLY_TOKEN"] ?? ""
+).trim();
+const TEABREW_BASE_URL = (process.env["TEABREW_BASE_URL"] ?? "").trim();
+const TEABREW_AI_OPERATOR_READ_TOKEN = (
+  process.env["TEABREW_AI_OPERATOR_TOKEN"] ?? ""
+).trim();
 const MONITOR_IN_PROCESS = (process.env["MONITOR_IN_PROCESS"] ?? "1") !== "0";
 const COST_LOG = fromPackageRoot(process.env["COST_LOG"] ?? "state/koszty.jsonl");
 
@@ -146,6 +162,76 @@ if (TRUSTED_FIRMOWY_CHAT_TOKEN && TRUSTED_FIRMOWY_CHAT_TOKEN === TOKEN) {
   );
   process.exit(1);
 }
+
+const REPLY_BRIDGE_PARTIALLY_CONFIGURED =
+  Boolean(CUSTOMER_CASE_REPLY_BRIDGE_TOKEN) !== Boolean(TEABREW_AI_OPERATOR_REPLY_TOKEN);
+
+if (REPLY_BRIDGE_PARTIALLY_CONFIGURED) {
+  process.stderr.write(
+    `[${SERVER_NAME}] CUSTOMER_CASE_REPLY_BRIDGE_TOKEN i ` +
+      "TEABREW_AI_OPERATOR_REPLY_TOKEN muszą być ustawione razem.\n",
+  );
+  process.exit(1);
+}
+
+for (const [name, value] of [
+  ["CUSTOMER_CASE_REPLY_BRIDGE_TOKEN", CUSTOMER_CASE_REPLY_BRIDGE_TOKEN],
+  ["TEABREW_AI_OPERATOR_REPLY_TOKEN", TEABREW_AI_OPERATOR_REPLY_TOKEN],
+] as const) {
+  if (value.length > 0 && value.length < MIN_TOKEN_LENGTH) {
+    process.stderr.write(
+      `[${SERVER_NAME}] ${name} jest za krótki (${value.length} znaków, ` +
+        `wymagane min. ${MIN_TOKEN_LENGTH}).\n`,
+    );
+    process.exit(1);
+  }
+}
+
+const REPLY_BRIDGE_ENABLED = CUSTOMER_CASE_REPLY_BRIDGE_TOKEN.length >= MIN_TOKEN_LENGTH;
+
+if (REPLY_BRIDGE_ENABLED && !TEABREW_BASE_URL) {
+  process.stderr.write(
+    `[${SERVER_NAME}] Brak TEABREW_BASE_URL wymagany przez bridge odpowiedzi klientom.\n`,
+  );
+  process.exit(1);
+}
+
+if (REPLY_BRIDGE_ENABLED) {
+  try {
+    const upstream = new URL(TEABREW_BASE_URL);
+    if (!/^https?:$/.test(upstream.protocol) || upstream.username || upstream.password) {
+      throw new Error("invalid");
+    }
+  } catch {
+    process.stderr.write(
+      `[${SERVER_NAME}] TEABREW_BASE_URL dla bridge'a musi być poprawnym adresem HTTP(S) ` +
+        "bez danych logowania.\n",
+    );
+    process.exit(1);
+  }
+}
+
+if (REPLY_BRIDGE_ENABLED) {
+  const forbiddenReuse = [
+    [CUSTOMER_CASE_REPLY_BRIDGE_TOKEN, TOKEN],
+    [CUSTOMER_CASE_REPLY_BRIDGE_TOKEN, TRUSTED_FIRMOWY_CHAT_TOKEN],
+    [CUSTOMER_CASE_REPLY_BRIDGE_TOKEN, TEABREW_AI_OPERATOR_READ_TOKEN],
+    [CUSTOMER_CASE_REPLY_BRIDGE_TOKEN, TEABREW_AI_OPERATOR_REPLY_TOKEN],
+    [TEABREW_AI_OPERATOR_REPLY_TOKEN, TOKEN],
+    [TEABREW_AI_OPERATOR_REPLY_TOKEN, TRUSTED_FIRMOWY_CHAT_TOKEN],
+    [TEABREW_AI_OPERATOR_REPLY_TOKEN, TEABREW_AI_OPERATOR_READ_TOKEN],
+  ].some(([left, right]) => Boolean(left) && Boolean(right) && left === right);
+  if (forbiddenReuse) {
+    process.stderr.write(
+      `[${SERVER_NAME}] tokeny bridge'a, MCP i odczytu TeaBrew muszą mieć osobne wartości.\n`,
+    );
+    process.exit(1);
+  }
+}
+
+const REPLY_BRIDGE_UPSTREAM: ReplyBridgeUpstreamConfig | null = REPLY_BRIDGE_ENABLED
+  ? { baseUrl: TEABREW_BASE_URL, token: TEABREW_AI_OPERATOR_REPLY_TOKEN }
+  : null;
 
 if (!MCP_ENABLED) {
   // Claude JEST interfejsem tego produktu, więc bez tokenu nie ma czego
@@ -215,6 +301,9 @@ const subskrypcje = new Subskrypcje(app.config.copilot.stateDir);
 const RATE_CAPACITY = 60;
 const RATE_REFILL_PER_SEC = 1;
 const buckets = new Map<string, { tokens: number; at: number }>();
+const REPLY_RATE_CAPACITY = 10;
+const REPLY_RATE_REFILL_PER_SEC = 1 / 6;
+let replyBucket = { tokens: REPLY_RATE_CAPACITY, at: Date.now() };
 
 function allow(key: string): boolean {
   const now = Date.now();
@@ -229,21 +318,40 @@ function allow(key: string): boolean {
   return true;
 }
 
+/** Osobny, ciaśniejszy bezpiecznik przed pętlą w konsumencie firmowego czatu. */
+function allowCustomerCaseReply(): boolean {
+  const now = Date.now();
+  const refill = ((now - replyBucket.at) / 1000) * REPLY_RATE_REFILL_PER_SEC;
+  const tokens = Math.min(REPLY_RATE_CAPACITY, replyBucket.tokens + refill);
+  if (tokens < 1) {
+    replyBucket = { tokens, at: now };
+    return false;
+  }
+  replyBucket = { tokens: tokens - 1, at: now };
+  return true;
+}
+
 // ── uwierzytelnienie ──────────────────────────────────────────────────────────
 /** Porównanie w czasie stałym. Zwykłe === wycieka długość wspólnego prefiksu. */
-function tokenMatches(provided: string): boolean {
+function constantTimeTokenMatches(provided: string, expected: string): boolean {
   const a = Buffer.from(provided);
-  const b = Buffer.from(TOKEN);
+  const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
 
+function tokenMatches(provided: string): boolean {
+  return constantTimeTokenMatches(provided, TOKEN);
+}
+
 function trustedFirmowyChatTokenMatches(provided: string): boolean {
   if (!TRUSTED_FIRMOWY_CHAT_TOKEN) return false;
-  const a = Buffer.from(provided);
-  const b = Buffer.from(TRUSTED_FIRMOWY_CHAT_TOKEN);
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
+  return constantTimeTokenMatches(provided, TRUSTED_FIRMOWY_CHAT_TOKEN);
+}
+
+function customerCaseReplyBridgeTokenMatches(provided: string): boolean {
+  if (!CUSTOMER_CASE_REPLY_BRIDGE_TOKEN) return false;
+  return constantTimeTokenMatches(provided, CUSTOMER_CASE_REPLY_BRIDGE_TOKEN);
 }
 
 function bearerOf(req: IncomingMessage): string | null {
@@ -331,14 +439,15 @@ function json(res: ServerResponse, status: number, body: unknown, headers: Recor
 }
 
 const MAX_BODY = 256 * 1024;
+const MAX_CUSTOMER_CASE_REPLY_BODY = 16 * 1024;
 
-async function readBody(req: IncomingMessage): Promise<string> {
+async function readBody(req: IncomingMessage, maxBytes = MAX_BODY): Promise<string> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > MAX_BODY) throw new Error("żądanie za duże");
+    if (size > maxBytes) throw new Error("żądanie za duże");
     chunks.push(buf);
   }
   return Buffer.concat(chunks).toString("utf8");
@@ -390,6 +499,8 @@ const server = createServer((req, res) => {
         push: PUSH !== null,
         pushUrzadzenia: safeIleSubskrypcji(),
         firmowyChatEvents: Boolean(app.config.firmowyChat.eventsSecret),
+        // Tylko gotowość techniczna. Nie ujawniamy tokenów ani adresu upstreamu.
+        customerCaseReplyBridge: REPLY_BRIDGE_UPSTREAM !== null,
       });
       logAccess(200, "health", null, Date.now() - started);
       return;
@@ -469,6 +580,14 @@ const server = createServer((req, res) => {
     if (url.pathname === "/events/chat") {
       const status = await handleFirmowyChatEvent(req, res);
       logAccess(status, "event", "firmowy-chat", Date.now() - started);
+      return;
+    }
+
+    // Dedykowany bridge serwisowy: NIE jest MCP, capability ani narzędziem AI.
+    // Wyłącznie firmowy czat może wejść osobnym tokenem po potwierdzeniu człowieka.
+    if (url.pathname === CUSTOMER_CASE_REPLY_BRIDGE_PATH) {
+      const status = await handleCustomerCaseReplyBridge(req, res);
+      logAccess(status, "customer-case-reply", "allegro", Date.now() - started);
       return;
     }
 
@@ -565,6 +684,80 @@ const server = createServer((req, res) => {
     process.stderr.write(`[${SERVER_NAME}] ${err instanceof Error ? err.stack : String(err)}\n`);
   });
 });
+
+/**
+ * Firmowy czat -> BHT Copilot bridge -> TeaBrew.
+ *
+ * Handler nie zapisuje tekstu, nie przekazuje go do rejestru capability i nie
+ * ponawia wywołania. Po timeout/5xx odpowiedź mówi wprost, że wynik jest
+ * niejednoznaczny i operator ma najpierw odświeżyć wątek.
+ */
+async function handleCustomerCaseReplyBridge(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<number> {
+  if (!REPLY_BRIDGE_UPSTREAM) {
+    json(res, 503, { ok: false, error: "reply_bridge_not_configured" });
+    return 503;
+  }
+
+  const provided = bearerOf(req);
+  if (provided === null || !customerCaseReplyBridgeTokenMatches(provided)) {
+    json(res, 401, { ok: false, error: "unauthorized" });
+    return 401;
+  }
+
+  if (req.method !== "POST") {
+    json(res, 405, { ok: false, error: "use_post" });
+    return 405;
+  }
+
+  const contentType = singleHeader(req.headers["content-type"])
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (contentType !== "application/json") {
+    json(res, 415, { ok: false, error: "content_type_must_be_application_json" });
+    return 415;
+  }
+
+  if (!allowCustomerCaseReply()) {
+    json(
+      res,
+      429,
+      { ok: false, error: "reply_rate_limited" },
+      { "retry-after": "6" },
+    );
+    return 429;
+  }
+
+  let raw: string;
+  try {
+    raw = await readBody(req, MAX_CUSTOMER_CASE_REPLY_BODY);
+  } catch {
+    json(res, 413, { ok: false, error: "request_too_large" });
+    return 413;
+  }
+
+  let unknownRequest: unknown;
+  try {
+    unknownRequest = JSON.parse(raw);
+  } catch {
+    json(res, 400, { ok: false, error: "invalid_json" });
+    return 400;
+  }
+
+  const parsed = CustomerCaseReplyRequest.safeParse(unknownRequest);
+  if (!parsed.success) {
+    // Nie zwracamy szczegółów Zod: mogłyby zawierać fragment tekstu klienta.
+    json(res, 422, { ok: false, error: "invalid_reply_request" });
+    return 422;
+  }
+
+  const outcome = await forwardCustomerCaseReply(parsed.data, REPLY_BRIDGE_UPSTREAM);
+  json(res, outcome.status, outcome.body);
+  return outcome.status;
+}
 
 /**
  * Webhook Connecteam (§11).
@@ -1049,6 +1242,7 @@ server.listen(PORT, () => {
       `[${SERVER_NAME}] narzędzia dla Claude: ${probe.toolNames().length}\n` +
       `[${SERVER_NAME}] OAuth dla konektora: ${OAUTH_ENABLED ? "włączony" : "WYŁĄCZONY (brak COPILOT_AUTH_PASSWORD) — Claude się nie połączy"}\n` +
       `[${SERVER_NAME}] powiadomienia: ${PUSH ? `włączone, urządzeń: ${safeIleSubskrypcji()}` : "WYŁĄCZONE (brak kluczy VAPID)"}\n` +
+      `[${SERVER_NAME}] bridge odpowiedzi Allegro: ${REPLY_BRIDGE_UPSTREAM ? "włączony (po potwierdzeniu człowieka)" : "wyłączony"}\n` +
       `[${SERVER_NAME}] tryb: ${app.config.mode}, foldery: ${app.config.copilot.monitorFolders.join(", ")}\n` +
       `[${SERVER_NAME}] monitor w procesie: ${MONITOR_IN_PROCESS ? `tak, pierwszy przebieg za 20 s, potem co ${app.config.copilot.intervalMinutes} min` : "nie"}\n`,
   );

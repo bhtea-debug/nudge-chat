@@ -89,21 +89,48 @@ Schematy są walidowane przed przekazaniem danych do capability. HTTP 429 ma
 jednoznaczny komunikat retry; stan OAuth i potrzeba ponownego połączenia są
 przekazywane przez `freshness`.
 
-## Etap drugi — tylko projekt, nieaktywny
+## Odpowiedź klientowi — osobny bridge, nigdy narzędzie AI
 
-Przyszła odpowiedź powinna mieć trzy odseparowane kroki:
+Wysyłka nie została dodana do capability ani MCP. `tools/list` nadal publikuje
+dokładnie cztery operacje Allegro, wszystkie `effectClass: read`; model nie ma
+narzędzia `send`, `reply`, `write` ani mutacji statusu.
 
-1. użytkownik jawnie prosi o szkic; model dostaje zredagowaną treść bez
-   załączników,
-2. szkic zostaje obiektem wewnętrznym, podlega osobnemu audytowi i ręcznej
-   akceptacji użytkownika z uprawnieniem `canApproveExternalReply`,
-3. dopiero osobne wdrożenie TeaBrew może dodać wąski endpoint wysyłki z
-   allowlistą typu wiadomości, idempotency key, ponowną kontrolą uprawnienia i
-   bez możliwości przekazania komentarza wewnętrznego.
+Backend firmowego czatu może po potwierdzeniu człowieka wywołać dedykowany:
 
-Żaden element kroku 2 ani 3 nie jest aktywny w pilocie. Dodanie endpointu
-wysyłki wymaga osobnej decyzji, testów i wdrożenia; samo połączenie scope
-`allegro:api:messaging` nie może go uruchomić.
+`POST /internal/customer-cases/allegro/reply`
+
+Endpoint ma osobny `CUSTOMER_CASE_REPLY_BRIDGE_TOKEN` (min. 32 znaki), który
+nie może być równy żadnemu tokenowi MCP ani tokenowi odczytu TeaBrew. Dalej
+bridge wykonuje dokładnie jeden:
+
+`POST {TEABREW_BASE_URL}/ai-operator/customer-case-reply`
+
+z osobnym `TEABREW_AI_OPERATOR_REPLY_TOKEN` i nagłówkiem
+`x-bht-human-confirmation: confirmed`. Token wyjściowy jest inny także od
+`TEABREW_AI_OPERATOR_TOKEN` używanego do odczytu. BHT Copilot nadal nie zna
+tokenu Allegro; jedyną bramą zewnętrzną pozostaje TeaBrew.
+
+Ładunek jest walidowany przez strict Zod i zawiera wyłącznie:
+
+- `requestId` — 16–128 znaków `[A-Za-z0-9._:-]`, klucz idempotencji,
+- `caseId` — identyfikator sprawy TeaBrew, max 128 znaków,
+- `text` — niepusty tekst, max 2000 znaków,
+- `expectedLastMessageAt` — czas ostatniej znanej wiadomości w ms lub `null`,
+- `confirmation: "SEND_ALLEGRO_CUSTOMER_REPLY"`.
+
+Nieznane pola i `attachments` są odrzucane. Bridge nie zapisuje ani nie loguje
+tekstu. Odpowiedź TeaBrew też przechodzi strict schema i allowlistę pól; surowa
+odpowiedź upstreamu nie jest przekazywana.
+
+Nie ma automatycznego retry. HTTP 200 (`sent`), 202 (`uncertain`) i 409
+(`failed`) przechodzą po sprawdzeniu kontraktu. Timeout, błąd sieci, 5xx lub
+niezgodna odpowiedź kończą się bez drugiego requestu jako `ambiguous: true` —
+operator musi najpierw odświeżyć wątek. Odrzucenie 4xx przed akcją jest
+sanityzowane jako jednoznaczny błąd upstreamu.
+
+Bridge jest wyłączony, dopóki oba nowe tokeny nie są ustawione. Konfiguracja
+połowiczna, token krótszy niż 32 znaki albo ponowne użycie tokenu MCP/read-only
+zatrzymują proces przy starcie zamiast otworzyć słabszą ścieżkę.
 
 ## Jedyny ręczny krok integracyjny
 

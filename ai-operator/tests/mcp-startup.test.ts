@@ -230,6 +230,37 @@ describe("start serwera HTTP", () => {
     expect(b.stderr).toContain("musi być inny");
   }, 20_000);
 
+  it("odrzuca częściową konfigurację bridge'a odpowiedzi", async () => {
+    const b = await boot({
+      MCP_BEARER_TOKEN: TOKEN,
+      CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: "b".repeat(48),
+    }, 8845);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("muszą być ustawione razem");
+  }, 20_000);
+
+  it("odrzuca krótki token bridge'a odpowiedzi", async () => {
+    const b = await boot({
+      MCP_BEARER_TOKEN: TOKEN,
+      CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: "za-krotki",
+      TEABREW_AI_OPERATOR_REPLY_TOKEN: "u".repeat(48),
+      TEABREW_BASE_URL: "https://teabrew.example",
+    }, 8846);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("CUSTOMER_CASE_REPLY_BRIDGE_TOKEN jest za krótki");
+  }, 20_000);
+
+  it("odrzuca współdzielenie tokenu bridge'a z MCP", async () => {
+    const b = await boot({
+      MCP_BEARER_TOKEN: TOKEN,
+      CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: TOKEN,
+      TEABREW_AI_OPERATOR_REPLY_TOKEN: "u".repeat(48),
+      TEABREW_BASE_URL: "https://teabrew.example",
+    }, 8847);
+    expect(b.exitCode).toBe(1);
+    expect(b.stderr).toContain("muszą mieć osobne wartości");
+  }, 20_000);
+
   it("bez tokenu nie wstaje wcale — Claude jest jedynym interfejsem", async () => {
     // Monitor bez wystawionego MCP zbierałby dane, których nikt nie zobaczy.
     const b = await boot({}, 8843);

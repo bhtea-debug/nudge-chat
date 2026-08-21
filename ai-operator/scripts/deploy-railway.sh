@@ -317,6 +317,7 @@ POTRZEBNE=(
   MAIL_IMAP_HOST MAIL_IMAP_PORT MAIL_IMAP_USER MAIL_IMAP_PASSWORD
   MAIL_FOLDER MAIL_SENT_FOLDER MAIL_THREAD_FOLDERS
   TEABREW_BASE_URL TEABREW_AI_OPERATOR_TOKEN
+  CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN
   MARKETING_PLANNER_BASE_URL MARKETING_PLANNER_TOKEN
   BUDZECIK_BASE_URL BUDZECIK_COPILOT_TOKEN
   CONNECTEAM_API_KEY CONNECTEAM_WEBHOOK_SECRET
@@ -346,6 +347,17 @@ fi
 for KONIECZNE in MAIL_IMAP_HOST MAIL_IMAP_USER MAIL_IMAP_PASSWORD TEABREW_BASE_URL TEABREW_AI_OPERATOR_TOKEN COPILOT_AUTH_PASSWORD; do
   grep -q "^${KONIECZNE}=." "$ENV_FILE" || stop "Brak $KONIECZNE w .env — bez tego serwer nie połączy się ze źródłami."
 done
+
+# Bridge odpowiedzi jest opcjonalny, ale konfiguracja połowiczna nie jest.
+# Nie generujemy tych sekretów automatycznie: ich wartości trzeba skoordynować
+# odpowiednio z firmowym czatem i TeaBrew, bez wypisywania ich na ekran.
+REPLY_BRIDGE_IN=0
+REPLY_BRIDGE_OUT=0
+grep -q '^CUSTOMER_CASE_REPLY_BRIDGE_TOKEN=.' "$ENV_FILE" && REPLY_BRIDGE_IN=1
+grep -q '^TEABREW_AI_OPERATOR_REPLY_TOKEN=.' "$ENV_FILE" && REPLY_BRIDGE_OUT=1
+if [ "$REPLY_BRIDGE_IN" -ne "$REPLY_BRIDGE_OUT" ]; then
+  stop "Bridge odpowiedzi wymaga razem CUSTOMER_CASE_REPLY_BRIDGE_TOKEN i TEABREW_AI_OPERATOR_REPLY_TOKEN."
+fi
 
 zservice variables "${ARGS[@]}" || {
   zle "Nie udało się ustawić zmiennych."
@@ -476,7 +488,22 @@ if [ "${PUSH_STAN:-}" != "true" ]; then
   printf '  Test pusha nie ruszy. Reszta produktu działa normalnie.\n'
   exit 1
 fi
+
+REPLY_STAN="$(printf '%s' "$ODP" | grep -oE '"customerCaseReplyBridge":(true|false)' | cut -d: -f2)"
+if [ "$REPLY_BRIDGE_IN" = "1" ] && [ "${REPLY_STAN:-}" != "true" ]; then
+  zle "Serwer wstał, ale bridge odpowiedzi Allegro nie potwierdził gotowości."
+  printf '  Sprawdź nazwy obu tokenów bridge\047a w Railway (bez wypisywania wartości).\n'
+  exit 1
+fi
+if [ "$REPLY_BRIDGE_IN" = "0" ] && [ "${REPLY_STAN:-}" = "true" ]; then
+  zle "Bridge odpowiedzi nadal jest włączony przez stare zmienne Railway."
+  printf '  Usuń obie zmienne bridge\047a z usługi albo dopisz obie do lokalnego .env.\n'
+  exit 1
+fi
 ok "nowa wersja stoi ($WERSJA), OAuth i powiadomienia włączone"
+if [ "$REPLY_BRIDGE_IN" = "1" ]; then
+  ok "bridge odpowiedzi Allegro gotowy (osobne tokeny, wymagane potwierdzenie człowieka)"
+fi
 
 OSTRZEZENIE_WOLUMEN=""
 if [ "$BEZ_WOLUMENU" = "1" ]; then
@@ -490,7 +517,8 @@ cat <<PODSUMOWANIE
 $OSTRZEZENIE_WOLUMEN
   Narzędzia dla Claude: ${NARZEDZIA:-?}
   Stan spraw: $([ "$BEZ_WOLUMENU" = "1" ] && printf 'w kontenerze (bez wolumenu)' || printf 'trwały wolumen %s' "$MOUNT")
-  Poczta i TeaBrew: read-only, jak dotychczas
+  Poczta i narzędzia MCP: read-only, jak dotychczas
+  Odpowiedzi Allegro: $([ "$REPLY_BRIDGE_IN" = "1" ] && printf 'bridge serwisowy po potwierdzeniu człowieka' || printf 'wyłączone')
 
   ZOSTAŁA JEDNA RZECZ, KTÓREJ ŻADEN SKRYPT NIE ZROBI.
 
