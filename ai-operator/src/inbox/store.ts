@@ -1,6 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fromPackageRoot } from "../paths.js";
+import { Journal, type JournalDamage } from "./journal.js";
 import {
   CLASSIFIER_VERSION,
   type ClassificationReason,
@@ -24,6 +24,18 @@ import { messageDedupKey } from "./ids.js";
  * źródła przesuwa się dopiero po trwałym zapisie całej partii. Awaria między
  * jednym a drugim powtarza partię (dedup ją wchłania), ale nigdy jej nie gubi.
  */
+
+/**
+ * Zdarzenia wymuszane na dysk natychmiast.
+ *
+ * Kursor, bo po jego przesunięciu nie wrócimy już po tamte wiadomości.
+ * Ledger wysyłki, bo jego utrata znaczy albo zgubioną, albo podwójną
+ * odpowiedź u klienta. Zdrowie, bo alarm integralności ma przeżyć restart.
+ * Wiadomości i sprawy nie: ich utrata przed wymuszeniem kończy się co najwyżej
+ * powtórnym pobraniem, a `fsync` opróżnia cały bufor pliku, więc zapis kursora
+ * utrwala też całą poprzedzającą go partię.
+ */
+const DURABLE_EVENTS = new Set(["cursor", "outbound", "health"]);
 
 const DEFAULT_DIR = "state";
 const LOG = "inbox.jsonl";
@@ -97,6 +109,7 @@ export interface InboxStoreOptions {
 }
 
 export class InboxStore {
+  private readonly journal: Journal;
   private readonly logPath: string;
 
   private readonly messages = new Map<string, InboxMessage>();
@@ -105,36 +118,75 @@ export class InboxStore {
   private readonly health = new Map<string, SourceHealth>();
   private readonly outbound = new Map<string, OutboundAttempt>();
   private eventCount = 0;
-  private readonly damaged: string[] = [];
+  private damage: JournalDamage | null = null;
   private readonly compactAbove: number;
 
   constructor(opts: InboxStoreOptions = {}) {
     this.compactAbove = opts.compactAbove ?? COMPACT_ABOVE;
     this.logPath = join(fromPackageRoot(opts.dir ?? DEFAULT_DIR), LOG);
-    mkdirSync(dirname(this.logPath), { recursive: true });
+    this.journal = new Journal(this.logPath);
     this.replay();
   }
 
   // ── odtwarzanie ────────────────────────────────────────────────────────────
 
   private replay(): void {
-    if (!existsSync(this.logPath)) return;
-    const raw = readFileSync(this.logPath, "utf8");
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      let event: Event;
-      try {
-        event = JSON.parse(line) as Event;
-      } catch {
-        // Ucięta ostatnia linia po nagłym zabiciu procesu. Reszta dziennika
-        // jest prawdziwa i musi się odtworzyć — inaczej jeden zły bajt
-        // kasuje historię, przed czym cały ten moduł ma chronić.
-        this.damaged.push(line.slice(0, 120));
-        continue;
-      }
+    // Naprawa dzieje się TU, przed pierwszym dopisaniem. Gdyby uszkodzony ogon
+    // został, następny append dokleiłby się do niego i przy kolejnym restarcie
+    // zniknęłyby obie części — razem z wiadomością, za którą stoi już kursor.
+    const result = this.journal.replay<Event>((line) => JSON.parse(line) as Event);
+    for (const event of result.events) {
       this.apply(event);
       this.eventCount += 1;
     }
+    this.damage = result.damage;
+    if (result.damage) this.recordIntegrityAlarm(result.damage);
+  }
+
+  /**
+   * Alarm integralności jako TRWAŁY rekord zdrowia.
+   *
+   * Tablica w pamięci ginie razem z procesem, a to jest dokładnie ten rodzaj
+   * problemu, który trzeba zobaczyć po restarcie. Alarm zostaje, dopóki
+   * człowiek go nie zdejmie — sam z siebie nie znika.
+   */
+  private recordIntegrityAlarm(damage: JournalDamage): void {
+    const health: SourceHealth = {
+      provider: "store",
+      accountKey: "integrity",
+      label: "Dziennik kanału",
+      state: "error",
+      active: true,
+      lastSuccessfulSyncAt: null,
+      lastAttemptAt: damage.detectedAt,
+      nextAttemptAt: null,
+      consecutiveFailures: damage.lines,
+      message: `uszkodzone wpisy dziennika: ${damage.lines}; wymaga sprawdzenia`,
+    };
+    this.write({ t: "health", at: damage.detectedAt, value: health });
+  }
+
+  /** Zdjęcie alarmu integralności. Wyłącznie świadoma decyzja człowieka. */
+  acknowledgeIntegrityAlarm(now: number): boolean {
+    const key = { provider: "store", accountKey: "integrity" };
+    if (!this.getHealth(key)) return false;
+    this.write({
+      t: "health",
+      at: now,
+      value: {
+        provider: "store",
+        accountKey: "integrity",
+        label: "Dziennik kanału",
+        state: "ok",
+        active: false,
+        lastSuccessfulSyncAt: now,
+        lastAttemptAt: now,
+        nextAttemptAt: null,
+        consecutiveFailures: 0,
+        message: null,
+      },
+    });
+    return true;
   }
 
   private apply(event: Event): void {
@@ -182,7 +234,10 @@ export class InboxStore {
   }
 
   private write(event: Event): void {
-    appendFileSync(this.logPath, `${JSON.stringify(event)}\n`, "utf8");
+    // Kolejność jest istotna: najpierw zapis do dziennika, dopiero potem
+    // zmiana stanu w pamięci. Odwrotna kolejność dawałaby stan, którego
+    // dziennik nie potwierdza.
+    this.journal.append(JSON.stringify(event), DURABLE_EVENTS.has(event.t));
     this.apply(event);
     this.eventCount += 1;
     if (this.eventCount > this.compactAbove) this.compact();
@@ -200,9 +255,7 @@ export class InboxStore {
         outbound: [...this.outbound.values()],
       },
     };
-    const tmp = `${this.logPath}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(snapshot)}\n`, "utf8");
-    renameSync(tmp, this.logPath);
+    this.journal.rewrite([JSON.stringify(snapshot)]);
     this.eventCount = 1;
   }
 
@@ -321,8 +374,13 @@ export class InboxStore {
   }
 
   /** Niepuste, gdy dziennik miał linie nie do odczytania. Widoczne w zdrowiu. */
-  damagedLines(): readonly string[] {
-    return this.damaged;
+  damageReport(): JournalDamage | null {
+    return this.damage;
+  }
+
+  /** Zamknięcie deskryptora. Używane przy shutdownie i w testach. */
+  close(): void {
+    this.journal.close();
   }
 }
 

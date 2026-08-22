@@ -187,7 +187,9 @@ describe("restart w polowie operacji", () => {
 
     const after = new InboxStore({ dir });
     expect(after.allMessages()).toHaveLength(2);
-    expect(after.damagedLines()).toHaveLength(1);
+    expect(after.damageReport()?.lines).toBe(1);
+    // Alarm integralnosci jest TRWALY: przezywa restart jako rekord zdrowia.
+    expect(after.getHealth({ provider: "store", accountKey: "integrity" })?.state).toBe("error");
   });
 
   it("stan przezywa kompakcje dziennika", () => {

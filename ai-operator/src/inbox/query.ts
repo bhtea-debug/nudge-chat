@@ -37,6 +37,11 @@ export interface QueueResult {
   readonly cases: CaseDto[];
   readonly count: number;
   readonly truncated: boolean;
+  /**
+   * Nieprzezroczysty kursor następnej strony. `null` znaczy koniec listy —
+   * i tylko wtedy odbiorca ma prawo uznać widok za kompletny.
+   */
+  readonly nextCursor: string | null;
   readonly freshness: ChannelFreshness;
   /**
    * false = nie wolno napisać „brak spraw". Pusta lista przy zepsutym źródle
@@ -53,6 +58,7 @@ export interface QueueOptions {
   readonly accountKeys?: readonly string[];
   readonly limit?: number;
   readonly contentMode?: ContentMode;
+  readonly cursor?: string | null;
 }
 
 const DEFAULT_LIMIT = 200;
@@ -76,18 +82,61 @@ export function queryQueue(store: InboxStore, options: QueueOptions): QueueResul
     cases = cases.filter((entry) => entry.requiresResponse || entry.pendingAction);
   }
 
-  cases.sort((a, b) => (b.lastMessageAt ?? b.firstSeenAt) - (a.lastMessageAt ?? a.firstSeenAt));
-  const truncated = cases.length > limit;
-  const page = cases.slice(0, limit);
+  /*
+   * Sortowanie musi być całkowite, inaczej kursor nie jest stabilny: dwie
+   * sprawy z tym samym czasem mogłyby zamieniać się miejscami między stronami
+   * i jedna z nich nie trafiłaby na żadną.
+   */
+  cases.sort((a, b) => {
+    const byTime = (b.lastMessageAt ?? b.firstSeenAt) - (a.lastMessageAt ?? a.firstSeenAt);
+    return byTime !== 0 ? byTime : a.caseId.localeCompare(b.caseId);
+  });
+
+  const total = cases.length;
+  const start = options.cursor ? cursorOffset(cases, options.cursor) : 0;
+  const window = cases.slice(start, start + limit);
+  const consumed = start + window.length;
+  const truncated = consumed < total;
+  const page = window;
 
   return {
     cases: page.map((entry) => toDto(store, entry, options.now, contentMode)),
-    count: cases.length,
+    count: total,
     truncated,
+    nextCursor: truncated && page.length > 0 ? encodeCursor(page[page.length - 1]!) : null,
     freshness: channelFreshness(store, options.now),
     completeView: mayReportEmptyQueue(channelFreshness(store, options.now)),
     contentMode,
   };
+}
+
+
+/**
+ * Kursor jako pozycja OSTATNIEJ sprawy poprzedniej strony.
+ *
+ * Nie offset liczbowy: między stronami dochodzą nowe sprawy i offset
+ * przesunąłby okno tak, że jedna sprawa zostałaby pominięta bez śladu.
+ */
+function encodeCursor(entry: StoredCase): string {
+  return Buffer.from(`${entry.lastMessageAt ?? entry.firstSeenAt}|${entry.caseId}`, "utf8").toString(
+    "base64url",
+  );
+}
+
+function cursorOffset(cases: readonly StoredCase[], cursor: string): number {
+  let decoded: string;
+  try {
+    decoded = Buffer.from(cursor, "base64url").toString("utf8");
+  } catch {
+    return 0;
+  }
+  const separator = decoded.lastIndexOf("|");
+  if (separator < 0) return 0;
+  const caseId = decoded.slice(separator + 1);
+  const index = cases.findIndex((entry) => entry.caseId === caseId);
+  // Sprawa z kursora mogła zniknąć z filtra między stronami. Zaczynamy wtedy
+  // od początku zamiast zgadywać pozycję: powtórka jest tania, luka nie jest.
+  return index < 0 ? 0 : index + 1;
 }
 
 function toDto(store: InboxStore, entry: StoredCase, now: number, mode: ContentMode): CaseDto {

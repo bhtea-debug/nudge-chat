@@ -147,6 +147,7 @@ export function handleInboxRead(request: ReadRequest): HttpResult {
           accountKeys: accountKeys.length ? accountKeys : undefined,
           limit: Number.isFinite(limit) ? limit : 200,
           contentMode: mode,
+          cursor: params.get("cursor"),
         }),
         now,
       );
