@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ContentMode } from "./contract.js";
 import { channelFreshness } from "./health.js";
-import { queryMessages, queryQueue } from "./query.js";
+import { queryCase, queryMessages, queryQueue } from "./query.js";
 import type { InboxRuntime } from "./runtime.js";
 import {
   cancelPrepared,
@@ -174,12 +174,18 @@ export function handleInboxRead(request: ReadRequest): HttpResult {
     case `${INBOX_READ_PREFIX}/case`: {
       const caseId = params.get("id");
       if (!caseId) return failure(400, "missing_id");
-      const record = runtime.store.getCase(caseId);
-      if (!record) return failure(404, "case_not_found");
-      const page = queryQueue(runtime.store, { now, state: "all", limit: 500, contentMode: mode });
-      const dto = page.cases.find((entry) => entry.caseId === caseId);
-      if (!dto) return failure(404, "case_not_found");
-      return envelope({ case: dto, freshness: page.freshness }, now);
+      // Odczyt PO KLUCZU. Wcześniej ta gałąź budowała stronę pięciuset spraw
+      // i szukała w niej jednej — czyli sprawa poza tą stroną nie dawała się
+      // otworzyć, choć była w magazynie.
+      const found = queryCase(
+        runtime.store,
+        caseId,
+        now,
+        mode,
+        new Map(runtime.config.email.map((entry) => [entry.accountKey, entry.address])),
+      );
+      if (!found) return failure(404, "case_not_found");
+      return envelope(found, now);
     }
 
     case `${INBOX_READ_PREFIX}/messages`: {

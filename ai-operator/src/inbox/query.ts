@@ -161,6 +161,30 @@ function cursorOffset(cases: readonly StoredCase[], cursor: string): number {
   return index < 0 ? 0 : index + 1;
 }
 
+/**
+ * Pojedyncza sprawa po identyfikatorze.
+ *
+ * Istnieje, bo poprzednia droga budowała pięćsetelementową stronę kolejki
+ * wyłącznie po to, żeby wybrać z niej jeden rekord — a sprawa spoza tej setki
+ * (starsza, zamknięta, spoza filtra) była wtedy nie do otwarcia mimo że
+ * istnieje w magazynie. Odczyt po kluczu nie ma tego progu i nie zależy od
+ * tego, jak duża jest kolejka.
+ */
+export function queryCase(
+  store: InboxStore,
+  caseId: string,
+  now: number,
+  contentMode: ContentMode = "none",
+  mailboxes?: ReadonlyMap<string, string>,
+): { case: CaseDto; freshness: ChannelFreshness } | null {
+  const entry = store.getCase(caseId);
+  if (!entry) return null;
+  return {
+    case: toDto(store, entry, now, contentMode, mailboxes),
+    freshness: channelFreshness(store, now),
+  };
+}
+
 function toDto(
   store: InboxStore,
   entry: StoredCase,

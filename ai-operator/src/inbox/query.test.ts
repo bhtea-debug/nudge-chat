@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CLASSIFIER_VERSION } from "./contract.js";
 import { recordFailure, recordSuccess } from "./health.js";
-import { queryQueue } from "./query.js";
+import { queryCase, queryQueue } from "./query.js";
 import { InboxStore, type StoredCase } from "./store.js";
 
 /**
@@ -172,5 +172,41 @@ describe("stronicowanie kolejki", () => {
       NOW,
     );
     expect(queryQueue(store, { now: NOW, state: "all" }).completeView).toBe(false);
+  });
+});
+
+/**
+ * Odczyt pojedynczej sprawy.
+ *
+ * Poprzednia droga budowała stronę pięciuset spraw i szukała w niej jednej.
+ * Sprawa spoza tej strony — starsza albo zepchnięta świeższym ruchem — nie
+ * dawała się otworzyć mimo że siedziała w magazynie. Kolejka rośnie, więc to
+ * była usterka z odroczonym zapłonem: działała, dopóki firma była mała.
+ */
+describe("odczyt pojedynczej sprawy", () => {
+  it("otwiera sprawe POZA pierwsza strona kolejki", () => {
+    const store = freshStore();
+    seed(store, 640);
+
+    // Sprawa numer 600 jest daleko poza oknem 500 rekordów.
+    const far = queryCase(store, "ic_0600", NOW);
+    expect(far?.case.caseId).toBe("ic_0600");
+
+    // Kontrola: ta sama sprawa faktycznie nie mieści się na pierwszej stronie.
+    const page = queryQueue(store, { now: NOW, state: "all", limit: 500 });
+    expect(page.cases.some((entry) => entry.caseId === "ic_0600")).toBe(false);
+  });
+
+  it("nieistniejaca sprawa to null, nie pusty rekord", () => {
+    const store = freshStore();
+    seed(store, 3);
+    expect(queryCase(store, "ic_9999", NOW)).toBeNull();
+  });
+
+  it("bez trybu tresci nie oddaje podgladu wiadomosci", () => {
+    const store = freshStore();
+    seed(store, 1);
+    const found = queryCase(store, "ic_0000", NOW);
+    expect(found?.case.preview ?? null).toBeNull();
   });
 });
