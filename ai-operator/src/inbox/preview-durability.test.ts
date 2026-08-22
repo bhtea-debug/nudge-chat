@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ParsedRecord } from "../mail/imap.js";
 import type { InboxConfig } from "./config.js";
 import { handleMetaWebhook } from "./http.js";
@@ -302,6 +302,46 @@ describe("webhook Meta nie potwierdza przed trwalym zapisem", () => {
     // Bez trwałej projekcji wiadomość byłaby, a sprawa jej nie widziała.
     expect(record!.requiresResponse).toBe(true);
     expect(record!.lastIncomingMessageId).toBe("m_durable_2");
+  });
+
+  it("AWARIA ZAPISU nie konczy sie odpowiedzia 200", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    const runtime = createRuntime(config(), store);
+    const { body, signature } = signedBody("m_awaria_zapisu");
+
+    /*
+     * Odwrotna galaz trwalosci.
+     *
+     * Test obok dowodzi, ze po 200 wiadomosc JEST na dysku. Ten dowodzi
+     * drugiej polowy tej samej zasady: jesli zapis sie nie uda, dostawca NIE
+     * moze dostac 200. Meta po 200 nie ponowi wiadomosci nigdy, wiec cicha
+     * porazka zapisu skasowalaby sprawe klienta bez zadnego sladu.
+     */
+    const awaria = new Error("dysk pelny");
+    vi.spyOn(store, "claimMessageDurable").mockImplementation(() => {
+      throw awaria;
+    });
+
+    expect(() =>
+      handleMetaWebhook({
+        runtime,
+        method: "POST",
+        params: new URLSearchParams(),
+        rawBody: body,
+        signatureHeader: signature,
+        now: NOW,
+      }),
+    ).toThrow(awaria);
+
+    // Serwer HTTP zamienia ten wyjatek na 500 (patrz `src/bin/mcp-http.ts`),
+    // czyli na kod, po ktorym Meta ponawia. Kluczowe jest to, ze NIE ma tu
+    // sciezki konczacej sie kodem 200.
+    vi.restoreAllMocks();
+    const afterCrash = new InboxStore({ dir });
+    expect(
+      afterCrash.hasMessage({ provider: "facebook", accountKey: "page-1" }, "m_awaria_zapisu"),
+    ).toBe(false);
   });
 
   it("bledny podpis NIE zapisuje niczego i nie dostaje 200", () => {

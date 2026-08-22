@@ -82,6 +82,55 @@ describe("stronicowanie kolejki", () => {
     expect(new Set(ids).size).toBe(437);
   });
 
+  it("601 spraw: KAZDA jest osiagalna, bez luk, duplikatow i 404", () => {
+    const store = freshStore();
+    // Prog z handoffu. Wybrany tak, zeby przekroczyc jednoczesnie limit widoku
+    // (3 strony po 200) i twardy sufit jednego odczytu (500).
+    seed(store, 601);
+
+    const { ids } = drain(store, 200);
+    expect(ids).toHaveLength(601);
+    expect(new Set(ids).size).toBe(601);
+
+    // Kazda z nich daje sie tez OTWORZYC pojedynczo, a nie tylko przewinac.
+    for (const caseId of ids) {
+      expect(queryCase(store, caseId, NOW)?.case.caseId).toBe(caseId);
+    }
+  });
+
+  it("przerwanie stronicowania zostawia JAWNY sygnal, a nie ucieta calosc", () => {
+    const store = freshStore();
+    seed(store, 601);
+
+    /*
+     * Widok ma sufit stron. Symulujemy dokladnie to, co robi interfejs:
+     * bierze trzy strony i przestaje. Wynik NIE MOZE wygladac jak komplet.
+     */
+    const collected: string[] = [];
+    let cursor: string | null = null;
+    let lastPage = queryQueue(store, { now: NOW, state: "all", limit: 200 });
+    for (let page = 0; page < 3; page += 1) {
+      collected.push(...lastPage.cases.map((entry) => entry.caseId));
+      cursor = lastPage.nextCursor;
+      if (!lastPage.truncated || !cursor) break;
+      if (page < 2) lastPage = queryQueue(store, { now: NOW, state: "all", limit: 200, cursor });
+    }
+
+    expect(collected).toHaveLength(600);
+    // Kolejka ZNA swoj prawdziwy rozmiar, wiec widok ma czym powiedziec
+    // „pokazuje 600 z 601", zamiast milczec.
+    expect(lastPage.count).toBe(601);
+    expect(lastPage.truncated).toBe(true);
+    expect(lastPage.nextCursor).toBeTruthy();
+
+    // Sprawa, ktora nie zmiescila sie w suficie, nadal daje sie otworzyc
+    // bezposrednio: obciecie dotyczy WIDOKU, nie dostepnosci.
+    const missing = queryQueue(store, { now: NOW, state: "all", limit: 200, cursor })
+      .cases[0]!.caseId;
+    expect(collected).not.toContain(missing);
+    expect(queryCase(store, missing, NOW)?.case.caseId).toBe(missing);
+  });
+
   it("pierwsza strona jawnie mówi, że nie jest całością", () => {
     const store = freshStore();
     seed(store, 437);
