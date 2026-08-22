@@ -7,6 +7,7 @@ import {
   markerStillValid,
   prepareAttempt,
 } from "./ledger.js";
+import { recordOutgoingMessage } from "./record.js";
 import { replySubject, sendViaResend, type ResendMailbox, type ResendResult } from "./resend.js";
 import { sendViaMeta, type MetaSendAccount, type MetaSendResult } from "./meta-send.js";
 
@@ -120,6 +121,22 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
 
   if (result.status === "sent") {
     finishSent(store, requestId, result.externalMessageId, request.now());
+    /*
+     * Odpowiedź staje się częścią wątku.
+     *
+     * Bez tego kroku ledger wiedział o wysyłce, a wątek nie: sprawa dalej
+     * „wymagała reakcji", w historii nie było naszej wiadomości, a kolejny
+     * odczyt wyglądał jak klient bez odpowiedzi. Późniejsze echo albo kopia
+     * z folderu wysłanych trafia w ten sam identyfikator i jest wchłaniana
+     * przez dedup zamiast tworzyć duplikat.
+     */
+    recordOutgoingMessage({
+      store,
+      attempt: started.attempt,
+      text: request.text,
+      externalMessageId: result.externalMessageId,
+      now: request.now(),
+    });
     return { status: "sent", requestId, externalMessageId: result.externalMessageId };
   }
   if (result.status === "failed") {

@@ -68,6 +68,14 @@ export interface InboxConfig {
    * policzy, ile wiadomości mieści się w oknie, i nie zapisze ani jednej.
    */
   readonly backfillMode: "preview" | "import";
+  /**
+   * Domeny firmowe. Korespondencja z nich NIE jest sprawą klienta.
+   *
+   * Wyliczane z adresów skrzynek, żeby nie było trzeciego miejsca do
+   * aktualizacji, ale można je rozszerzyć jawnie (domena księgowości,
+   * druga marka).
+   */
+  readonly companyDomains: readonly string[];
 }
 
 function envKey(accountKey: string): string {
@@ -144,6 +152,13 @@ export function loadInboxConfig(): InboxConfig {
   const tickFirstDelay = Number(value("INBOX_TICK_FIRST_DELAY_MS") ?? "25000");
   const tickInterval = Number(value("INBOX_TICK_INTERVAL_MS") ?? "300000");
   const backfillMode = value("INBOX_BACKFILL_MODE") === "import" ? "import" : "preview";
+  const extraDomains = (value("INBOX_COMPANY_DOMAINS") ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase().replace(/^@/, ""))
+    .filter((entry) => entry.length > 0);
+  const mailboxDomains = email
+    .map((source) => source.address.split("@")[1]?.toLowerCase())
+    .filter((entry): entry is string => Boolean(entry));
 
   return {
     enabled: (value("INBOX_ENABLED") ?? "false") === "true",
@@ -165,6 +180,7 @@ export function loadInboxConfig(): InboxConfig {
     tickIntervalMs:
       Number.isFinite(tickInterval) && tickInterval >= 1_000 ? Math.floor(tickInterval) : 300_000,
     backfillMode,
+    companyDomains: [...new Set([...mailboxDomains, ...extraDomains])],
   };
 }
 

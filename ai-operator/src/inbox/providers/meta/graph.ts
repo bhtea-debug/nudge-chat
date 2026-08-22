@@ -188,6 +188,7 @@ function normalizeConversation(
       // Wiadomość wychodząca z uzgodnienia jest tym samym, co echo webhooka:
       // dedup po `mid` sklei je w jeden rekord zamiast zrobić duplikat.
       isEcho: isOurs,
+      bulkHint: false,
       contentFingerprint: contentSha256([mid, String(sourceCreatedAt ?? ""), text].join(" ")).slice(0, 32),
     });
   }

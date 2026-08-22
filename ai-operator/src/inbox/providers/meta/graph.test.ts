@@ -108,6 +108,7 @@ describe("odczyt rozmow z Graph API", () => {
       pendingAction: false,
       classifierVersion: CLASSIFIER_VERSION,
       classificationReason: "customer_message",
+      needsReview: false,
       sourceClosed: false,
       hasAttachments: false,
     };

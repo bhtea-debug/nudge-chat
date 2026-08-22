@@ -206,6 +206,8 @@ export function normalizeMetaPayload(
           rfcInReplyTo: null,
           rfcReferences: [],
           isEcho,
+          // Meta nie ma nagłówków RFC; masowość rozpoznajemy tylko dla poczty.
+          bulkHint: false,
           contentFingerprint: contentSha256(
             [message.mid, String(sourceCreatedAt ?? ""), text].join("\u0000"),
           ).slice(0, 32),

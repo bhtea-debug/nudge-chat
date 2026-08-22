@@ -47,6 +47,7 @@ function seed(store: InboxStore, count: number): void {
       pendingAction: false,
       classifierVersion: CLASSIFIER_VERSION,
       classificationReason: "customer_message",
+      needsReview: false,
       sourceClosed: false,
       hasAttachments: false,
     };
@@ -130,6 +131,7 @@ describe("stronicowanie kolejki", () => {
         pendingAction: false,
         classifierVersion: CLASSIFIER_VERSION,
         classificationReason: "customer_message",
+        needsReview: false,
         sourceClosed: false,
         hasAttachments: false,
       });

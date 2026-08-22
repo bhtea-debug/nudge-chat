@@ -13,6 +13,7 @@ import type { InboxStore, StoredCase } from "./store.js";
 
 export interface ProjectOptions {
   readonly internalSenders?: readonly string[];
+  readonly companyDomains?: readonly string[];
   readonly bulkHint?: boolean;
   readonly sourceClosed?: boolean;
   readonly orderRef?: string | null;
@@ -38,6 +39,7 @@ export function projectCase(
       messages,
       sourceClosed,
       internalSenders: options.internalSenders,
+      companyDomains: options.companyDomains,
       bulkHint: options.bulkHint,
     });
   } catch {
@@ -67,6 +69,7 @@ export function projectCase(
     pendingAction: classification.pendingAction,
     classifierVersion: CLASSIFIER_VERSION,
     classificationReason: classification.reason,
+    needsReview: classification.needsReview,
     sourceClosed,
     hasAttachments: messages.some((message) => message.attachments.length > 0),
   };

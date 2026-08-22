@@ -2,7 +2,7 @@ import { ImapMailProvider } from "../mail/imap.js";
 import { loadInboxConfig, type InboxConfig, type InboxEmailSource } from "./config.js";
 import type { SourceKey } from "./contract.js";
 import { recordFailure, recordSuccess, sanitizeMessage, type FailureKind } from "./health.js";
-import { syncEmailAccount, type EmailSyncResult } from "./providers/email/sync.js";
+import { syncEmailAccount, syncSentFolder, type EmailSyncResult } from "./providers/email/sync.js";
 import { InboxStore } from "./store.js";
 import { WebhookDedup } from "./outbound/webhooks.js";
 import { fetchConversations, GraphError } from "./providers/meta/graph.js";
@@ -107,6 +107,7 @@ export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRun
           mode: reconcile ? "reconcile" : "incremental",
           backfillDays: config.backfillDays,
           backfillMode: config.backfillMode,
+          companyDomains: config.companyDomains,
           signal,
         });
         email.push(result);
@@ -142,6 +143,36 @@ export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRun
           });
         } else {
           recordSuccess(state, { key, label: source.label, active: true }, now);
+        }
+
+        /*
+         * Folder wysłanych: odpowiedzi udzielone POZA kanałem.
+         *
+         * Ktoś odpisze z telefonu albo z klienta pocztowego i kolejka nie ma
+         * skąd o tym wiedzieć — pokazywałaby sprawę jako czekającą na reakcję,
+         * choć klient odpowiedź dostał wczoraj.
+         */
+        if (source.sentFolder) {
+          try {
+            const sent = await syncSentFolder({
+              account: source,
+              store: state,
+              reader: readerFor(source),
+              now,
+              backfillDays: config.backfillDays,
+              companyDomains: config.companyDomains,
+              signal,
+            });
+            if (sent) email.push(sent);
+          } catch (error) {
+            // Folder wysłanych jest sygnałem uzupełniającym: jego awaria nie
+            // ma prawa zepsuć odczytu skrzynki odbiorczej.
+            failures.push({
+              source: `email:${source.accountKey}#sent`,
+              kind: "error",
+              message: sanitizeMessage(error instanceof Error ? error.message : String(error)),
+            });
+          }
         }
       } catch (error) {
         const message = sanitizeMessage(error instanceof Error ? error.message : String(error));

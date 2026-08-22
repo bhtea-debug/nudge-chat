@@ -81,6 +81,14 @@ export const InboxMessage = z
     /** Echo własnej wysyłki rozpoznane po webhooku/ledgerze. */
     isEcho: z.boolean().default(false),
     /**
+     * Wiadomość masowa/automatyczna wg NAGŁÓWKÓW RFC, nie wg nazwy nadawcy.
+     *
+     * Sygnał był liczony w adapterze poczty i wyrzucany po drodze, więc
+     * klasyfikator nie miał najmocniejszego dostępnego dowodu i przepuszczał
+     * newslettery do kolejki obsługi klienta.
+     */
+    bulkHint: z.boolean().default(false),
+    /**
      * Odcisk treści: nadawca, czas, temat, ciało. Rozstrzyga kolizję
      * identyfikatorów, gdy nadawca wysyła serię z jednym `Message-ID`.
      * Ten sam odcisk to ta sama wiadomość i dedup ma ją pochłonąć; inny odcisk
@@ -110,6 +118,9 @@ export const ClassificationReason = z.enum([
   "low_confidence_fail_open",
   "classifier_error_fail_open",
   "source_closed",
+  "bounce",
+  "auto_reply",
+  "needs_review",
 ]);
 export type ClassificationReason = z.infer<typeof ClassificationReason>;
 
@@ -133,6 +144,14 @@ export const InboxCase = z
     pendingAction: z.boolean(),
     classifierVersion: z.number().int().nonnegative(),
     classificationReason: ClassificationReason,
+    /**
+     * Sprawa niejednoznaczna.
+     *
+     * Fail-open zostaje — sprawa jest w kolejce — ale musi być widoczna jako
+     * „do weryfikacji", inaczej zalewa główną listę bez żadnego rozróżnienia
+     * i zespół uczy się jej nie ufać.
+     */
+    needsReview: z.boolean().default(false),
     sourceClosed: z.boolean(),
     hasAttachments: z.boolean(),
   })

@@ -17,8 +17,16 @@ export interface ClassificationInput {
   /** Chronologicznie, od najstarszej. */
   readonly messages: readonly InboxMessage[];
   readonly sourceClosed: boolean;
-  /** Adresy/nadawcy uznani za wewnętrznych (własna domena, koledzy z firmy). */
+  /**
+   * WSZYSTKIE firmowe adresy, nie tylko bieżąca skrzynka.
+   *
+   * Wcześniej lista zawierała jeden adres, więc korespondencja `hurt@` do
+   * `sklep@` trafiała do kolejki jako sprawa klienta — a to jest rozmowa
+   * dwóch osób z tej samej firmy.
+   */
   readonly internalSenders?: readonly string[];
+  /** Domeny firmowe. Tańsze i pewniejsze od wyliczania każdego adresu. */
+  readonly companyDomains?: readonly string[];
   /** Nagłówki RFC wskazujące wysyłkę masową; ustawia je adapter poczty. */
   readonly bulkHint?: boolean;
 }
@@ -27,6 +35,13 @@ export interface ClassificationResult {
   readonly requiresResponse: boolean;
   readonly pendingAction: boolean;
   readonly reason: ClassificationReason;
+  /**
+   * Sprawa niejednoznaczna: zostaje w kolejce, ale oznaczona.
+   *
+   * Fail-open bez tej flagi zalewa główną listę i uczy zespół, żeby jej nie
+   * ufać — a wtedy przeoczona reklamacja wraca tylnymi drzwiami.
+   */
+  readonly needsReview: boolean;
 }
 
 /** Całe, znane frazy potwierdzenia. Dopasowanie jest do CAŁEJ treści. */
@@ -71,6 +86,28 @@ const CUSTOMER_WAITING = [
   "bede czekac",
   "czekam wiec",
   "czekam",
+];
+
+/** Powiadomienia o niedoreczeniu. Nigdy nie sa sprawa klienta. */
+const BOUNCE_MARKERS = [
+  "delivery status notification",
+  "undelivered mail returned to sender",
+  "mail delivery failed",
+  "returned mail",
+  "delivery has failed",
+  "nie dostarczono",
+  "niedostarczona wiadomosc",
+];
+
+/** Autorespondery. Rozpoznawane po temacie ORAZ po naglowkach RFC. */
+const AUTO_REPLY_MARKERS = [
+  "automatyczna odpowiedz",
+  "automatic reply",
+  "out of office",
+  "poza biurem",
+  "urlop",
+  "autoreply",
+  "wiadomosc automatyczna",
 ];
 
 const AUTOMATED_SUBJECT = [
@@ -125,6 +162,37 @@ function looksAutomated(message: InboxMessage): boolean {
   return AUTOMATED_SUBJECT.some((needle) => subject.includes(normalizeForMatch(needle)));
 }
 
+/**
+ * Czy nadawca jest z firmy.
+ *
+ * Po adresie ALBO po domenie. Sama lista adresów nie wystarcza: nowa osoba
+ * dostaje skrzynkę i od razu trafia do kolejki jako klient.
+ */
+function isInternal(
+  author: string | null,
+  addresses: ReadonlySet<string>,
+  domains: readonly string[],
+): boolean {
+  if (!author) return false;
+  const value = author.toLowerCase();
+  if (addresses.has(value)) return true;
+  const at = value.lastIndexOf("@");
+  if (at < 0) return false;
+  const domain = value.slice(at + 1);
+  return domains.includes(domain);
+}
+
+function matchesSubject(message: InboxMessage, needles: readonly string[]): boolean {
+  const subject = normalizeForMatch(message.subject ?? "");
+  return needles.some((needle) => subject.includes(normalizeForMatch(needle)));
+}
+
+function matchesSubjectOrBody(message: InboxMessage, needles: readonly string[]): boolean {
+  if (matchesSubject(message, needles)) return true;
+  const body = normalizeForMatch(message.body);
+  return needles.some((needle) => body.includes(normalizeForMatch(needle)));
+}
+
 function matchesAny(text: string, needles: readonly string[]): boolean {
   const normalized = normalizeForMatch(text);
   return needles.some((needle) => normalized.includes(needle));
@@ -138,37 +206,80 @@ function matchesAny(text: string, needles: readonly string[]): boolean {
 export function classifyCase(input: ClassificationInput): ClassificationResult {
   const { messages } = input;
   if (messages.length === 0) {
-    return { requiresResponse: false, pendingAction: false, reason: "customer_message" };
+    return { requiresResponse: false, pendingAction: false, reason: "customer_message", needsReview: false };
   }
 
   const incoming = messages.filter((message) => message.direction === "incoming" && !message.isEcho);
   if (incoming.length === 0) {
-    return { requiresResponse: false, pendingAction: false, reason: "customer_message" };
+    return { requiresResponse: false, pendingAction: false, reason: "customer_message", needsReview: false };
   }
 
   const internal = new Set((input.internalSenders ?? []).map((value) => value.toLowerCase()));
-  const external = incoming.filter(
-    (message) => !message.authorLabel || !internal.has(message.authorLabel.toLowerCase()),
-  );
+  const domains = (input.companyDomains ?? []).map((value) => value.toLowerCase().replace(/^@/, ""));
+  const external = incoming.filter((message) => !isInternal(message.authorLabel, internal, domains));
   if (external.length === 0) {
-    return { requiresResponse: false, pendingAction: false, reason: "internal_sender" };
+    return {
+      requiresResponse: false,
+      pendingAction: false,
+      reason: "internal_sender",
+      needsReview: false,
+    };
   }
 
   const last = external[external.length - 1]!;
 
-  // Automat rozpoznajemy z nagłówków i tematu, nigdy z nazwy nadawcy: firma
-  // z jednym adresem "biuro@" pisze i marketing, i reklamacje.
-  if (input.bulkHint === true && !containsQuestion(last.body)) {
-    return { requiresResponse: false, pendingAction: false, reason: "bulk_or_marketing" };
+  /*
+   * Niedoręczenie jest faktem technicznym, nie sprawą klienta.
+   *
+   * Rozpoznajemy je PRZED pytaniem, bo raport bounce potrafi zacytować treść
+   * oryginalnej wiadomości razem ze znakiem zapytania i przez to udawać
+   * pytanie klienta.
+   */
+  if (matchesSubjectOrBody(last, BOUNCE_MARKERS)) {
+    return { requiresResponse: false, pendingAction: false, reason: "bounce", needsReview: false };
+  }
+
+  // Autoresponder: temat albo nagłówek RFC `Auto-Submitted`/`Precedence`.
+  if (matchesSubject(last, AUTO_REPLY_MARKERS) || (last.bulkHint && matchesSubject(last, AUTO_REPLY_MARKERS))) {
+    return { requiresResponse: false, pendingAction: false, reason: "auto_reply", needsReview: false };
+  }
+
+  // Masowość i automaty rozpoznajemy z nagłówków i tematu, nigdy z nazwy
+  // nadawcy: firma z jednym adresem "biuro@" pisze i marketing, i reklamacje.
+  const bulk = input.bulkHint === true || last.bulkHint;
+  if (bulk && !containsQuestion(last.body)) {
+    return {
+      requiresResponse: false,
+      pendingAction: false,
+      reason: "bulk_or_marketing",
+      needsReview: false,
+    };
   }
   if (looksAutomated(last) && !containsQuestion(last.body)) {
-    return { requiresResponse: false, pendingAction: false, reason: "automated_report" };
+    return {
+      requiresResponse: false,
+      pendingAction: false,
+      reason: "automated_report",
+      needsReview: false,
+    };
+  }
+
+  /*
+   * Wiadomość masowa Z pytaniem.
+   *
+   * Newsletter z „czy wiesz, że..." wygląda jak pytanie, ale nim nie jest.
+   * Zamiast zgadywać, zostawiamy sprawę w kolejce i oznaczamy do weryfikacji:
+   * człowiek rozstrzygnie w dwie sekundy, a my nie zgubimy prawdziwego
+   * pytania wysłanego z systemu mailingowego kontrahenta.
+   */
+  if (bulk) {
+    return { requiresResponse: true, pendingAction: false, reason: "needs_review", needsReview: true };
   }
 
   const pendingAction = detectPendingAction(messages);
 
   if (input.sourceClosed) {
-    return { requiresResponse: false, pendingAction, reason: "source_closed" };
+    return { requiresResponse: false, pendingAction, reason: "source_closed", needsReview: false };
   }
 
   /**
@@ -178,7 +289,7 @@ export function classifyCase(input: ClassificationInput): ClassificationResult {
    * czekania, więc pytanie ani załącznik nie wpadną w tę gałąź.
    */
   if (pendingAction) {
-    return { requiresResponse: false, pendingAction: true, reason: "pending_action" };
+    return { requiresResponse: false, pendingAction: true, reason: "pending_action", needsReview: false };
   }
 
   /**
@@ -193,17 +304,17 @@ export function classifyCase(input: ClassificationInput): ClassificationResult {
       : external.filter((message) => messageTime(message) > lastOutgoingAt);
 
   if (afterOurReply.length === 0) {
-    return { requiresResponse: false, pendingAction, reason: "answered" };
+    return { requiresResponse: false, pendingAction, reason: "answered", needsReview: false };
   }
 
   // Klient odezwał się po odpowiedzi. Sprawa zostaje zamknięta tylko wtedy,
   // gdy KAŻDA z tych wiadomości jest całą, znaną frazą potwierdzenia.
   // Podziękowanie z doklejonym pytaniem nie jest podziękowaniem.
   if (lastOutgoingAt !== null && afterOurReply.every(isThanksOnly)) {
-    return { requiresResponse: false, pendingAction, reason: "thanks_only" };
+    return { requiresResponse: false, pendingAction, reason: "thanks_only", needsReview: false };
   }
 
-  return { requiresResponse: true, pendingAction, reason: "customer_message" };
+  return { requiresResponse: true, pendingAction, reason: "customer_message", needsReview: false };
 }
 
 function messageTime(message: InboxMessage): number {
@@ -254,5 +365,8 @@ export function failOpenClassification(): ClassificationResult {
     requiresResponse: true,
     pendingAction: false,
     reason: "classifier_error_fail_open",
+    // Awaria oceny to nie jest zwykła sprawa klienta: musi być widoczna
+    // jako wymagająca sprawdzenia, a nie wtopiona w kolejkę.
+    needsReview: true,
   };
 }

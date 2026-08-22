@@ -57,6 +57,9 @@ export function toInboxCase(input: CustomerCase): InboxCase {
     // Ocena pochodzi z TeaBrew i nie liczymy jej drugi raz: dwa klasyfikatory
     // na jednym źródle to dwie różne prawdy o tej samej sprawie.
     classificationReason: requiresResponse ? "customer_message" : "answered",
+    // TeaBrew ma własny, konserwatywny klasyfikator; nie dokładamy tu drugiej
+    // oceny „do weryfikacji", bo dwie prawdy o jednej sprawie to żadna prawda.
+    needsReview: false,
     sourceClosed: input.responseState === "closed",
     hasAttachments: input.hasAttachments,
   };
@@ -97,6 +100,7 @@ export function toInboxMessage(
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
+    bulkHint: false,
     contentFingerprint: contentSha256([message.id, String(message.createdAt ?? ""), body].join(" ")).slice(0, 32),
   };
 }

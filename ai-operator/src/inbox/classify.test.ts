@@ -23,6 +23,7 @@ function message(partial: Partial<InboxMessage> & { body: string }): InboxMessag
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
+    bulkHint: false,
     contentFingerprint: `fp-${clock}`,
     ...partial,
   };
@@ -86,28 +87,65 @@ describe("klasyfikacja wiadomosci klienta", () => {
       ],
       sourceClosed: false,
     });
-    expect(result.reason).toBe("automated_report");
+    // Autoresponder ma teraz wlasna, dokladniejsza kategorie.
+    expect(result.reason).toBe("auto_reply");
   });
 
-  it("faktura bez pytania nie alarmuje, ale faktura z pytaniem juz tak", () => {
+  it("faktura bez pytania nie alarmuje, ale faktura z pytaniem trafia do weryfikacji", () => {
+    // Faktury z systemu ksiegowego niosa naglowki automatu (Auto-Submitted).
     expect(
       classifyCase({
-        messages: [message({ body: "W zalaczeniu faktura.", subject: "Delivery Status Notification" })],
+        messages: [message({ body: "W zalaczeniu faktura.", subject: "Faktura 12/2026", bulkHint: true })],
         sourceClosed: false,
       }).requiresResponse,
     ).toBe(false);
 
-    expect(
-      classifyCase({
-        messages: [
-          message({
-            body: "W zalaczeniu faktura. Czy mozecie poprawic NIP?",
-            subject: "Delivery Status Notification",
-          }),
-        ],
-        sourceClosed: false,
-      }).requiresResponse,
-    ).toBe(true);
+    // Wiadomosc masowa Z pytaniem: nie zgadujemy, zostawiamy do sprawdzenia.
+    const withQuestion = classifyCase({
+      messages: [
+        message({
+          body: "W zalaczeniu faktura. Czy mozecie poprawic NIP?",
+          subject: "Faktura 12/2026",
+          bulkHint: true,
+        }),
+      ],
+      sourceClosed: false,
+    });
+    expect(withQuestion.requiresResponse).toBe(true);
+    expect(withQuestion.needsReview).toBe(true);
+  });
+
+  it("powiadomienie o niedoreczeniu nie jest sprawa klienta, nawet gdy cytuje pytanie", () => {
+    const result = classifyCase({
+      messages: [
+        message({
+          subject: "Delivery Status Notification (Failure)",
+          body: "Nie dostarczono. Oryginalna tresc: Czy mozecie poprawic NIP?",
+        }),
+      ],
+      sourceClosed: false,
+    });
+    expect(result.requiresResponse).toBe(false);
+    expect(result.reason).toBe("bounce");
+  });
+
+  it("korespondencja miedzy firmowymi skrzynkami nie jest sprawa klienta", () => {
+    const result = classifyCase({
+      messages: [message({ body: "Przekazuje zamowienie hurtowe.", authorLabel: "hurt@brownhouseandtea.pl" })],
+      sourceClosed: false,
+      companyDomains: ["brownhouseandtea.pl"],
+    });
+    expect(result.reason).toBe("internal_sender");
+  });
+
+  it("domena firmowa dziala takze dla adresu spoza listy", () => {
+    const result = classifyCase({
+      messages: [message({ body: "Nowa osoba, pierwszy dzien.", authorLabel: "nowa.osoba@brownhouseandtea.pl" })],
+      sourceClosed: false,
+      internalSenders: ["sklep@brownhouseandtea.pl"],
+      companyDomains: ["brownhouseandtea.pl"],
+    });
+    expect(result.reason).toBe("internal_sender");
   });
 
   it("wiadomosc wewnetrzna nie alarmuje", () => {
@@ -246,6 +284,8 @@ describe("klasyfikacja wiadomosci klienta", () => {
       requiresResponse: true,
       pendingAction: false,
       reason: "classifier_error_fail_open",
+      // Awaria oceny jest widoczna jako do sprawdzenia, a nie wtopiona w kolejke.
+      needsReview: true,
     });
   });
 

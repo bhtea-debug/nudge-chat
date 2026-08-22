@@ -67,6 +67,7 @@ function config(overrides: Partial<InboxConfig> = {}): InboxConfig {
     tickFirstDelayMs: 100,
     tickIntervalMs: 1_000,
     backfillMode: "preview",
+    companyDomains: ["brownhouseandtea.pl"],
     ...overrides,
   };
 }
@@ -95,6 +96,7 @@ function seedCase(store: InboxStore, overrides: Partial<StoredCase> = {}): Store
     pendingAction: false,
     classifierVersion: CLASSIFIER_VERSION,
     classificationReason: "customer_message",
+    needsReview: false,
     sourceClosed: false,
     hasAttachments: false,
     ...overrides,
@@ -122,6 +124,7 @@ function seedMessage(store: InboxStore, overrides: Partial<InboxMessage> = {}): 
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
+    bulkHint: false,
     contentFingerprint: "fp1",
     ...overrides,
   });

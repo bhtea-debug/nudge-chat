@@ -48,6 +48,7 @@ function seedCase(store: InboxStore, overrides: Partial<StoredCase> = {}): Store
     pendingAction: false,
     classifierVersion: CLASSIFIER_VERSION,
     classificationReason: "customer_message",
+    needsReview: false,
     sourceClosed: false,
     hasAttachments: false,
     ...overrides,
@@ -347,6 +348,7 @@ describe("Resend", () => {
       rfcInReplyTo: null,
       rfcReferences: ["root@example.com"],
       isEcho: false,
+      bulkHint: false,
       contentFingerprint: "fp",
     };
 

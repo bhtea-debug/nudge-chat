@@ -57,6 +57,7 @@ function message(id: string, overrides: Partial<InboxMessage> = {}): InboxMessag
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
+    bulkHint: false,
     contentFingerprint: `fp-${id}`,
     ...overrides,
   };

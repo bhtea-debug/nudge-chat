@@ -84,6 +84,8 @@ export interface EmailSyncOptions {
   readonly backfillMode?: "preview" | "import";
   /** Ile wiadomości pobieramy naraz. Chroni pamięć procesu. */
   readonly batchSize?: number;
+  /** Domeny firmowe — poczta z nich nie jest sprawą klienta. */
+  readonly companyDomains?: readonly string[];
 }
 
 export interface EmailSyncResult {
@@ -243,6 +245,7 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
   for (const caseId of touched) {
     const projected = projectCase(store, caseId, {
       internalSenders: [account.address],
+      companyDomains: options.companyDomains,
     });
     if (projected) store.upsertCase(projected);
   }
@@ -282,6 +285,107 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
     previewCount,
     previewOnly,
     batches: ranges.length,
+  };
+}
+
+/**
+ * Odczyt folderu wysłanych.
+ *
+ * Potrzebny, bo odpowiedzi wychodzą też POZA kanałem: ktoś odpisze
+ * z telefonu, z klienta pocztowego, z innego urządzenia. Bez tego kroku
+ * kolejka pokazywałaby taką sprawę jako czekającą na reakcję, choć klient
+ * odpowiedź dostał wczoraj.
+ *
+ * Kursor jest osobny od skrzynki odbiorczej: to inny folder i inna przestrzeń
+ * UID. Wiadomości wysłane przez kanał są tu wchłaniane przez dedup — o ile
+ * mają ten sam `Message-ID`, a jeśli nie, rozpozna je odcisk treści.
+ */
+export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSyncResult | null> {
+  const { account, store, reader, now } = options;
+  if (!account.sentFolder) return null;
+
+  const key: SourceKey = { provider: "email", accountKey: `${account.accountKey}#sent` };
+  const rawCursor = store.getCursor(key);
+  const cursorBefore = decodeCursor(rawCursor);
+  const state = await reader.mailboxState(account.sentFolder, options.signal);
+  const uidValidityChanged = cursorBefore !== null && cursorBefore.uidValidity !== state.uidValidity;
+  const effectiveCursor = cursorBefore === null || uidValidityChanged ? null : cursorBefore;
+
+  // Pierwszy odczyt folderu wysłanych bierze tylko okno historii: nie ma
+  // powodu wciągać własnej korespondencji sprzed lat.
+  let range: string;
+  if (effectiveCursor === null && reader.uidsSince) {
+    const days = Math.max(1, options.backfillDays ?? DEFAULT_BACKFILL_DAYS);
+    const uids = await reader.uidsSince(
+      new Date(now - days * 24 * 60 * 60_000),
+      account.sentFolder,
+      options.signal,
+    );
+    if (uids.length === 0) return null;
+    range = uids.join(",");
+  } else {
+    range = incrementalRange(effectiveCursor, options.overlap ?? DEFAULT_OVERLAP);
+  }
+
+  const { records, problems } = await reader.fetchRange(range, account.sentFolder, options.signal);
+  const { threadIndex, subjectIndex } = buildIndexes(store, { provider: "email", accountKey: account.accountKey });
+
+  let stored = 0;
+  let duplicates = 0;
+  let highestUid = effectiveCursor?.lastUid ?? 0;
+  const touched = new Set<string>();
+
+  for (const record of records) {
+    const uid = uidOf(record);
+    if (uid === null) continue;
+    const normalized = normalizeEmail({
+      record,
+      account,
+      uid,
+      uidValidity: state.uidValidity,
+      now,
+      threadIndex,
+      subjectIndex,
+    });
+    // Wszystko w tym folderze jest nasze, niezależnie od tego, co mówi From.
+    const outgoing: InboxMessage = { ...normalized.message, direction: "outgoing" };
+
+    if (store.hasMessage({ provider: "email", accountKey: account.accountKey }, outgoing.externalMessageId)) {
+      duplicates += 1;
+    } else if (store.claimMessage(outgoing)) {
+      stored += 1;
+      touched.add(outgoing.caseId);
+    }
+    if (uid > highestUid) highestUid = uid;
+  }
+
+  for (const caseId of touched) {
+    const projected = projectCase(store, caseId, {
+      internalSenders: [account.address],
+      companyDomains: options.companyDomains,
+    });
+    if (projected) store.upsertCase(projected);
+  }
+
+  if (problems.length === 0 && highestUid > 0) {
+    store.commitCursor(key, encodeCursor({ uidValidity: state.uidValidity, lastUid: highestUid }));
+  }
+
+  return {
+    accountKey: key.accountKey,
+    fetched: records.length,
+    stored,
+    duplicates,
+    collisions: 0,
+    problems,
+    cursorBefore: rawCursor,
+    cursorAfter: store.getCursor(key),
+    uidValidityChanged,
+    touchedCaseIds: [...touched],
+    backfill: cursorBefore === null,
+    previewCount: null,
+    previewOnly: false,
+    batches: 1,
   };
 }
 

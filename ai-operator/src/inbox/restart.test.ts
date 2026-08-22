@@ -48,6 +48,7 @@ function message(partial: Partial<InboxMessage> = {}): InboxMessage {
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
+    bulkHint: false,
     contentFingerprint: "fp1",
     ...partial,
   };
@@ -71,6 +72,7 @@ function seedCase(store: InboxStore, overrides: Partial<StoredCase> = {}): Store
     pendingAction: false,
     classifierVersion: CLASSIFIER_VERSION,
     classificationReason: "customer_message",
+    needsReview: false,
     sourceClosed: false,
     hasAttachments: false,
     ...overrides,
@@ -163,6 +165,7 @@ describe("restart w polowie operacji", () => {
       externalMessageId: "m_echo",
       direction: "outgoing",
       isEcho: true,
+      bulkHint: false,
       body: "Juz wysylamy",
       rfcMessageId: null,
     });

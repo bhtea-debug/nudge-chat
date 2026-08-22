@@ -48,6 +48,7 @@ function config(overrides: Partial<InboxConfig> = {}): InboxConfig {
     tickFirstDelayMs: 100,
     tickIntervalMs: 1_000,
     backfillMode: "preview",
+    companyDomains: ["brownhouseandtea.pl"],
     ...overrides,
   };
 }
@@ -77,6 +78,7 @@ function seedCase(store: InboxStore, overrides: Partial<StoredCase> = {}): Store
     pendingAction: false,
     classifierVersion: CLASSIFIER_VERSION,
     classificationReason: "customer_message",
+    needsReview: false,
     sourceClosed: false,
     hasAttachments: false,
     ...overrides,
@@ -105,6 +107,7 @@ function seedIncomingMessage(store: InboxStore): void {
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
+    bulkHint: false,
     contentFingerprint: "fp-seed",
   });
 }
@@ -158,6 +161,7 @@ describe("kontrakt HTTP kanalu", () => {
       rfcInReplyTo: null,
       rfcReferences: [],
       isEcho: false,
+      bulkHint: false,
       contentFingerprint: "fp1",
     });
 

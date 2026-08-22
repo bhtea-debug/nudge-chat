@@ -122,6 +122,8 @@ export function normalizeEmail(input: NormalizeInput): {
     rfcInReplyTo: inReplyTo,
     rfcReferences: references,
     isEcho: false,
+    // Sygnał z nagłówków RFC: List-Unsubscribe, Precedence, Auto-Submitted.
+    bulkHint: record.message.bulk,
     contentFingerprint: contentSha256(
       [from ?? "", record.message.date, record.message.subject, body.body].join("\u0000"),
     ).slice(0, 32),
