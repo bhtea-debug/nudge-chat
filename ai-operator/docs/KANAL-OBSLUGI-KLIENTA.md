@@ -30,6 +30,36 @@ omyłkowo, nawet jako narzędzie „tylko do przygotowania”. Test statyczny
 w `src/inbox/http.test.ts` pilnuje, że rejestr narzędzi AI nie zawiera nazw
 `send|reply|write|post|create|update|delete` i nie importuje modułu kanału.
 
+## Scheduler
+
+`InboxScheduler` startuje razem z serwerem HTTP i jest jedynym miejscem, które
+wywołuje `runtime.tick()`. Bez niego cała trwała synchronizacja stała w miejscu,
+a health i kolejka wyglądały normalnie — awaria wyglądająca jak działanie.
+
+- pierwszy przebieg po `INBOX_TICK_FIRST_DELAY_MS`, kolejne co
+  `INBOX_TICK_INTERVAL_MS`,
+- przebiegi się NIE nakładają; pominięcia są liczone (`skippedOverlaps`),
+- zamknięcie czeka na trwający przebieg, zamiast ucinać go w połowie partii,
+- `/health` wystawia `inbox.lastFullRunFinishedAt`, `consecutiveErrors`
+  i `running`: „brak nowych spraw" i „nic się nie synchronizuje" wyglądają
+  z zewnątrz identycznie i muszą być rozróżnialne.
+
+Dowodzi tego test integracyjny uruchamiający PRAWDZIWY entrypoint procesu
+i sprawdzający, że tick następuje **bez żadnego żądania HTTP**.
+
+## Pierwszy import
+
+Domyślnie **podgląd**: adapter liczy wiadomości w oknie `INBOX_BACKFILL_DAYS`
+i nie zapisuje ani jednej. Import wymaga jawnego `INBOX_BACKFILL_MODE=import`.
+
+Skan startowy pyta serwer o UID-y nie starsze niż okno (`uidsSince`), zamiast
+brać `1:*` — skrzynka z dziesięcioletnią historią trafiłaby inaczej w całości
+do pamięci i do kolejki, nieodwracalnie. Pobieranie idzie partiami po liście
+UID-ów, nie przedziałem `od:do`: po skasowanych wiadomościach przedział zwraca
+więcej, niż wybraliśmy.
+
+Podgląd **nie** zapala zielonego światła źródła: do kolejki nic nie trafiło.
+
 ## Niezawodność inbound: żadnej cichej utraty
 
 Nie obiecujemy „zero awarii” zewnętrznych usług. Obowiązuje słabszy, ale
@@ -67,8 +97,29 @@ wykryta, widoczna i odzyskiwalna**.
   „Reklamacja”.
 - Każda skrzynka ma własny sekret, własne połączenie, własny kursor i własne
   zdrowie.
-- Folder wysłanych służy **wyłącznie obserwacji**. Nigdy nie jest dowodem
-  wysyłki: Resend tam nie zapisuje, więc brak kopii nie znaczy „nie poszło”.
+- Folder wysłanych jest czytany OSOBNYM kursorem i wychwytuje odpowiedzi
+  udzielone poza kanałem (z telefonu, z klienta pocztowego). Bez tego kolejka
+  pokazywałaby sprawę jako czekającą, choć klient dostał odpowiedź wczoraj.
+  Nie jest natomiast dowodem wysyłki przez kanał: Resend tam nie zapisuje,
+  więc brak kopii nie znaczy „nie poszło”.
+
+### Dziennik
+
+Uszkodzony ogon dziennika jest **naprawiany przy starcie**, zanim cokolwiek
+zostanie dopisane. Bez tego następny append doklejałby się do niepełnej linii
+i przy kolejnym restarcie znikałyby OBIE części — razem z wiadomością, za którą
+stoi już kursor.
+
+- uszkodzone linie trafiają do pliku kwarantanny (`inbox.jsonl.damaged-N`),
+- dziennik jest przepisywany atomowo z samych poprawnych zdarzeń; obcięcie
+  zabrałoby też prawdziwe zdarzenia zapisane po uszkodzeniu,
+- ogon bez znaku końca linii jest niedokończonym zapisem NAWET wtedy, gdy
+  przypadkiem parsuje się poprawnie,
+- alarm integralności jest TRWAŁYM rekordem zdrowia i zdejmuje go wyłącznie
+  świadoma decyzja człowieka,
+- `fsync` przy kursorze, ledgerze i zdrowiu. Wiadomości nie: ich utrata przed
+  wymuszeniem kończy się powtórnym pobraniem, a `fsync` opróżnia cały bufor
+  pliku, więc zapis kursora utrwala też całą poprzedzającą partię.
 
 ### Meta
 
@@ -80,8 +131,23 @@ wykryta, widoczna i odzyskiwalna**.
   wyrzucone znika z historii, policzone jako przychodzące budzi zespół
   powiadomieniem o własnej odpowiedzi.
 - Instagram i Facebook mają osobne `accountKey`, zdrowie i kursory, nawet przy
-  jednej aplikacji Meta.
-- Wygasły token / brak uprawnień dają jawny stan `reconnect_required`.
+  jednej aplikacji Meta;
+- uzgodnienie przez Graph API: `GET /{PAGE-ID}/conversations?platform=...`,
+  stronicowanie z sufitem, okno czasowe. Źródło Meta jest zielone WYŁĄCZNIE po
+  udanym odczycie — nie za samo bycie skonfigurowanym.
+
+**Instagram wysyła i czyta przez PAGE ID połączonej strony**, a webhooki
+przychodzą z `entry.id` równym identyfikatorowi konta IG. To są dwa różne
+numery; pomylenie ich daje 404 przy wysyłce i nierozpoznane konto przy odbiorze.
+Dlatego konfiguracja ma osobne `INBOX_META_<ALIAS>_PAGE_ID`.
+
+Zweryfikowane w dokumentacji Meta 2026-08-22:
+`POST /{PAGE-ID}/messages`, token strony, `messaging_type: RESPONSE`, okno 24 h,
+pole webhooka `messages`, uprawnienia `pages_messaging`, `pages_show_list`,
+`instagram_manage_messages`, `business_management`.
+
+Wygasły token albo brak uprawnień dają jawny stan `reconnect_required`,
+a ograniczenie tempa jest od niego odróżniane.
 
 ## Świeżość
 
@@ -102,9 +168,17 @@ sukcesu.
    idempotencji, tylko ozdobą.
 5. Meta: **brak** wiarygodnej idempotencji, więc timeout/5xx = `uncertain`
    i zero automatycznych ponowień.
+   Kody 408, 425 i 429 też są niepewne, a nie „na pewno niewysłane": potrafią
+   przyjść już PO przyjęciu wiadomości przez dostawcę.
 6. `Wróć do edycji` anuluje wyłącznie stan `prepared`.
 7. Ręczne rozstrzygnięcie stanu niepewnego dopiero po 2 minutach i nie wymyśla
    zewnętrznego czasu wiadomości.
+8. Potwierdzony sukces **dopisuje wiadomość wychodzącą do wątku** i przelicza
+   sprawę. Bez tego ledger wiedział o wysyłce, a wątek nie.
+9. Odbiorca jest funkcją `caseId`, nigdy parametrem żądania. Konto nadawcze
+   musi należeć do źródła sprawy.
+10. Stany dostarczenia z webhooków są monotoniczne: spóźnione „dostarczono"
+    nie kasuje informacji o odbiciu.
 
 ## Konfiguracja
 
@@ -121,7 +195,12 @@ dysku efemerycznym znaczy kursory od zera po każdym deployu.
 npm run typecheck
 npm test
 npm run verify:clone
+npm run inbox:sprawdz   # kontrola konfiguracji Railway, bez wdrożenia
 ```
+
+`inbox:sprawdz` waliduje komplet zmiennych `INBOX_*`, wymaga trwałego wolumenu
+`/data`, sprawdza rozdzielność tokenów odczytu i wysyłki oraz osobne PAGE ID
+dla Instagrama. Nie wypisuje żadnej wartości sekretu.
 
 `verify:clone` sprawdza **zawartość commita**, nie katalogu roboczego.
 Nie uruchamiać `npm run wdroz`.
