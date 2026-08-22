@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,6 +16,7 @@ import {
   prepareAttempt,
   resolveUncertain,
 } from "./outbound/ledger.js";
+import { outgoingMessagePresent, restoreOutgoingMessage } from "./outbound/record.js";
 import { sendReply } from "./outbound/send.js";
 import { ingestMetaEvents } from "./providers/meta/ingest.js";
 
@@ -665,5 +666,72 @@ describe("restart w polowie operacji", () => {
     const lines = readFileSync(join(dir, "inbox.jsonl"), "utf8").trim().split("\n");
     expect(lines.length).toBeLessThan(10);
     expect(new InboxStore({ dir }).allMessages()).toHaveLength(30);
+  });
+  /**
+   * Restart w oknie MIEDZY trwalym zapisem wiadomosci a przeliczeniem sprawy.
+   *
+   * `recordOutgoingMessage` wymusza wiadomosc na dysk, a dopiero potem zapisuje
+   * przeliczona sprawe. Proces zabity dokladnie tutaj zostawia watek z nasza
+   * odpowiedzia, ale kolejke z „wymaga reakcji": nastepna osoba widzi klienta
+   * bez odpowiedzi i pisze do niego drugi raz. Naprawa musi wiec uzgadniac
+   * TAKZE projekcje, nie tylko obecnosc wpisu w historii.
+   */
+  it("restart przed zapisem sprawy: naprawa zdejmuje `wymaga reakcji` bez drugiej wysylki", async () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    store.claimMessage(message());
+    seedCase(store);
+    const zadania: string[] = [];
+
+    await sendReply({
+      store,
+      requestId: "req-projekcja-000001",
+      caseId: "ic_sprawa",
+      text: "Paczka wyszla dzisiaj.",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: {
+        send: async (attempt) => {
+          zadania.push(attempt.requestId);
+          return { status: "sent", externalMessageId: "resend-projekcja" };
+        },
+      },
+      now: () => NOW,
+    });
+    store.close();
+
+    // Kasujemy OSTATNI zapis sprawy: wiadomosc jest utrwalona, projekcja nie.
+    const path = join(dir, "inbox.jsonl");
+    const linie = readFileSync(path, "utf8")
+      .split("\n")
+      .filter((linia) => linia.trim().length > 0);
+    for (let i = linie.length - 1; i >= 0; i -= 1) {
+      if (linie[i]!.includes('"t":"case"')) {
+        linie.splice(i, 1);
+        break;
+      }
+    }
+    writeFileSync(path, linie.join("\n") + "\n", "utf8");
+
+    const po = new InboxStore({ dir });
+    // Watek MA odpowiedz, ale kolejka dalej pokazuje sprawe jako otwarta.
+    expect(
+      po.messagesForCase("ic_sprawa").filter((wiadomosc) => wiadomosc.direction === "outgoing"),
+    ).toHaveLength(1);
+    expect(po.getCase("ic_sprawa")!.requiresResponse).toBe(true);
+
+    const proba = po.getAttempt("req-projekcja-000001")!;
+    expect(outgoingMessagePresent(po, proba)).toBe(true);
+    const naprawa = restoreOutgoingMessage(po, proba, NOW + 60_000);
+
+    expect(naprawa.restoredMessage).toBe(false);
+    expect(naprawa.reprojectedCase).toBe(true);
+    // ZERO nowych zadan do dostawcy i zero nowych wiadomosci w watku.
+    expect(zadania).toEqual(["req-projekcja-000001"]);
+    expect(
+      po.messagesForCase("ic_sprawa").filter((wiadomosc) => wiadomosc.direction === "outgoing"),
+    ).toHaveLength(1);
+    expect(po.getCase("ic_sprawa")!.requiresResponse).toBe(false);
+    // Uzgodnienie jest trwale: przezywa kolejny restart.
+    expect(new InboxStore({ dir }).getCase("ic_sprawa")!.requiresResponse).toBe(false);
   });
 });

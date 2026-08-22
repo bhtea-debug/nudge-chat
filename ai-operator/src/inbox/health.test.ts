@@ -2,12 +2,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toSourceHealth } from "./providers/allegro/adapter.js";
 import {
   DEFAULT_TICK_INTERVAL_MS,
   RECONCILE_EVERY_TICKS,
   type InboxConfig,
 } from "./config.js";
-import { FRESHNESS_POLICY, overallFreshness, type SourceHealth } from "./contract.js";
+import {
+  FRESHNESS_POLICY,
+  INBOX_HEALTH_CONTRACT_VERSION,
+  normalizeSourceState,
+  overallFreshness,
+  type SourceHealth,
+} from "./contract.js";
 import {
   backoffDelay,
   channelFreshness,
@@ -16,6 +23,7 @@ import {
   recordFailure,
   recordInboundReceipt,
   RECONCILE_OVERDUE_MS,
+  reconcileOverdueMsFor,
   recordSuccess,
   sanitizeMessage,
 } from "./health.js";
@@ -245,8 +253,10 @@ describe("odbior a uzgodnienie", () => {
       const freshness = channelFreshness(store, at);
       expect(freshness.state, `minuta ${minuta}`).not.toBe("red");
       expect(freshness.degradedSources, `minuta ${minuta}`).toHaveLength(0);
-      // Odbior nie udaje uzgodnienia: znacznik jest OSOBNY.
-      expect(freshness.receipts.some((entry) => entry.source === "facebook:page-1")).toBe(minuta >= 3);
+      // Odbior nie udaje uzgodnienia: jedzie w OSOBNYM polu przy zrodle.
+      const meta = freshness.sources.find((entry) => entry.source === "facebook:page-1")!;
+      expect(meta.lastReceiptAt !== null, `minuta ${minuta}`).toBe(minuta >= 3);
+      expect(meta.lastReconciledAt, `minuta ${minuta}`).toBe(NOW);
     }
   });
 
@@ -264,7 +274,9 @@ describe("odbior a uzgodnienie", () => {
     recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, dwieGodziny);
     const freshness = channelFreshness(store, dwieGodziny);
     // Webhooki plyna, wiec ODBIOR jest swiezy...
-    expect(freshness.receipts.find((entry) => entry.source === "facebook:page-1")?.at).toBe(dwieGodziny);
+    expect(freshness.sources.find((entry) => entry.source === "facebook:page-1")?.lastReceiptAt).toBe(
+      dwieGodziny,
+    );
     // ...ale KOMPLETNOSCI nikt nie potwierdzil i to musi byc widac.
     expect(freshness.reconcileOverdue).toContain("facebook:page-1");
   });
@@ -407,7 +419,8 @@ describe("znacznik odbioru nie jest zrodlem", () => {
     expect(freshness.reconcileOverdue.some((k) => k.includes("#receipt"))).toBe(false);
 
     // ...ale sam czas odbioru JEST widoczny, w swoim wlasnym polu.
-    expect(freshness.receipts).toEqual([{ source: "facebook:page-1", at: NOW }]);
+    expect(freshness.sources[0]!.lastReceiptAt).toBe(NOW);
+    expect(freshness.lastReceiptAt).toBe(NOW);
   });
 });
 
@@ -423,5 +436,146 @@ describe("prog zaleglego uzgodnienia", () => {
     expect(RECONCILE_OVERDUE_MS).toBe(Math.round(1.5 * RECONCILE_EVERY_TICKS * DEFAULT_TICK_INTERVAL_MS));
     // Kontrola zdrowego rozsadku: przy domyslnej kadencji to poltorej godziny.
     expect(RECONCILE_OVERDUE_MS).toBe(90 * 60_000);
+  });
+});
+
+/**
+ * JEDEN kontrakt zdrowia i kompletnosci (P0.4).
+ *
+ * Wczesniej byly dwie niezalezne prawdy: `mayReportEmptyQueue` patrzyla
+ * wylacznie na stan zrodel, a `reconcileOverdue` zylo obok, jako pole
+ * informacyjne. Kanal z zywymi webhookami i bez pelnego uzgodnienia od doby
+ * spelnial pierwsza i lamal druga, wiec interfejs mogl napisac „brak spraw"
+ * w chwili, gdy nikt nie potwierdzil, ze niczego nie brakuje.
+ */
+describe("kontrakt zdrowia i kompletnosci", () => {
+  const META = { provider: "facebook", accountKey: "page-1" };
+  const EMAIL = { provider: "email", accountKey: "sklep" };
+
+  it("zywe webhooki przez pelna godzine NIE oglaszaja kompletnosci ani stalego alarmu", () => {
+    const store = freshStore();
+    // Ostatnie PELNE uzgodnienie dawno za progiem. Webhooki plyna dalej,
+    // wiec ODBIOR jest swiezy i kropka nie ma powodu byc czerwona.
+    recordSuccess(
+      store,
+      { key: META, label: "Facebook", active: true },
+      NOW - RECONCILE_OVERDUE_MS - 60_000,
+    );
+    recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, NOW);
+
+    for (let minuta = 0; minuta <= 60; minuta += 1) {
+      const at = NOW + minuta * 60_000;
+      if (minuta % 3 === 0) {
+        recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, at);
+      }
+      const zdrowie = channelFreshness(store, at);
+      // Bez stalego alarmu: alarm swiecacy zawsze przestaje byc alarmem.
+      expect(zdrowie.state, `minuta ${minuta}`).not.toBe("red");
+      expect(zdrowie.degradedSources, `minuta ${minuta}`).toHaveLength(0);
+      // ...ale ANI RAZU nie wolno oglosic kompletnosci.
+      expect(zdrowie.completeView, `minuta ${minuta}`).toBe(false);
+      expect(mayReportEmptyQueue(zdrowie), `minuta ${minuta}`).toBe(false);
+      expect(zdrowie.reconcileOverdue, `minuta ${minuta}`).toContain("facebook:page-1");
+      expect(zdrowie.incompleteBecause, `minuta ${minuta}`).toContain("reconcile_overdue");
+    }
+
+    // Dopiero UDANE uzgodnienie przywraca kompletnosc.
+    const koniec = NOW + 60 * 60_000;
+    recordSuccess(store, { key: META, label: "Facebook", active: true }, koniec);
+    const po = channelFreshness(store, koniec);
+    expect(po.reconcileOverdue).toHaveLength(0);
+    expect(po.completeView).toBe(true);
+    expect(mayReportEmptyQueue(po)).toBe(true);
+    expect(po.incompleteBecause).toHaveLength(0);
+  });
+
+  it("ODBIOR i UZGODNIENIE sa w DTO osobno, nie sklejone w jedno pole", () => {
+    const store = freshStore();
+    const uzgodnienie = NOW - 20 * 60_000;
+    recordSuccess(store, { key: META, label: "Facebook", active: true }, uzgodnienie);
+    recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, NOW);
+
+    const zdrowie = channelFreshness(store, NOW);
+    expect(zdrowie.contractVersion).toBe(INBOX_HEALTH_CONTRACT_VERSION);
+    const zrodlo = zdrowie.sources.find((entry) => entry.source === "facebook:page-1")!;
+    expect(zrodlo.lastReconciledAt).toBe(uzgodnienie);
+    expect(zrodlo.lastReceiptAt).toBe(NOW);
+    expect(zdrowie.lastReceiptAt).toBe(NOW);
+    expect(zdrowie.oldestReconciledAt).toBe(uzgodnienie);
+  });
+
+  it("tlumaczenie nazw stanu zyje w ADAPTERZE, a kontrakt tylko waliduje", () => {
+    /*
+     * Poprzednia wersja tego testu wpisywala do magazynu `state: "ready" as never`
+     * i dowodzila, ze kontrakt to przetlumaczy. To byla asercja na stanie,
+     * ktorego produkcja nie wytwarza: adapter Allegro tlumaczy `ready` na `ok`
+     * ZANIM cokolwiek trafi do magazynu. Istnialy wiec dwie rownolegle tabele
+     * tlumaczen dla jednej decyzji i zaczely sie rozjezdzac.
+     *
+     * Zostaje jedna, przy zrodle. Kontrakt pilnuje juz tylko tego, zeby nie
+     * wszedl do niego stan spoza zbioru.
+     */
+    const przetlumaczone = toSourceHealth(
+      {
+        status: "ready",
+        scopeState: "ready",
+        lastSuccessfulSyncAt: NOW,
+        nextAttemptAt: null,
+        ageMs: 0,
+        stale: false,
+        message: null,
+      },
+      "sklep",
+      "E-mail sklep",
+      true,
+    );
+    expect(przetlumaczone.state).toBe("ok");
+
+    // Kontrakt: znane stany przechodza, nieznane sa BLEDEM, nie cichym „ok".
+    expect(normalizeSourceState("ok")).toBe("ok");
+    expect(normalizeSourceState("rate_limited")).toBe("rate_limited");
+    expect(normalizeSourceState("cokolwiek_nowego")).toBe("error");
+    // Nazwa spoza kontraktu tez jest bledem: gdyby przemknela jako „ok",
+    // zielona kropka klamalaby przy zrodle, ktorego nikt nie przetlumaczyl.
+    expect(normalizeSourceState("ready")).toBe("error");
+  });
+
+  it("prog zaleglosci idzie z RZECZYWISTEJ kadencji, nie ze stalej", () => {
+    expect(reconcileOverdueMsFor(DEFAULT_TICK_INTERVAL_MS)).toBe(RECONCILE_OVERDUE_MS);
+    expect(reconcileOverdueMsFor(60_000)).toBe(18 * 60_000);
+
+    const store = freshStore();
+    recordSuccess(store, { key: EMAIL, label: "sklep", active: true }, NOW - 30 * 60_000);
+
+    // Przy domyslnej kadencji (5 min) prog to 90 minut: jeszcze nie zaleglo.
+    expect(channelFreshness(store, NOW).reconcileOverdue).toHaveLength(0);
+    expect(channelFreshness(store, NOW).completeView).toBe(true);
+
+    // Przy kadencji minutowej prog to 18 minut: to samo zrodlo JUZ zaleglo.
+    const gestaKadencja = channelFreshness(store, NOW, {
+      reconcileOverdueMs: reconcileOverdueMsFor(60_000),
+    });
+    expect(gestaKadencja.reconcileOverdue).toContain("email:sklep");
+    expect(gestaKadencja.completeView).toBe(false);
+    expect(gestaKadencja.reconcileOverdueMs).toBe(18 * 60_000);
+  });
+
+  it("zrodlo bez ANI JEDNEGO uzgodnienia nie moze oglosic kompletnosci", () => {
+    const store = freshStore();
+    store.setHealth({
+      provider: "email",
+      accountKey: "hurt",
+      label: "E-mail hurt",
+      state: "ok",
+      active: true,
+      lastSuccessfulSyncAt: null,
+      lastAttemptAt: NOW,
+      nextAttemptAt: null,
+      consecutiveFailures: 0,
+      message: null,
+    });
+    const zdrowie = channelFreshness(store, NOW);
+    expect(zdrowie.reconcileOverdue).toContain("email:hurt");
+    expect(zdrowie.completeView).toBe(false);
   });
 });

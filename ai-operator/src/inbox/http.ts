@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { ContentMode } from "./contract.js";
-import { channelFreshness, recordFailure, recordInboundReceipt } from "./health.js";
+import {
+  channelFreshness,
+  reconcileOverdueMsFor,
+  recordFailure,
+  recordInboundReceipt,
+} from "./health.js";
 import { queryCase, queryMessages, queryQueue } from "./query.js";
 import type { InboxRuntime } from "./runtime.js";
 import {
@@ -9,7 +14,10 @@ import {
   prepareAttempt,
   resolveUncertain,
 } from "./outbound/ledger.js";
-import { repairOutgoingMessage } from "./outbound/record.js";
+import {
+  outgoingHistoryComplete,
+  restoreOutgoingMessage,
+} from "./outbound/record.js";
 import { metaTransport, resendTransport, sendReply, type SendOutcome } from "./outbound/send.js";
 import { ingestMetaEvents } from "./providers/meta/ingest.js";
 import {
@@ -103,11 +111,17 @@ export const InboxReplyRequest = z.discriminatedUnion("operation", [
     })
     .strict(),
   /**
-   * Sprawdzenie wyniku bez wysyłki.
+   * Sprawdzenie wyniku bez wysyłki, z naprawą WŁASNEJ historii.
    *
-   * ŚCIŚLE odczytowe: nie wykonuje żadnego żądania do dostawcy i nie zmienia
-   * statusu próby. Istnieje po to, żeby po restarcie albo przeładowaniu strony
-   * dało się poznać stan blokującej próby, nie ryzykując drugiej wysyłki.
+   * ZERO żądań do dostawcy i zero zmian statusu próby: wynik u klienta jest
+   * taki, jaki jest, i kontrola nie ma prawa go dotknąć. Jedyny zapis, na jaki
+   * sobie pozwala, dotyczy naszej strony: jeżeli ledger mówi „wysłano", a w
+   * wątku brakuje odpowiedzi z TEJ próby (awaria między potwierdzeniem a
+   * zapisem historii), wpis zostaje odtworzony. Bez tego jedyna droga do
+   * naprawy prowadziła przez ponowienie wysyłki, czyli przez ryzyko drugiej
+   * wiadomości u klienta.
+   *
+   * Naprawa jest idempotentna: druga kontrola niczego nie dubluje.
    */
   z
     .object({
@@ -160,31 +174,58 @@ export interface ReadRequest {
   readonly trustedChat: boolean;
 }
 
+/**
+ * Zdrowie i kompletność kanału policzone z RZECZYWISTEJ kadencji.
+ *
+ * Próg „uzgodnienie zaległo" wynika z `tickIntervalMs`, a nie ze stałej
+ * domyślnej: warstwa HTTP jest najniższym miejscem, które widzi konfigurację,
+ * więc to ona podaje próg. Instancja odpytująca co minutę zalega po
+ * osiemnastu minutach ciszy, a nie po dziewięćdziesięciu.
+ */
+function channelHealthOf(runtime: InboxRuntime, now: number) {
+  return channelFreshness(runtime.store, now, {
+    reconcileOverdueMs: reconcileOverdueMsFor(runtime.config.tickIntervalMs),
+  });
+}
+
 export function handleInboxRead(request: ReadRequest): HttpResult {
   const { runtime, params, now } = request;
   const mode = contentModeOf(params.get("contentMode"), request.trustedChat);
 
   switch (request.path) {
     case `${INBOX_READ_PREFIX}/health`:
-      return envelope(channelFreshness(runtime.store, now), now);
+      return envelope(channelHealthOf(runtime, now), now);
 
     case `${INBOX_READ_PREFIX}/cases`: {
       const providers = splitList(params.get("providers"));
       const accountKeys = splitList(params.get("accounts"));
       const limit = Number(params.get("limit") ?? "200");
+      const result = queryQueue(runtime.store, {
+        now,
+        state: params.get("state") === "all" ? "all" : "actionable",
+        providers: providers.length ? providers : undefined,
+        accountKeys: accountKeys.length ? accountKeys : undefined,
+        limit: Number.isFinite(limit) ? limit : 200,
+        contentMode: mode,
+        cursor: params.get("cursor"),
+        // Podgląd konta nadawczego pochodzi z konfiguracji adaptera,
+        // nie z żądania: interfejs ma pokazać to, co faktycznie wyśle.
+        mailboxes: new Map(runtime.config.email.map((entry) => [entry.accountKey, entry.address])),
+      });
+      /*
+       * Kompletność widoku ma DWA niezależne warunki i oba muszą być spełnione:
+       * kompletne źródła (zdrowie kanału) i spójne przewijanie (`snapshotChanged`).
+       * Warstwa zapytań nie zna kadencji, więc liczy zdrowie z progu domyślnego;
+       * tutaj podmieniamy je na policzone z konfiguracji, zamiast zostawiać
+       * w jednej odpowiedzi dwie różne odpowiedzi na to samo pytanie.
+       */
+      const health = channelHealthOf(runtime, now);
       return envelope(
-        queryQueue(runtime.store, {
-          now,
-          state: params.get("state") === "all" ? "all" : "actionable",
-          providers: providers.length ? providers : undefined,
-          accountKeys: accountKeys.length ? accountKeys : undefined,
-          limit: Number.isFinite(limit) ? limit : 200,
-          contentMode: mode,
-          cursor: params.get("cursor"),
-          // Podgląd konta nadawczego pochodzi z konfiguracji adaptera,
-          // nie z żądania: interfejs ma pokazać to, co faktycznie wyśle.
-          mailboxes: new Map(runtime.config.email.map((entry) => [entry.accountKey, entry.address])),
-        }),
+        {
+          ...result,
+          freshness: health,
+          completeView: health.completeView && !result.snapshotChanged,
+        },
         now,
       );
     }
@@ -203,7 +244,9 @@ export function handleInboxRead(request: ReadRequest): HttpResult {
         new Map(runtime.config.email.map((entry) => [entry.accountKey, entry.address])),
       );
       if (!found) return failure(404, "case_not_found");
-      return envelope(found, now);
+      // Ten sam obiekt zdrowia, co w kolejce i w `/health`. Sprawa otwarta
+      // obok kolejki nie może mówić o kanale czegoś innego niż lista.
+      return envelope({ ...found, freshness: channelHealthOf(runtime, now) }, now);
     }
 
     case `${INBOX_READ_PREFIX}/messages`: {
@@ -265,14 +308,43 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
   if (request.operation === "check") {
     const attempt = runtime.store.getAttempt(request.requestId);
     if (!attempt) {
-      // Brak ledgera znaczy, że POST nigdy się nie zaczął. To jest informacja,
-      // nie błąd: pozwala odblokować sprawę bez zgadywania.
+      /*
+       * Brak ledgera znaczy, że POST nigdy się nie zaczął: wpis `prepared`
+       * powstaje PRZED pierwszym żądaniem do dostawcy, więc bez niego nic nie
+       * poleciało. To jest informacja, nie błąd, i wolno po niej odblokować
+       * formularz.
+       */
       return envelope(
-        { status: "not_found", requestId: request.requestId, message: "Nie ma śladu tej próby" },
+        {
+          status: "not_found",
+          requestId: request.requestId,
+          ...settlementOf("not_found"),
+          historyComplete: true,
+          repairedHistory: false,
+          restoredMessage: false,
+          reprojectedCase: false,
+          historyMessageId: null,
+          historyBlockedBy: null,
+          message: "Nie ma śladu tej próby",
+        },
         now,
       );
     }
     if (attempt.caseId !== request.caseId) return failure(409, "request_belongs_to_other_case");
+
+    /*
+     * Kontrola NAPRAWIA historię, zamiast tylko o niej opowiadać.
+     *
+     * Ledger i wątek zapisują się osobno, więc awaria między `finishSent`
+     * a zapisem wiadomości zostawia stan, w którym odpowiedź poszła do
+     * klienta, a sprawa dalej wygląda na bez odpowiedzi i kolejna osoba pisze
+     * drugi raz. Odtworzenie wpisu nie wykonuje ANI JEDNEGO żądania do
+     * dostawcy: wiadomość u klienta już jest, brakuje wyłącznie naszej
+     * historii. Przy próbie innej niż `sent` naprawa jest zablokowana, bo
+     * dopisanie odpowiedzi do wątku udawałoby wiedzę, której nie mamy.
+     */
+    const repair = restoreOutgoingMessage(runtime.store, attempt, now);
+
     return envelope(
       {
         status: attempt.status,
@@ -284,11 +356,21 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
         code: attempt.failureCode,
         contentSha256: attempt.contentSha256,
         contentLength: attempt.contentLength,
-        // Wiadomość w wątku bywa zapisana osobno od ledgera; ta flaga mówi,
-        // czy historia jest kompletna, czy wymaga naprawy.
-        historyComplete:
-          attempt.status !== "sent" ||
-          runtime.store.messagesForCase(attempt.caseId).some((message) => message.direction === "outgoing"),
+        ...settlementOf(attempt.status),
+        /*
+         * Kompletność liczona PO naprawie i wyłącznie dla TEJ próby.
+         * Poprzednia wersja pytała, czy w sprawie jest jakakolwiek wiadomość
+         * wychodząca, więc starsza odpowiedź w wątku dawała fałszywe
+         * „historia kompletna" i brakujący wpis nie powstawał już nigdy.
+         */
+        historyComplete: outgoingHistoryComplete(runtime.store, attempt),
+        /** true = kontrola coś uzupełniła TERAZ. Druga kontrola daje false. */
+        repairedHistory: repair.restoredMessage || repair.reprojectedCase,
+        restoredMessage: repair.restoredMessage,
+        reprojectedCase: repair.reprojectedCase,
+        historyMessageId: repair.messageId,
+        /** Niepuste = naprawa była potrzebna i się NIE udała. */
+        historyBlockedBy: repair.blockedBy,
         message: describeAttempt(attempt.status),
       },
       now,
@@ -328,8 +410,18 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
      * `uncertain`, jak dla utrwalonego `sending`.
      */
     const attempt = runtime.store.getAttempt(request.requestId);
-    const repairedHistory =
-      attempt?.status === "sent" ? repairOutgoingMessage(runtime.store, attempt, now) : false;
+    /*
+     * TA SAMA naprawa co przy `check`.
+     *
+     * Wczesniej ta sciezka uzywala starszej wersji zwracajacej samo `true/false`,
+     * wiec przy nieudanej naprawie odpowiedz mowila `repairedHistory: false`
+     * i nic wiecej: nie dalo sie odroznic „nie bylo czego naprawiac" od „nie
+     * dalo sie naprawic". Sciezka `check` dostala bogatszy wynik wlasnie z tego
+     * powodu; zostawienie tu starej bylo dziura w tym samym miejscu.
+     */
+    const repair = attempt
+      ? restoreOutgoingMessage(runtime.store, attempt, now)
+      : null;
 
     return envelope(
       {
@@ -341,7 +433,10 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
         manuallyResolved: true,
         /** false = ten sam wynik byl juz zapisany; powtorka nie jest bledem. */
         changed: result.changed,
-        repairedHistory,
+        repairedHistory: repair?.restoredMessage ?? false,
+        reprojectedCase: repair?.reprojectedCase ?? false,
+        historyPresent: repair?.present ?? false,
+        historyBlockedBy: repair?.blockedBy ?? null,
       },
       now,
     );
@@ -375,6 +470,48 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
   return envelope(toReplyDto(outcome), now);
 }
 
+/**
+ * Jednoznaczny, TERMINALNY stan próby dla odbiorcy odpowiedzi.
+ *
+ * Interfejs musi wiedzieć nie „jak się nazywa status", tylko czy wolno
+ * odblokować formularz. Trzy pytania są rozłączne i każde ma własne pole,
+ * bo sklejone w jedno dawały decyzję na wyczucie:
+ *  - `terminal`: los próby jest przesądzony i sam się już nie zmieni,
+ *  - `mayRetry`: wiadomo, że do klienta NIC nie poszło, więc wolno pisać od nowa,
+ *  - `needsHumanDecision`: request mógł polecieć i tylko człowiek to sprawdzi.
+ *
+ * `sent` jest terminalne, ale `mayRetry` zostaje na `false`: powtórzenie tej
+ * samej treści to druga wiadomość u klienta, a nie naprawa.
+ */
+function settlementOf(status: string): {
+  terminal: boolean;
+  outcome: "sent" | "not_sent" | "unknown";
+  mayRetry: boolean;
+  needsHumanDecision: boolean;
+} {
+  switch (status) {
+    case "sent":
+      return { terminal: true, outcome: "sent", mayRetry: false, needsHumanDecision: false };
+    case "failed":
+    case "cancelled":
+    // Brak śladu próby: `prepared` powstaje przed pierwszym żądaniem, więc
+    // jego brak dowodzi, że do dostawcy nic nie poszło.
+    case "not_found":
+      return { terminal: true, outcome: "not_sent", mayRetry: true, needsHumanDecision: false };
+    case "sending":
+    case "uncertain":
+      // Request MÓGŁ dojść. Odblokowanie formularza tutaj kosztuje drugą
+      // wiadomość u klienta, więc droga wyjścia jest jedna: `resolve_*`.
+      return { terminal: false, outcome: "unknown", mayRetry: false, needsHumanDecision: true };
+    case "prepared":
+      // Nic nie poleciało, ale próba dalej blokuje sprawę. Właściwym ruchem
+      // jest anulowanie, a nie ponowienie ani orzekanie o losie wysyłki.
+      return { terminal: false, outcome: "not_sent", mayRetry: false, needsHumanDecision: false };
+    default:
+      return { terminal: false, outcome: "unknown", mayRetry: false, needsHumanDecision: true };
+  }
+}
+
 function describeAttempt(status: string): string {
   switch (status) {
     case "prepared":
@@ -402,6 +539,15 @@ function toReplyDto(outcome: SendOutcome): Record<string, unknown> {
     externalMessageId: outcome.status === "sent" ? outcome.externalMessageId : null,
     code: "code" in outcome ? outcome.code : null,
     message: "message" in outcome ? outcome.message : "Wiadomosc zostala wyslana",
+    /*
+     * Stan HISTORII przechodzi az do odbiorcy.
+     *
+     * Bez tego pole zylo wylacznie wewnatrz adaptera: czat dostawal „wyslano"
+     * i nie mial jak odroznic wysylki z kompletnym watkiem od takiej, ktorej
+     * wpisu nie udalo sie odtworzyc. Komentarz przy polu obiecywal to
+     * rozroznienie, a granica HTTP je zjadala.
+     */
+    historyComplete: "historyComplete" in outcome ? outcome.historyComplete : null,
   };
 }
 

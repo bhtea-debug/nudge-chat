@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CLASSIFIER_VERSION } from "./contract.js";
 import { recordFailure, recordSuccess } from "./health.js";
-import { queryCase, queryQueue } from "./query.js";
+import { queryCase, queryQueue, type QueueResult } from "./query.js";
 import { InboxStore, type StoredCase } from "./store.js";
 
 /**
@@ -73,27 +73,36 @@ interface DrainOptions {
   readonly maxPages?: number;
 }
 
+/**
+ * Przewinięcie kolejki tak, jak robi to odbiorca: strona po stronie, do końca
+ * przebiegu. Zwraca też OSTATNIĄ odpowiedź, bo to w niej siedzi sygnał
+ * kompletności — bez niego test sprawdzałby wyłącznie zebrane identyfikatory
+ * i nie zauważyłby fałszywego „komplet".
+ */
 function drain(
   store: InboxStore,
   pageSize: number,
   options: DrainOptions = {},
-): { ids: string[]; pages: number } {
+): { ids: string[]; pages: number; last: QueueResult } {
   const state = options.state ?? "all";
   const maxPages = options.maxPages ?? 50;
   const ids: string[] = [];
   let cursor: string | null = options.cursor ?? null;
   let pages = 0;
+  let last: QueueResult | null = null;
   for (; pages < maxPages; pages += 1) {
     const page = queryQueue(store, { now: NOW, state, limit: pageSize, cursor });
+    last = page;
     ids.push(...page.cases.map((entry) => entry.caseId));
-    if (!page.truncated) {
+    // Koniec przebiegu: albo widok jest kompletny, albo nie ma czym go
+    // dokończyć (kursor pusty przy `truncated` = „czytaj od góry").
+    if (!page.truncated || page.nextCursor === null) {
       pages += 1;
       break;
     }
-    expect(page.nextCursor).toBeTruthy();
     cursor = page.nextCursor;
   }
-  return { ids, pages };
+  return { ids, pages, last: last! };
 }
 
 describe("stronicowanie kolejki", () => {
@@ -144,6 +153,9 @@ describe("stronicowanie kolejki", () => {
     // Kolejka ZNA swoj prawdziwy rozmiar, wiec widok ma czym powiedziec
     // „pokazuje 600 z 601", zamiast milczec.
     expect(lastPage.count).toBe(601);
+    // Zbior sie NIE zmienil, wiec kompletnosc nie jest naruszona; niepelny jest
+    // sam ODCZYT, i to mowi `truncated` razem z zywym kursorem.
+    expect(lastPage.snapshotChanged).toBe(false);
     expect(lastPage.truncated).toBe(true);
     expect(lastPage.nextCursor).toBeTruthy();
 
@@ -234,6 +246,29 @@ describe("stronicowanie kolejki", () => {
     expect(page.cases.map((entry) => entry.caseId)).toEqual(["ic_0003", "ic_0004"]);
   });
 
+  /*
+   * Kursor wystawiony przez starsze wydanie niesie sama pozycje. Pozycje
+   * honorujemy, ale kompletnosci nie mamy czym potwierdzic — i wtedy jej NIE
+   * obiecujemy, zamiast zgadywac na korzysc milego wyniku.
+   */
+  it("kursor bez stanu przebiegu nie dostaje swiadectwa kompletnosci", () => {
+    const store = freshStore();
+    seed(store, 5);
+
+    const page = queryQueue(store, {
+      now: NOW,
+      state: "all",
+      limit: 10,
+      cursor: Buffer.from(`${NOW - 2_000}|ic_0002`, "utf8").toString("base64url"),
+    });
+    expect(page.cases.map((entry) => entry.caseId)).toEqual(["ic_0003", "ic_0004"]);
+    expect(page.snapshotChanged).toBe(true);
+    expect(page.recommendation).toBe("restart_from_top");
+    // Kompletnosc ma WLASNE pole: `truncated` mowi tylko o dalszych stronach.
+    expect(page.snapshotChanged).toBe(true);
+    expect(page.completeView).toBe(false);
+  });
+
   it("uszkodzony kursor czyta od poczatku zamiast wysadzac odczyt", () => {
     const store = freshStore();
     seed(store, 5);
@@ -275,6 +310,325 @@ describe("stronicowanie kolejki", () => {
       expect(widziane).toContain(caseId);
     }
     expect(new Set(widziane).size).toBe(widziane.length);
+  });
+
+  /*
+   * Sedno P0.5. Sprawa, ktora podczas przewijania przesunela sie NAD kursor,
+   * wypada z tego przebiegu. To wolno — nie wolno natomiast zamknac takiego
+   * przebiegu sygnalem „komplet", bo odbiorca sklei strony i ogloszi kolejke
+   * bez brakujacej sprawy jako calosc.
+   */
+  it("sprawa przesunieta nad kursor NIE pozwala oglosic kolejki kompletnej", () => {
+    const store = freshStore();
+    seed(store, 601);
+    // Zrodla zdrowe: gdyby nie zmiana zbioru, widok mialby prawo byc kompletny.
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: true },
+      NOW,
+    );
+
+    const zebrane: string[] = [];
+    let cursor: string | null = null;
+    let last: QueueResult | null = null;
+    for (let strona = 0; strona < 10; strona += 1) {
+      const page = queryQueue(store, { now: NOW, state: "all", limit: 200, cursor });
+      last = page;
+      zebrane.push(...page.cases.map((entry) => entry.caseId));
+
+      // Po pierwszej stronie sprawa ic_0500 — jeszcze NIEWYDANA, lezaca na
+      // trzeciej stronie — dostaje nowa wiadomosc i lecie na czolo listy,
+      // czyli nad kursor. Zaden dalszy odczyt jej juz nie zobaczy.
+      if (strona === 0) {
+        store.upsertCase(
+          caseRecord(500, { lastMessageAt: NOW + 5_000, lastIncomingAt: NOW + 5_000 }),
+        );
+      }
+
+      if (!page.truncated || page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+
+    // Fakt: sprawy nie ma w sklejonym wyniku, a rekordow jest 600 z 601.
+    expect(zebrane).not.toContain("ic_0500");
+    expect(new Set(zebrane).size).toBe(600);
+    expect(last!.count).toBe(601);
+
+    // I dlatego ostatnia odpowiedz NIE MOZE wygladac jak komplet.
+    // Ta para znaczy doslownie „to cala kolejka" — z brakujaca sprawa jest klamstwem.
+    expect(last!.snapshotChanged).toBe(true);
+    expect(last!.completeView).toBe(false);
+    expect(last!.recommendation).toBe("restart_from_top");
+    expect(last!.snapshotChanged).toBe(true);
+    expect(last!.completeView).toBe(false);
+  });
+
+  it("po kontrolowanym odczycie od gory przesunieta sprawa jest osiagalna", () => {
+    const store = freshStore();
+    seed(store, 601);
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: true },
+      NOW,
+    );
+
+    const pierwszy = queryQueue(store, { now: NOW, state: "all", limit: 200 });
+    store.upsertCase(caseRecord(500, { lastMessageAt: NOW + 5_000, lastIncomingAt: NOW + 5_000 }));
+    const przerwany = drain(store, 200, { cursor: pierwszy.nextCursor });
+    expect([...pierwszy.cases.map((entry) => entry.caseId), ...przerwany.ids]).not.toContain(
+      "ic_0500",
+    );
+    expect(przerwany.last.recommendation).toBe("restart_from_top");
+
+    // Zalecenie z odpowiedzi wykonane doslownie: czytamy od gory, bez kursora.
+    const odNowa = drain(store, 200);
+    expect(odNowa.ids).toContain("ic_0500");
+    expect(odNowa.ids[0]).toBe("ic_0500");
+    expect(new Set(odNowa.ids).size).toBe(601);
+    // Ten przebieg juz nic nie gubi, wiec konczy sie czystym kompletem.
+    expect(odNowa.last.snapshotChanged).toBe(false);
+    expect(odNowa.last.nextCursor).toBeNull();
+    expect(odNowa.last.completeView).toBe(true);
+  });
+
+  /*
+   * Wariant, w ktorym sam LICZNIK rekordow nad kursorem nic nie zauwazy: jedna
+   * sprawa wskakuje nad kursor, druga — juz wydana — z kolejki wypada, wiec
+   * liczba nad kursorem sie zgadza. Lapie to dopiero czolo przebiegu.
+   */
+  it("wskoczenie nad kursor zrownowazone ubytkiem NIE ucieka wykryciu", () => {
+    const store = freshStore();
+    seedOnly(store, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    const pierwsza = queryQueue(store, { now: NOW, limit: 4 });
+    expect(pierwsza.cases.map((entry) => entry.caseId)).toEqual([
+      "ic_0000",
+      "ic_0001",
+      "ic_0002",
+      "ic_0003",
+    ]);
+
+    // Niewydana ic_0008 idzie na czolo; wydana ic_0001 zostaje obsluzona
+    // i wypada z filtra. Bilans nad kursorem: bez zmian.
+    store.upsertCase(caseRecord(8, { lastMessageAt: NOW + 5_000, lastIncomingAt: NOW + 5_000 }));
+    store.upsertCase(caseRecord(1, { requiresResponse: false, pendingAction: false }));
+
+    const druga = queryQueue(store, {
+      now: NOW,
+      limit: 4,
+      cursor: pierwsza.nextCursor,
+    });
+    expect(druga.cases.map((entry) => entry.caseId)).not.toContain("ic_0008");
+    expect(druga.snapshotChanged).toBe(true);
+    expect(druga.recommendation).toBe("restart_from_top");
+  });
+
+  /*
+   * Wariant odwrotny: sprawa wchodzi nad kursor, ale POD czolo przebiegu — tak
+   * wyglada mail ze stara data pobrany dzisiaj. Czolo tego nie zobaczy, wiec
+   * musi zadzialac licznik rekordow nad kursorem.
+   */
+  it("sprawa ze stara data wchodzaca pod czolo tez psuje kompletnosc", () => {
+    const store = freshStore();
+    seed(store, 10);
+
+    const pierwsza = queryQueue(store, { now: NOW, state: "all", limit: 4 });
+    // Miedzy ic_0002 a ic_0003, czyli nad kursorem, ale ponizej czola (NOW).
+    store.upsertCase(
+      caseRecord(88, { lastMessageAt: NOW - 2_500, lastIncomingAt: NOW - 2_500 }),
+    );
+
+    const dalej = drain(store, 4, { cursor: pierwsza.nextCursor });
+    expect(dalej.ids).not.toContain("ic_0088");
+    expect(dalej.last.snapshotChanged).toBe(true);
+    expect(dalej.last.completeView).toBe(false);
+  });
+
+  /*
+   * Raz wykryty ubytek nie ma prawa zniknac na dalszych stronach. Tu warunek,
+   * ktory go zapalil, sam sie „domyka": po wykryciu czlowiek odpowiada na
+   * sprawe juz wydana, wiec bilans nad kursorem znowu sie zgadza. Bez lepkiego
+   * sladu w kursorze OSTATNIA strona ogloszlaby komplet — z brakujaca sprawa.
+   */
+  it("wykryty ubytek nie gasnie na kolejnej stronie", () => {
+    const store = freshStore();
+    seedOnly(store, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: true },
+      NOW,
+    );
+
+    const pierwsza = queryQueue(store, { now: NOW, limit: 4 });
+    // Sprawa ze stara data laduje nad kursorem: przepadnie w tym przebiegu.
+    store.upsertCase(caseRecord(88, { lastMessageAt: NOW - 2_500, lastIncomingAt: NOW - 2_500 }));
+
+    const druga = queryQueue(store, { now: NOW, limit: 4, cursor: pierwsza.nextCursor });
+    expect(druga.snapshotChanged).toBe(true);
+
+    // Czlowiek odpowiada na ic_0000 — sprawe juz wydana. Nad kursorem robi sie
+    // znowu tyle rekordow, ile przebieg wydal, wiec sam licznik juz nie krzyknie.
+    store.upsertCase(caseRecord(0, { requiresResponse: false, pendingAction: false }));
+
+    const trzecia = queryQueue(store, { now: NOW, limit: 4, cursor: druga.nextCursor });
+    expect(trzecia.cases.map((entry) => entry.caseId)).toEqual(["ic_0008", "ic_0009"]);
+    expect(trzecia.snapshotChanged).toBe(true);
+    expect(trzecia.snapshotChanged).toBe(true);
+    expect(trzecia.completeView).toBe(false);
+    expect(trzecia.completeView).toBe(false);
+  });
+
+  it("przebieg bez zadnych zmian konczy sie czystym kompletem", () => {
+    const store = freshStore();
+    seed(store, 601);
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: true },
+      NOW,
+    );
+
+    const { ids, last } = drain(store, 200);
+    expect(new Set(ids).size).toBe(601);
+    expect(last.snapshotChanged).toBe(false);
+    expect(last.recommendation).toBe("none");
+    expect(last.truncated).toBe(false);
+    expect(last.nextCursor).toBeNull();
+    expect(last.completeView).toBe(true);
+  });
+
+  /*
+   * SWIADOMY koszt niezmiennika na zbiorach.
+   *
+   * Wczesniej ten test pilnowal ciszy: odpowiedzenie na juz wydana sprawe nie
+   * mialo podwazac kompletnosci, bo ubytek wydanego rekordu niczego nie ukrywa.
+   * Rozumowanie bylo poprawne, ale realizacja opierala sie na LICZNIKU rekordow
+   * nad kursorem, a licznik daje sie zamaskowac: gdy jednoczesnie jedna sprawa
+   * zjezdza pod kursor, a druga wchodzi nad kursor ponizej czola przebiegu,
+   * liczba sie nie zmienia i odczyt konczy sie slowami „to cala kolejka" przy
+   * brakujacej sprawie. Wyzwalacz jest zwykly: ktos odpowiada na sprawe
+   * z pierwszej strony, a rownolegle przychodzi mail ze starsza data.
+   *
+   * Wybor jest wiec miedzy cisza a prawda. Kontrakt tego kanalu mowi wprost, ze
+   * jedna sprawa zgubiona po cichu jest gorsza od jednego zbednego odczytu od
+   * gory, wiec sygnal zapala sie od kazdej zmiany zbioru NAD kursorem.
+   * Postep stronicowania to osobna sprawa i nie ucierpial: `truncated` mowi
+   * tylko o dalszych stronach.
+   *
+   * Nie przywracaj tu ciszy bez niezmiennika mocniejszego niz licznik.
+   */
+  it("odpowiedzenie na juz wydana sprawe ZAPALA sygnal, bo zbior sie zmienil", () => {
+    const store = freshStore();
+    seedOnly(store, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: true },
+      NOW,
+    );
+
+    const zebrane: string[] = [];
+    let cursor: string | null = null;
+    let last: QueueResult | null = null;
+    for (let strona = 0; strona < 20; strona += 1) {
+      const page = queryQueue(store, { now: NOW, limit: 3, cursor });
+      last = page;
+      zebrane.push(...page.cases.map((entry) => entry.caseId));
+      const ostatnia = page.cases[page.cases.length - 1];
+      if (ostatnia) {
+        store.upsertCase(
+          caseRecord(indexOfCase(ostatnia.caseId), {
+            requiresResponse: false,
+            pendingAction: false,
+          }),
+        );
+      }
+      if (!page.truncated || page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+
+    // Postep jest zachowany: kazda z dwunastu spraw zostala wydana raz.
+    expect(new Set(zebrane).size).toBe(12);
+    expect(last!.truncated).toBe(false);
+    expect(last!.nextCursor).toBeNull();
+    // ...ale kompletnosci nie oglaszamy, bo zbior zmienil sie pod czytajacym.
+    expect(last!.snapshotChanged).toBe(true);
+    expect(last!.recommendation).toBe("restart_from_top");
+    expect(last!.completeView).toBe(false);
+  });
+
+  /*
+   * REGRESJA: ubytek pod kursorem NIE MOZE maskowac wejscia nad kursor.
+   *
+   * To jest dokladnie przebieg, ktory przechodzil przez wszystkie bramki
+   * poprzedniej wersji i konczyl sie odpowiedzia „to cala kolejka" przy
+   * brakujacej sprawie. Dzialalo to tak: licznik porownywal LICZBE rekordow
+   * nad kursorem z liczba wydanych. Gdy jedna sprawa zjezdzala pod kursor,
+   * a druga wchodzila nad kursor, ale PONIZEJ czola przebiegu, liczba zostawala
+   * ta sama i sygnal milczal.
+   *
+   * Wyzwalacz jest calkiem zwyczajny: ktos odpowiada na sprawe z pierwszej
+   * strony, a w tej samej chwili przychodzi mail ze starsza data.
+   */
+  it("ubytek pod kursorem nie maskuje sprawy, ktora weszla nad kursor", () => {
+    const store = freshStore();
+    seedOnly(store, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: true },
+      NOW,
+    );
+
+    const pierwsza = queryQueue(store, { now: NOW, state: "all", limit: 4 });
+    const wydane = pierwsza.cases.map((entry) => entry.caseId);
+    expect(wydane).toHaveLength(4);
+    expect(pierwsza.snapshotChanged).toBe(false);
+
+    /*
+     * Dwie zmiany naraz, ktore w liczniku sie znosza:
+     * 1. juz wydana `ic_0002` dostaje starsza date i zjezdza POD kursor;
+     * 2. nowa `ic_0088` wchodzi NAD kursor, ale ponizej czola przebiegu.
+     */
+    store.upsertCase(
+      caseRecord(2, { lastMessageAt: NOW - 9_500, lastIncomingAt: NOW - 9_500 }),
+    );
+    store.upsertCase(
+      caseRecord(88, { lastMessageAt: NOW - 1_500, lastIncomingAt: NOW - 1_500 }),
+    );
+
+    const druga = queryQueue(store, {
+      now: NOW,
+      state: "all",
+      limit: 4,
+      cursor: pierwsza.nextCursor,
+    });
+
+    // Nowa sprawa NIE zostala wydana w tym przewijaniu...
+    const wszystkie = [...wydane, ...druga.cases.map((entry) => entry.caseId)];
+    expect(wszystkie).not.toContain("ic_0088");
+    // ...wiec odczyt NIE MA PRAWA oglosic kompletnosci.
+    expect(druga.snapshotChanged).toBe(true);
+    expect(druga.completeView).toBe(false);
+    expect(druga.recommendation).toBe("restart_from_top");
+
+    // Odczyt od gory ja pokazuje: droga do brakujacej sprawy istnieje.
+    const odNowa = queryQueue(store, { now: NOW, state: "all", limit: 100 });
+    expect(odNowa.cases.map((entry) => entry.caseId)).toContain("ic_0088");
+  });
+
+  it("wersja zbioru jest w kazdej odpowiedzi i zmienia sie razem z lista", () => {
+    const store = freshStore();
+    seed(store, 5);
+
+    const przed = queryQueue(store, { now: NOW, state: "all", limit: 10 });
+    expect(przed.setVersion).toMatch(/\S/);
+    // Ten sam zbior = ta sama wersja: wersja opisuje liste, nie moment odczytu.
+    expect(queryQueue(store, { now: NOW, state: "all", limit: 10 }).setVersion).toBe(
+      przed.setVersion,
+    );
+
+    store.upsertCase(caseRecord(77, { lastMessageAt: NOW + 1_000, lastIncomingAt: NOW + 1_000 }));
+    expect(queryQueue(store, { now: NOW, state: "all", limit: 10 }).setVersion).not.toBe(
+      przed.setVersion,
+    );
   });
 
   it("zniknięcie rekordu kursora nie powtarza poprzedniej strony", () => {

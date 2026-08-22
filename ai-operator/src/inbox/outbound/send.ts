@@ -7,7 +7,11 @@ import {
   markerStillValid,
   prepareAttempt,
 } from "./ledger.js";
-import { recordOutgoingMessage, repairOutgoingMessage } from "./record.js";
+import {
+  outgoingMessagePresent,
+  recordOutgoingMessage,
+  restoreOutgoingMessage,
+} from "./record.js";
 import { replySubject, sendViaResend, type ResendMailbox, type ResendResult } from "./resend.js";
 import { sendViaMeta, type MetaSendAccount, type MetaSendResult } from "./meta-send.js";
 
@@ -27,6 +31,13 @@ export type SendOutcome =
       readonly externalMessageId: string | null;
       /** true = powtórzone żądanie uzupełniło brakującą wiadomość w wątku. */
       readonly repairedHistory?: boolean;
+      /**
+       * Czy wątek zawiera odpowiedź z TEJ próby po zakończeniu żądania.
+       * `false` znaczy, że naprawa się nie udała — a nie, że nie była
+       * potrzebna. Bez tego rozróżnienia „wysłano" brzmiało tak samo dla
+       * historii kompletnej i dla historii, której nie dało się odtworzyć.
+       */
+      readonly historyComplete?: boolean;
     }
   | { readonly status: "failed"; readonly requestId: string; readonly code: string; readonly message: string }
   | { readonly status: "uncertain"; readonly requestId: string; readonly code: string; readonly message: string }
@@ -79,15 +90,21 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
      * Bez tej naprawy każde kolejne żądanie zwracało wczesne `sent`
      * i wiadomość nie pojawiała się w wątku już nigdy.
      *
+     * Brak jest rozpoznawany po identyfikatorze TEJ próby, nigdy po tym, czy
+     * w sprawie jest jakakolwiek wiadomość wychodząca: przy starszej
+     * odpowiedzi to drugie zawsze mówiło „komplet" i brakujący wpis nie
+     * powstawał już nigdy.
+     *
      * Naprawa NIE wykonuje żadnego requestu do dostawcy: wiadomość u klienta
      * już jest, chodzi wyłącznie o naszą historię.
      */
-    const repaired = repairOutgoingMessage(store, existing, request.now());
+    const repair = restoreOutgoingMessage(store, existing, request.now());
     return {
       status: "sent",
       requestId,
       externalMessageId: existing.externalMessageId,
-      repairedHistory: repaired,
+      repairedHistory: repair.restoredMessage || repair.reprojectedCase,
+      historyComplete: repair.present,
     };
   }
   if (existing.status === "failed") {
@@ -143,6 +160,24 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
   }
 
   if (result.status === "sent") {
+    /*
+     * KOLEJNOŚĆ: najpierw ledger, potem wątek. Zostaje taka, jaka jest.
+     *
+     * Odwrotna kolejność (najpierw wątek) skraca okno w jednym miejscu i
+     * otwiera gorsze w drugim: proces zabity po zapisie wiadomości, a przed
+     * `finishSent`, gubi BEZPOWROTNIE identyfikator od dostawcy — a to po nim
+     * `applyDeliveryEvent` dopasowuje odbicia i skargi (`http.ts` woła je
+     * z `externalMessageId`). Odbita wiadomość wyglądałaby wtedy na
+     * doręczoną. Dodatkowo próba zostaje w `sending`, czyli blokuje sprawę do
+     * czasu ręcznego rozstrzygnięcia przez człowieka, który o niczym nie wie.
+     *
+     * Żadna z kolejności nie grozi drugą wysyłką: powtórzenie tego samego
+     * `requestId` odbija się o `beginSending`, a inny `requestId` o aktywną
+     * próbę w `prepareAttempt`. Decyduje więc to, który osad da się naprawić —
+     * i naprawialny jest osad TEJ kolejności: brakujący wpis w wątku ma
+     * deterministyczny identyfikator i odtwarza go `restoreOutgoingMessage`,
+     * bez jednego bajtu do dostawcy.
+     */
     finishSent(store, requestId, result.externalMessageId, request.now());
     /*
      * Odpowiedź staje się częścią wątku.
@@ -153,14 +188,29 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
      * z folderu wysłanych trafia w ten sam identyfikator i jest wchłaniana
      * przez dedup zamiast tworzyć duplikat.
      */
-    recordOutgoingMessage({
+    const recorded = recordOutgoingMessage({
       store,
       attempt: started.attempt,
       text: request.text,
       externalMessageId: result.externalMessageId,
       now: request.now(),
     });
-    return { status: "sent", requestId, externalMessageId: result.externalMessageId };
+
+    /*
+     * `historyComplete` mówi to, co jest, a nie to, co miało się udać.
+     *
+     * `recordOutgoingMessage` oddaje `null` także wtedy, gdy wpis już był —
+     * echo Meta potrafi wrócić szybciej niż nasz zapis — więc brak zapisu nie
+     * znaczy braku historii. Rozstrzyga sprawdzenie po identyfikatorze próby
+     * z ledgera, już po `finishSent`.
+     */
+    const settled = store.getAttempt(requestId);
+    return {
+      status: "sent",
+      requestId,
+      externalMessageId: result.externalMessageId,
+      historyComplete: recorded !== null || (settled ? outgoingMessagePresent(store, settled) : false),
+    };
   }
   if (result.status === "failed") {
     finishFailed(store, requestId, result.code, request.now());

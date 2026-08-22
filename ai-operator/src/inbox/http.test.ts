@@ -11,6 +11,7 @@ import { handleInboxRead, handleInboxReply, handleMetaWebhook, handleResendWebho
 import { recordFailure, recordSuccess } from "./health.js";
 import { createRuntime } from "./runtime.js";
 import { InboxStore, type OutboundAttempt, type StoredCase } from "./store.js";
+import { beginSending, finishSent, prepareAttempt } from "./outbound/ledger.js";
 
 const dirs: string[] = [];
 const NOW = 1_700_000_000_000;
@@ -781,5 +782,544 @@ describe("okno ponowien doreczenia Resend", () => {
     // Zniknienie odbicia jest WIDOCZNE w kanale, nie tylko w logu.
     const zdrowie = runtime.store.listHealth().find((h) => h.accountKey === "resend#delivery");
     expect(zdrowie?.state).not.toBe("ok");
+  });
+});
+
+// ── kontrola proby: `check` naprawia historie (P0.2) ─────────────────────────
+
+/**
+ * `check` byl czysto odczytowy, a `historyComplete` liczylo, czy w sprawie
+ * jest JAKAKOLWIEK wiadomosc wychodzaca. Oba bledy skladaly sie na jeden
+ * skutek: po awarii miedzy potwierdzeniem wysylki a zapisem historii watek
+ * nie pokazywal odpowiedzi, a kontrola oglaszala „historia kompletna" i nikt
+ * juz nigdy tego wpisu nie odtworzyl.
+ */
+describe("kontrola proby naprawia historie", () => {
+  const REQ = "req-0000000000000100";
+
+  function checkBody(requestId = REQ) {
+    return {
+      operation: "check",
+      confirmation: "CHECK_CUSTOMER_REPLY",
+      requestId,
+      caseId: "ic_sprawa",
+      expectedLastIncomingMessageId: "mid:klient-1",
+    };
+  }
+
+  function wychodzace(runtime: ReturnType<typeof runtimeWith>) {
+    return runtime.store
+      .messagesForCase("ic_sprawa")
+      .filter((message) => message.direction === "outgoing");
+  }
+
+  /** Atrapa dostawcy, ktora LICZY zadania. Kontrola nie ma prawa ich dolozyc. */
+  function liczacyFetch(): { impl: typeof fetch; ile: () => number } {
+    let ile = 0;
+    const impl = (async () => {
+      ile += 1;
+      return new Response(JSON.stringify({ id: "resend-abc" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    return { impl, ile: () => ile };
+  }
+
+  it("odtwarza wpis po awarii miedzy potwierdzeniem a zapisem historii, BEZ zadania do dostawcy", async () => {
+    const runtime = runtimeWith({
+      outbound: {
+        resendApiKey: "re_test",
+        resendWebhookSecret: null,
+        metaAppSecret: null,
+        metaVerifyToken: null,
+      },
+    });
+    seedCase(runtime.store);
+    seedIncomingMessage(runtime.store);
+    const dostawca = liczacyFetch();
+
+    /*
+     * Awaria DOKLADNIE w oknie miedzy `finishSent` a zapisem wiadomosci:
+     * ledger dostaje `sent`, a wpis w watku nie powstaje.
+     */
+    const zapis = runtime.store.claimMessageDurable.bind(runtime.store);
+    runtime.store.claimMessageDurable = (message) =>
+      message.direction === "outgoing" ? false : zapis(message);
+
+    const wyslane = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      fetchImpl: dostawca.impl,
+      body: {
+        operation: "send",
+        confirmation: "SEND_CUSTOMER_REPLY",
+        requestId: REQ,
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+        text: "Paczka wyszla wczoraj",
+      },
+    });
+    expect(wyslane.body).toMatchObject({ data: { status: "sent" } });
+    expect(dostawca.ile()).toBe(1);
+    expect(wychodzace(runtime)).toHaveLength(0);
+
+    runtime.store.claimMessageDurable = zapis;
+
+    const pierwsza = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 30_000,
+      fetchImpl: dostawca.impl,
+      body: checkBody(),
+    });
+    expect(pierwsza.status).toBe(200);
+    expect(pierwsza.body).toMatchObject({
+      data: {
+        status: "sent",
+        terminal: true,
+        outcome: "sent",
+        repairedHistory: true,
+        restoredMessage: true,
+        historyComplete: true,
+      },
+    });
+    // Wpis wrocil, a do dostawcy nie poszlo ANI JEDNO dodatkowe zadanie.
+    expect(wychodzace(runtime)).toHaveLength(1);
+    expect(wychodzace(runtime)[0]!.externalMessageId).toBe("resend:resend-abc");
+    expect(dostawca.ile()).toBe(1);
+
+    const druga = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 60_000,
+      fetchImpl: dostawca.impl,
+      body: checkBody(),
+    });
+    expect(druga.body).toMatchObject({
+      data: { status: "sent", repairedHistory: false, restoredMessage: false, historyComplete: true },
+    });
+    // Druga kontrola niczego nie dubluje ani nie dokłada zadan.
+    expect(wychodzace(runtime)).toHaveLength(1);
+    expect(dostawca.ile()).toBe(1);
+  });
+
+  it("starsza odpowiedz w sprawie NIE udaje kompletnej historii tej proby", async () => {
+    const runtime = runtimeWith();
+    seedCase(runtime.store);
+    seedIncomingMessage(runtime.store);
+
+    // Odpowiedz sprzed tygodnia, z zupelnie innej proby.
+    runtime.store.claimMessage({
+      provider: "email",
+      accountKey: "sklep",
+      externalConversationId: "conv-1",
+      externalMessageId: "resend:stara-odpowiedz",
+      caseId: "ic_sprawa",
+      direction: "outgoing",
+      sourceCreatedAt: NOW - 604_800_000,
+      receivedAt: NOW - 604_800_000,
+      authorLabel: null,
+      subject: "Zamowienie 4411",
+      body: "Dzien dobry, sprawdzamy",
+      bodyTruncated: false,
+      attachments: [],
+      rfcMessageId: null,
+      replyToAddress: null,
+      rfcInReplyTo: null,
+      rfcReferences: [],
+      isEcho: false,
+      bulkHint: false,
+      contentFingerprint: "fp-stara",
+    });
+    runtime.store.putAttempt(attempt());
+    expect(wychodzace(runtime)).toHaveLength(1);
+
+    const wynik = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      // Atrapa, ktora WYBUCHA: kontrola nie ma prawa dotknac dostawcy.
+      fetchImpl: (() => {
+        throw new Error("kontrola nie moze wolac dostawcy");
+      }) as unknown as typeof fetch,
+      body: checkBody(),
+    });
+
+    expect(wynik.body).toMatchObject({
+      data: { status: "sent", repairedHistory: true, restoredMessage: true, historyComplete: true },
+    });
+    // Brakujacy wpis TEJ proby powstal obok starszej odpowiedzi.
+    const wpisy = wychodzace(runtime).map((message) => message.externalMessageId);
+    expect(wpisy).toContain("resend:stara-odpowiedz");
+    expect(wpisy).toContain("resend:resend-abc");
+    expect(wpisy).toHaveLength(2);
+  });
+
+  it("nieudana naprawa NIE oglasza kompletnej historii, mimo starszej odpowiedzi w watku", async () => {
+    const runtime = runtimeWith();
+    seedCase(runtime.store);
+    seedIncomingMessage(runtime.store);
+    runtime.store.claimMessage({
+      provider: "email",
+      accountKey: "sklep",
+      externalConversationId: "conv-1",
+      externalMessageId: "resend:stara-odpowiedz",
+      caseId: "ic_sprawa",
+      direction: "outgoing",
+      sourceCreatedAt: NOW - 604_800_000,
+      receivedAt: NOW - 604_800_000,
+      authorLabel: null,
+      subject: "Zamowienie 4411",
+      body: "Dzien dobry, sprawdzamy",
+      bodyTruncated: false,
+      attachments: [],
+      rfcMessageId: null,
+      replyToAddress: null,
+      rfcInReplyTo: null,
+      rfcReferences: [],
+      isEcho: false,
+      bulkHint: false,
+      contentFingerprint: "fp-stara",
+    });
+    runtime.store.putAttempt(attempt());
+
+    // Magazyn dalej odmawia zapisu: naprawa nie ma jak sie udac.
+    runtime.store.claimMessageDurable = () => false;
+
+    const wynik = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      body: checkBody(),
+    });
+
+    /*
+     * Watek MA wiadomosc wychodzaca, ale nie te. Odpowiedz „historia
+     * kompletna" liczona z samego KIERUNKU wiadomosci klamalaby tutaj,
+     * a klamstwo konczy sie tym, ze brakujacy wpis nie powstaje juz nigdy.
+     */
+    expect(wynik.body).toMatchObject({
+      data: {
+        status: "sent",
+        historyComplete: false,
+        repairedHistory: false,
+        restoredMessage: false,
+        historyBlockedBy: "write_failed",
+      },
+    });
+    expect(wychodzace(runtime)).toHaveLength(1);
+  });
+
+  it("niesie TERMINALNY stan proby: kiedy wolno odblokowac formularz, a kiedy nie", async () => {
+    const runtime = runtimeWith();
+    seedCase(runtime.store);
+    seedIncomingMessage(runtime.store);
+
+    // 1. Brak sladu proby: nic nie polecialo, wiec wolno pisac od nowa.
+    const brak = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      body: checkBody("req-0000000000000777"),
+    });
+    expect(brak.body).toMatchObject({
+      data: { status: "not_found", terminal: true, outcome: "not_sent", mayRetry: true, needsHumanDecision: false },
+    });
+
+    // 2. `uncertain`: NIE wolno odblokowac, decyduje czlowiek.
+    runtime.store.putAttempt(
+      attempt({ status: "uncertain", externalMessageId: null, completedAt: null, failureCode: "transport_exception" }),
+    );
+    const niepewna = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      body: checkBody(),
+    });
+    expect(niepewna.body).toMatchObject({
+      data: {
+        status: "uncertain",
+        terminal: false,
+        outcome: "unknown",
+        mayRetry: false,
+        needsHumanDecision: true,
+        // Niewyslana proba jest spojna z definicji: w watku nie ma prawa byc
+        // odpowiedzi, o ktorej nie wiemy, czy poszla.
+        historyComplete: true,
+        repairedHistory: false,
+      },
+    });
+    expect(wychodzace(runtime)).toHaveLength(0);
+
+    // 3. `failed`: terminalne i wolno ponowic.
+    runtime.store.putAttempt(
+      attempt({ status: "failed", externalMessageId: null, failureCode: "http_422" }),
+    );
+    const nieudana = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      body: checkBody(),
+    });
+    expect(nieudana.body).toMatchObject({
+      data: { status: "failed", terminal: true, outcome: "not_sent", mayRetry: true, needsHumanDecision: false },
+    });
+
+    // 4. `sent`: terminalne, ale ponowienie TEJ tresci jest zabronione.
+    runtime.store.putAttempt(attempt());
+    const wyslana = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW,
+      body: checkBody(),
+    });
+    expect(wyslana.body).toMatchObject({
+      data: { status: "sent", terminal: true, outcome: "sent", mayRetry: false, needsHumanDecision: false },
+    });
+  });
+});
+
+// ── prog zaleglego uzgodnienia idzie z KONFIGURACJI (P0.4) ───────────────────
+
+describe("kompletnosc widoku w odpowiedzi kolejki", () => {
+  function czytajKolejke(runtime: ReturnType<typeof runtimeWith>, now: number) {
+    const result = handleInboxRead({
+      runtime,
+      path: "/internal/inbox/cases",
+      params: new URLSearchParams(),
+      now,
+      trustedChat: true,
+    });
+    return (
+      result.body as {
+        data: {
+          completeView: boolean;
+          freshness: {
+            contractVersion: string;
+            completeView: boolean;
+            reconcileOverdue: string[];
+            reconcileOverdueMs: number;
+          };
+        };
+      }
+    ).data;
+  }
+
+  it("kadencja z konfiguracji przesuwa prog zaleglosci widziany przez kolejke", () => {
+    const gesta = runtimeWith({ tickIntervalMs: 60_000 });
+    seedCase(gesta.store);
+    recordSuccess(
+      gesta.store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "E-mail sklep", active: true },
+      NOW - 30 * 60_000,
+    );
+    const zGesta = czytajKolejke(gesta, NOW);
+    // Kadencja minutowa: prog to 18 minut, wiec 30 minut bez uzgodnienia
+    // znaczy „nie wiemy, czy to cala kolejka".
+    expect(zGesta.freshness.reconcileOverdueMs).toBe(18 * 60_000);
+    expect(zGesta.freshness.reconcileOverdue).toContain("email:sklep");
+    expect(zGesta.completeView).toBe(false);
+
+    const rzadka = runtimeWith({ tickIntervalMs: 300_000 });
+    seedCase(rzadka.store);
+    recordSuccess(
+      rzadka.store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "E-mail sklep", active: true },
+      NOW - 30 * 60_000,
+    );
+    const zRzadka = czytajKolejke(rzadka, NOW);
+    expect(zRzadka.freshness.reconcileOverdueMs).toBe(90 * 60_000);
+    expect(zRzadka.freshness.reconcileOverdue).toHaveLength(0);
+    expect(zRzadka.completeView).toBe(true);
+  });
+
+  it("niespojne przewijanie zabiera kompletnosc, mimo zdrowego kanalu", () => {
+    const runtime = runtimeWith();
+    recordSuccess(
+      runtime.store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "E-mail sklep", active: true },
+      NOW,
+    );
+    seedCase(runtime.store, { caseId: "ic_a", lastMessageAt: NOW - 1_000 });
+    seedCase(runtime.store, { caseId: "ic_b", lastMessageAt: NOW - 2_000 });
+    seedCase(runtime.store, { caseId: "ic_c", lastMessageAt: NOW - 3_000 });
+
+    function strona(cursor: string | null) {
+      const params = new URLSearchParams({ state: "all", limit: "1" });
+      if (cursor) params.set("cursor", cursor);
+      return (
+        handleInboxRead({ runtime, path: "/internal/inbox/cases", params, now: NOW, trustedChat: true })
+          .body as {
+          data: {
+            cases: Array<{ caseId: string }>;
+            nextCursor: string | null;
+            snapshotChanged: boolean;
+            completeView: boolean;
+            freshness: { completeView: boolean };
+          };
+        }
+      ).data;
+    }
+
+    const pierwsza = strona(null);
+    expect(pierwsza.cases.map((entry) => entry.caseId)).toEqual(["ic_a"]);
+    // Pierwsza strona nie ma jak niczego zgubic: zaczyna sie od czola listy.
+    expect(pierwsza.snapshotChanged).toBe(false);
+    expect(pierwsza.completeView).toBe(true);
+
+    // Sprawa jeszcze NIEWYDANA dostaje wiadomosc i leci nad kursor: to
+    // przewijanie juz jej nie pokaze.
+    seedCase(runtime.store, { caseId: "ic_c", lastMessageAt: NOW + 5_000 });
+
+    const druga = strona(pierwsza.nextCursor);
+    expect(druga.snapshotChanged).toBe(true);
+    /*
+     * Kanal jest zdrowy i uzgodniony, wiec SAMO zdrowie mowi „komplet".
+     * Odpowiedz mimo to nie ma prawa tak wygladac: w sklejonym wyniku brakuje
+     * sprawy. Warstwa HTTP przelicza zdrowie z konfiguracji i musi zachowac
+     * drugi warunek, a nie zastapic nim pierwszego.
+     */
+    expect(druga.freshness.completeView).toBe(true);
+    expect(druga.completeView).toBe(false);
+  });
+
+  it("/health i freshness kolejki niosa TEN SAM kontrakt", () => {
+    const runtime = runtimeWith({ tickIntervalMs: 60_000 });
+    seedCase(runtime.store);
+    recordSuccess(
+      runtime.store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "E-mail sklep", active: true },
+      NOW - 30 * 60_000,
+    );
+
+    const zdrowie = (
+      handleInboxRead({
+        runtime,
+        path: "/internal/inbox/health",
+        params: new URLSearchParams(),
+        now: NOW,
+        trustedChat: true,
+      }).body as { data: Record<string, unknown> }
+    ).data;
+    const zKolejki = czytajKolejke(runtime, NOW).freshness;
+
+    const zeSprawy = (
+      handleInboxRead({
+        runtime,
+        path: "/internal/inbox/case",
+        params: new URLSearchParams({ id: "ic_sprawa" }),
+        now: NOW,
+        trustedChat: true,
+      }).body as { data: { freshness: Record<string, unknown> } }
+    ).data.freshness;
+
+    // Trzy sciezki odczytu, JEDEN obiekt zdrowia. Sprawa otwarta obok kolejki
+    // nie moze mowic o kanale czegos innego niz lista.
+    expect(zdrowie).toEqual(zKolejki);
+    expect(zeSprawy).toEqual(zKolejki);
+    expect(zdrowie.contractVersion).toBe("inbox-health-1");
+  });
+});
+
+/**
+ * Pola stanu HISTORII musza przejsc przez granice HTTP.
+ *
+ * Kontrola po naprawach zlapala, ze naprawa historii byla wyliczana, opisana
+ * komentarzem obiecujacym rozroznienie, i gubiona w DTO. Dla odbiorcy „wyslano"
+ * brzmialo wtedy tak samo dla watku kompletnego i dla takiego, ktorego wpisu
+ * nie udalo sie odtworzyc — a to jest roznica miedzy sprawa zamknieta
+ * a sprawa, ktora kolejna osoba obsluzy drugi raz.
+ */
+describe("stan historii dociera do odbiorcy", () => {
+  it("reczne rozstrzygniecie raportuje NAPRAWE historii przez HTTP", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "inbox-historia-"));
+    dirs.push(dir);
+    const store = new InboxStore({ dir });
+    seedCase(store);
+    const runtime = createRuntime(config(), store);
+
+    prepareAttempt({
+      store,
+      requestId: "req-historia-00000001",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-historia-00000001", NOW);
+    finishSent(store, "req-historia-00000001", "ext-historia-1", NOW);
+    // Awaria dokladnie tutaj: ledger juz `sent`, wpisu w watku jeszcze nie ma.
+
+    const wynik = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 300_000,
+      body: {
+        operation: "resolve_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT",
+        requestId: "req-historia-00000001",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+
+    expect(wynik.status).toBe(200);
+    const dane = (wynik.body as { data?: Record<string, unknown> }).data ?? {};
+    // Naprawa faktycznie sie wydarzyla I zostala ZGLOSZONA odbiorcy.
+    expect(dane["repairedHistory"]).toBe(true);
+    expect(dane["historyPresent"]).toBe(true);
+    expect(dane["historyBlockedBy"]).toBeNull();
+
+    // Wpis jest w watku takze po restarcie procesu.
+    const poRestarcie = new InboxStore({ dir });
+    const wychodzace = poRestarcie
+      .messagesForCase("ic_sprawa")
+      .filter((message) => message.direction === "outgoing");
+    expect(wychodzace).toHaveLength(1);
+  });
+
+  it("powtorzone rozstrzygniecie nie dubluje wpisu i mowi, ze nie bylo czego naprawiac", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "inbox-historia2-"));
+    dirs.push(dir);
+    const store = new InboxStore({ dir });
+    seedCase(store);
+    const runtime = createRuntime(config(), store);
+
+    prepareAttempt({
+      store,
+      requestId: "req-historia-00000002",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-historia-00000002", NOW);
+    finishSent(store, "req-historia-00000002", "ext-historia-2", NOW);
+
+    const cialo = {
+      operation: "resolve_sent" as const,
+      confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT" as const,
+      requestId: "req-historia-00000002",
+      caseId: "ic_sprawa",
+      expectedLastIncomingMessageId: "mid:klient-1",
+    };
+    await handleInboxReply({ runtime, humanConfirmation: "confirmed", now: NOW + 300_000, body: cialo });
+    const drugie = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 400_000,
+      body: cialo,
+    });
+
+    const dane = (drugie.body as { data?: Record<string, unknown> }).data ?? {};
+    expect(drugie.status).toBe(200);
+    // Nic nowego do naprawy, ale historia JEST: to dwie rozne informacje.
+    expect(dane["repairedHistory"]).toBe(false);
+    expect(dane["historyPresent"]).toBe(true);
+    expect(
+      store.messagesForCase("ic_sprawa").filter((m) => m.direction === "outgoing"),
+    ).toHaveLength(1);
   });
 });

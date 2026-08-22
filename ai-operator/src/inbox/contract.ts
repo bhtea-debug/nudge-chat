@@ -283,3 +283,131 @@ export function overallFreshness(
 /** Tryb treści. `model` redaguje dane kontaktowe przed analizą AI. */
 export const ContentMode = z.enum(["none", "display", "model"]);
 export type ContentMode = z.infer<typeof ContentMode>;
+
+// ── zdrowie i kompletnosc: JEDEN wersjonowany kontrakt ───────────────────────
+
+/**
+ * Wersja kontraktu zdrowia i kompletności.
+ *
+ * Jedzie w KAŻDEJ odpowiedzi niosącej ten kształt, bo odbiorca (firmowy czat)
+ * musi mieć prawo odmówić interpretacji kształtu, którego nie zna, zamiast
+ * zgadywać z brakujących pól. Data wdrożenia takiej możliwości nie daje:
+ * dwie instancje bywają wdrożone w różnych chwilach.
+ *
+ * Podnosimy przy KAŻDEJ zmianie znaczenia pola, nie tylko przy usunięciu.
+ */
+export const INBOX_HEALTH_CONTRACT_VERSION = "inbox-health-1";
+
+/**
+ * Stany źródeł spoza naszego słownika, sprowadzone do jednego znaczenia.
+ *
+ * `ready` przychodzi z mostu TeaBrew (Allegro) i znaczy DOKŁADNIE to, co nasze
+ * `ok`. Dopóki każdy konsument tłumaczył je sam, jeden rysował zieloną kropkę,
+ * a drugi odmawiał komunikatu o pustej kolejce dla tego samego źródła, więc
+ * ta sama chwila wyglądała na dwa różne stany kanału.
+ *
+ * Tłumaczenie jest tutaj, w kontrakcie, żeby czat mógł zaimportować dokładnie
+ * tę funkcję zamiast pisać drugą, równoległą tabelkę.
+ */
+const KNOWN_HEALTH_STATES: ReadonlySet<string> = new Set(HealthState.options);
+
+/**
+ * Walidacja stanu źródła. NIE tłumaczenie.
+ *
+ * Tłumaczenie żyje w adapterach, przy źródle, które zna swoje własne nazwy
+ * (`toSourceHealth` dla Allegro). Druga tabela tutaj wyglądała na wspólny
+ * kontrakt, a była równoległą listą, która mogła się z tamtą rozjechać —
+ * i zaczęła: jedna uznawała `syncing` za zdrowe, druga za błąd. Dwie tabele
+ * dla jednej decyzji to jedna za dużo, więc zostaje ta przy źródle.
+ *
+ * Tutaj pilnujemy już tylko tego, żeby do kontraktu nie wszedł stan spoza
+ * zbioru. Nieznany stan jest BŁĘDEM, a nie cichym „ok": nowa wartość dodana
+ * kiedyś po drugiej stronie ma zapalić widoczną awarię, a nie przemknąć jako
+ * spokojny dzień.
+ */
+export function normalizeSourceState(raw: string): HealthState {
+  return KNOWN_HEALTH_STATES.has(raw) ? (raw as HealthState) : "error";
+}
+
+/** Czy źródło w tym stanie realnie dostarcza dane. Jedno miejsce, jedna reguła. */
+export function isSourceStateHealthy(raw: string): boolean {
+  return normalizeSourceState(raw) === "ok";
+}
+
+/** Dlaczego widok NIE jest kompletny. Pusta lista = jest kompletny. */
+export type CompletenessGap = "no_active_source" | "source_degraded" | "reconcile_overdue";
+
+/**
+ * Zdrowie i kompletność JEDNEGO źródła.
+ *
+ * Odbiór i uzgodnienie są tu osobno i nigdy nie wolno ich skleić. Webhook
+ * potwierdza wyłącznie, że kanał przyjmowania żyje; nie mówi ani słowa o tym,
+ * czy podczas restartu albo przerwy nic nie przepadło. Sklejenie tych dwóch
+ * czasów daje stronę, która przez dobę bez uzgodnienia wygląda na w pełni
+ * zsynchronizowaną.
+ */
+export interface SourceCompleteness {
+  /** `provider:accountKey`, ten sam format, co w listach kluczy. */
+  readonly source: string;
+  readonly provider: ProviderId;
+  readonly accountKey: AccountKey;
+  readonly label: string;
+  /** Stan PO normalizacji. Tego pola używa się do decyzji. */
+  readonly state: HealthState;
+  /** Stan tak, jak go zapisało źródło. Wyłącznie do diagnostyki. */
+  readonly rawState: string;
+  readonly active: boolean;
+  /** `state === "ok"`. Wyliczone raz, żeby nikt nie liczył tego po swojemu. */
+  readonly healthy: boolean;
+  /** Ostatnie PEŁNE uzgodnienie ze źródłem. Tylko ono dowodzi kompletności. */
+  readonly lastReconciledAt: number | null;
+  /** Ostatni potwierdzony ODBIÓR (zweryfikowany, trwale zapisany webhook). */
+  readonly lastReceiptAt: number | null;
+  /** Uzgodnienie starsze niż próg albo żadnego. */
+  readonly reconcileOverdue: boolean;
+  readonly nextAttemptAt: number | null;
+  readonly consecutiveFailures: number;
+  readonly message: string | null;
+}
+
+/**
+ * Zdrowie i kompletność CAŁEGO kanału.
+ *
+ * Ten sam obiekt jedzie z `/health`, z `freshness` w odpowiedzi kolejki i
+ * z `freshness` w odpowiedzi sprawy. Dwie niezależne prawdy o kompletności
+ * kończyły się tym, że jedna odpowiedź mówiła „mamy wszystko", a druga
+ * „nie wiemy" w tej samej sekundzie.
+ */
+export interface ChannelHealth {
+  readonly contractVersion: typeof INBOX_HEALTH_CONTRACT_VERSION;
+  /** Zegar, przy którym policzono ten obiekt. Bez niego wiek jest nieweryfikowalny. */
+  readonly generatedAt: number;
+  readonly state: OverallFreshnessState;
+  /**
+   * Wiek NAJSTARSZEGO potwierdzenia (uzgodnienie albo odbiór) wśród aktywnych
+   * źródeł. To jest wiek kropki, a nie miara kompletności.
+   */
+  readonly ageMs: number | null;
+  readonly oldestSuccessAt: number | null;
+  /** Najstarsze PEŁNE uzgodnienie wśród aktywnych źródeł. */
+  readonly oldestReconciledAt: number | null;
+  /** Najświeższy potwierdzony ODBIÓR w całym kanale. */
+  readonly lastReceiptAt: number | null;
+  readonly sources: SourceCompleteness[];
+  readonly degraded: boolean;
+  readonly degradedSources: string[];
+  /** Źródła z zaległym pełnym uzgodnieniem. Klucze `provider:accountKey`. */
+  readonly reconcileOverdue: string[];
+  /** Próg użyty w TYM wyliczeniu, policzony z rzeczywistej kadencji. */
+  readonly reconcileOverdueMs: number;
+  /**
+   * Czy wolno napisać „to wszystkie sprawy" / „brak spraw".
+   *
+   * ROZSTRZYGAJĄCE. Konsument nie ma prawa składać własnego warunku ze
+   * `state`, `degraded` i `reconcileOverdue`, bo dokładnie takie składanie
+   * dało dwie różne odpowiedzi na to samo pytanie.
+   */
+  readonly completeView: boolean;
+  readonly incompleteBecause: CompletenessGap[];
+  readonly policy: typeof FRESHNESS_POLICY;
+}
