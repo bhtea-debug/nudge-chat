@@ -7,7 +7,15 @@ import type { InboxConfig } from "./config.js";
 import { handleInboxReply } from "./http.js";
 import { createRuntime } from "./runtime.js";
 import { InboxStore, type OutboundAttempt, type StoredCase } from "./store.js";
-import { beginSending, markUncertain, prepareAttempt, resolveUncertain } from "./outbound/ledger.js";
+import {
+  PREPARED_TTL_MS,
+  beginSending,
+  expirePrepared,
+  expirePreparedAttempts,
+  markUncertain,
+  prepareAttempt,
+  resolveUncertain,
+} from "./outbound/ledger.js";
 import { sendReply } from "./outbound/send.js";
 import { ingestMetaEvents } from "./providers/meta/ingest.js";
 
@@ -167,6 +175,61 @@ describe("restart w polowie operacji", () => {
       now: () => NOW + 1_000,
     });
     expect(second).toMatchObject({ status: "rejected", code: "active_attempt_exists" });
+
+    /*
+     * Blokada MUSI miec wyjscie.
+     *
+     * Utrwalone `sending` bez drogi rozstrzygniecia zamykalo sprawe na zawsze:
+     * anulowac nie wolno (request mogl polecieć), a rozstrzygac sie nie dalo.
+     * Po odczekaniu czlowiek sprawdza u dostawcy i decyduje — bez drugiego POSTu.
+     */
+    const zapytania: string[] = [];
+    const runtime = createRuntime(config(), after);
+    const rozstrzygniecie = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 200_000,
+      fetchImpl: (async (input: unknown) => {
+        zapytania.push(String(input));
+        throw new Error("zaden request nie ma prawa tu polecieć");
+      }) as unknown as typeof fetch,
+      body: {
+        operation: "resolve_not_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_NOT_SENT",
+        requestId: "req-0000000000000001",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+    expect(rozstrzygniecie.status).toBe(200);
+    expect(after.getAttempt("req-0000000000000001")?.status).toBe("failed");
+    expect(zapytania).toHaveLength(0);
+
+    // Sprawa jest odblokowana: kolejna proba przechodzi.
+    expect(after.activeAttemptForCase("ic_sprawa")).toBeNull();
+  });
+
+  it("utrwalone `sending` nie da sie rozstrzygnac przed odczekaniem", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    seedCase(store);
+    prepareAttempt({
+      store,
+      requestId: "req-sending-000000001",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-sending-000000001", NOW);
+
+    // Odpowiedz dostawcy moze jeszcze przyjsc: przedwczesne rozstrzygniecie
+    // bylaby zgadywanka, a nie sprawdzeniem.
+    expect(resolveUncertain(store, "req-sending-000000001", "sent", NOW + 1_000)).toMatchObject({
+      ok: false,
+      code: "too_early",
+    });
+    expect(store.getAttempt("req-sending-000000001")?.status).toBe("sending");
   });
 
   it("restart po requescie, przed odczytem odpowiedzi, daje stan niepewny do rozstrzygniecia", () => {
@@ -188,7 +251,21 @@ describe("restart w polowie operacji", () => {
     expect(after.getAttempt("req-0000000000000003")?.status).toBe("uncertain");
     // Rozstrzygniecie recznie jest mozliwe dopiero po odczekaniu.
     expect(resolveUncertain(after, "req-0000000000000003", "sent", NOW + 1_000).ok).toBe(false);
-    expect(resolveUncertain(after, "req-0000000000000003", "sent", NOW + 200_000).ok).toBe(true);
+    expect(resolveUncertain(after, "req-0000000000000003", "sent", NOW + 200_000)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+    // Ponowienie z tym samym wynikiem: sukces, ale bez ponownego zapisu.
+    expect(resolveUncertain(after, "req-0000000000000003", "sent", NOW + 300_000)).toMatchObject({
+      ok: true,
+      changed: false,
+    });
+    // Wynik sprzeczny nie odwraca stanu koncowego.
+    expect(resolveUncertain(after, "req-0000000000000003", "not_sent", NOW + 300_000)).toMatchObject({
+      ok: false,
+      code: "conflicting_resolution:sent",
+    });
+    expect(after.getAttempt("req-0000000000000003")?.completedAt).toBe(NOW + 200_000);
   });
 
   it("reczne `dostarczona` NAPRAWIA historie i nie wysyla niczego drugi raz", async () => {
@@ -246,11 +323,21 @@ describe("restart w polowie operacji", () => {
     // Tresci ledger nie przechowuje, wiec odtworzony wpis NIE moze jej udawac.
     expect(wychodzace[0]!.body).toContain("odtworzona z ledgera");
 
-    // Powtorzenie tej samej operacji nie dokłada drugiej wiadomosci.
+    /*
+     * Powtorzenie ZGODNEGO rozstrzygniecia jest sukcesem, nie bledem.
+     *
+     * Ten scenariusz jest najczestszy ze wszystkich: zapis poszedl, odpowiedz
+     * do czlowieka nie doszla, wiec klika drugi raz. Odbicie go bledem uczy,
+     * ze przycisk „nie zadzialal", i pcha do szukania obejscia. Stan koncowy
+     * zostaje ten sam, historia nie rosnie, do dostawcy nic nie leci.
+     */
     const powtorka = await handleInboxReply({
       runtime,
       humanConfirmation: "confirmed",
       now: NOW + 300_000,
+      fetchImpl: (async () => {
+        throw new Error("zaden request nie ma prawa tu polecieć");
+      }) as unknown as typeof fetch,
       body: {
         operation: "resolve_sent",
         confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT",
@@ -259,12 +346,204 @@ describe("restart w polowie operacji", () => {
         expectedLastIncomingMessageId: "mid:klient-1",
       },
     });
-    expect(powtorka.status).toBe(409);
+    expect(powtorka.status).toBe(200);
+    // Nic nie zostalo naprawione po raz drugi ani zapisane od nowa.
+    expect(powtorka.body).toMatchObject({ ok: true, data: { repairedHistory: false } });
+    const attempt = store.getAttempt("req-0000000000000009")!;
+    expect(attempt.status).toBe("sent");
+    // Czas rozstrzygniecia zostaje ten pierwotny: powtorka niczego nie przepisuje.
+    expect(attempt.completedAt).toBe(NOW + 200_000);
     expect(
       new InboxStore({ dir })
         .messagesForCase("ic_sprawa")
         .filter((message) => message.direction === "outgoing"),
     ).toHaveLength(1);
+
+    /*
+     * SPRZECZNE rozstrzygniecie jest odrzucane.
+     *
+     * Stan koncowy nie moze sie cofnac: wiadomosc u klienta juz jest, a wpis
+     * „nie wyslano" zamienilby ja w niewidzialna i sprawa poszlaby drugi raz.
+     */
+    const sprzecznosc = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 400_000,
+      body: {
+        operation: "resolve_not_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_NOT_SENT",
+        requestId: "req-0000000000000009",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+    expect(sprzecznosc.status).toBe(409);
+    expect(sprzecznosc.body).toMatchObject({ error: "conflicting_resolution:sent" });
+    expect(store.getAttempt("req-0000000000000009")?.status).toBe("sent");
+  });
+
+  it("rozstrzygniecie `wyslano` ze stanu `sending` odtwarza wiadomosc DOKLADNIE raz", async () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    seedCase(store);
+    prepareAttempt({
+      store,
+      requestId: "req-sending-000000002",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz, ktora moze byla u dostawcy",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-sending-000000002", NOW);
+    // Proces pada w oknie miedzy zapisem `sending` a POST-em. Czlowiek sprawdza
+    // u dostawcy i widzi wiadomosc: rozstrzyga „wyslano".
+
+    const runtime = createRuntime(config(), new InboxStore({ dir }));
+    const wynik = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 200_000,
+      body: {
+        operation: "resolve_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT",
+        requestId: "req-sending-000000002",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+    expect(wynik.status).toBe(200);
+    expect(wynik.body).toMatchObject({ data: { status: "sent", repairedHistory: true } });
+
+    const wychodzace = () =>
+      new InboxStore({ dir })
+        .messagesForCase("ic_sprawa")
+        .filter((message) => message.direction === "outgoing");
+    expect(wychodzace()).toHaveLength(1);
+    expect(wychodzace()[0]!.body).toContain("odtworzona z ledgera");
+
+    // Druga naprawa nie dokłada blizniaczej wiadomosci do watku.
+    const powtorka = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 300_000,
+      body: {
+        operation: "resolve_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT",
+        requestId: "req-sending-000000002",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+    expect(powtorka.status).toBe(200);
+    expect(powtorka.body).toMatchObject({ data: { repairedHistory: false } });
+    expect(wychodzace()).toHaveLength(1);
+    // Sprawa przestaje czekac na reakcje: odpowiedz jest w watku.
+    expect(new InboxStore({ dir }).getCase("ic_sprawa")!.requiresResponse).toBe(false);
+  });
+
+  it("wygasly `prepared` daje sie zterminalizowac i NIE blokuje kolejnej proby", async () => {
+    const dir = newDir();
+    const before = new InboxStore({ dir });
+    seedCase(before);
+    prepareAttempt({
+      store: before,
+      requestId: "req-prepared-00000001",
+      caseId: "ic_sprawa",
+      text: "Szkic, ktorego nikt nie potwierdzil",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    // Proces pada przed potwierdzeniem: do dostawcy NIC nie polecialo.
+
+    const after = new InboxStore({ dir });
+    expect(after.getAttempt("req-prepared-00000001")?.status).toBe("prepared");
+
+    // Dopoki blokada zyje, kolejna proba w tej sprawie sie odbija.
+    const zablokowana = await sendReply({
+      store: after,
+      requestId: "req-prepared-00000002",
+      caseId: "ic_sprawa",
+      text: "Druga proba",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: { send: async () => ({ status: "sent", externalMessageId: "x" }) },
+      now: () => NOW + 1_000,
+    });
+    expect(zablokowana).toMatchObject({ status: "rejected", code: "active_attempt_exists" });
+
+    // Przed uplywem czasu nie terminalizujemy: czlowiek moze wlasnie czytac szkic.
+    expect(expirePrepared(after, "req-prepared-00000001", NOW + 1_000)).toMatchObject({
+      ok: false,
+      code: "too_early",
+    });
+
+    const wygasle = expirePreparedAttempts(after, NOW + PREPARED_TTL_MS + 1);
+    expect(wygasle).toEqual(["req-prepared-00000001"]);
+    const zterminalizowana = after.getAttempt("req-prepared-00000001")!;
+    expect(zterminalizowana.status).toBe("failed");
+    expect(zterminalizowana.failureCode).toBe("prepared_expired");
+    expect(after.activeAttemptForCase("ic_sprawa")).toBeNull();
+
+    // Kolejna proba przechodzi, a stan koncowy przezywa restart.
+    const kolejna = await sendReply({
+      store: after,
+      requestId: "req-prepared-00000003",
+      caseId: "ic_sprawa",
+      text: "Druga proba",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: { send: async () => ({ status: "sent", externalMessageId: "resend-1" }) },
+      now: () => NOW + PREPARED_TTL_MS + 2,
+    });
+    expect(kolejna.status).toBe("sent");
+    expect(new InboxStore({ dir }).getAttempt("req-prepared-00000001")?.failureCode).toBe(
+      "prepared_expired",
+    );
+
+    // Powtorzone sprzatanie nie ma juz czego zdejmowac.
+    expect(expirePreparedAttempts(after, NOW + PREPARED_TTL_MS + 3)).toEqual([]);
+  });
+
+  it("sprzatanie wygaslych NIE rusza prob `sending` ani `uncertain`", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    seedCase(store);
+    seedCase(store, { caseId: "ic_druga", externalConversationId: "conv-2" });
+
+    prepareAttempt({
+      store,
+      requestId: "req-wlocie-0000000001",
+      caseId: "ic_sprawa",
+      text: "W locie",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-wlocie-0000000001", NOW);
+
+    prepareAttempt({
+      store,
+      requestId: "req-niepewna-000000001",
+      caseId: "ic_druga",
+      text: "Niepewna",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-niepewna-000000001", NOW);
+    markUncertain(store, "req-niepewna-000000001", "timeout");
+
+    /*
+     * Przy obu tych stanach request MOGL dotrzec do dostawcy. Zdjecie blokady
+     * zegarem otwieraloby droge drugiej wiadomosci u klienta, a o tym, czy
+     * pierwsza doszla, wie tylko czlowiek po sprawdzeniu.
+     */
+    expect(expirePreparedAttempts(store, NOW + PREPARED_TTL_MS * 10)).toEqual([]);
+    expect(store.getAttempt("req-wlocie-0000000001")?.status).toBe("sending");
+    expect(store.getAttempt("req-niepewna-000000001")?.status).toBe("uncertain");
+    expect(expirePrepared(store, "req-wlocie-0000000001", NOW + PREPARED_TTL_MS * 10)).toMatchObject({
+      ok: false,
+      code: "not_expirable:sending",
+    });
+    expect(expirePrepared(store, "req-niepewna-000000001", NOW + PREPARED_TTL_MS * 10)).toMatchObject(
+      { ok: false, code: "not_expirable:uncertain" },
+    );
   });
 
   it("spozniony webhook po recznym rozstrzygnieciu nie tworzy nowej sprawy", () => {

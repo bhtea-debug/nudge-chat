@@ -123,6 +123,82 @@ export function cancelPrepared(
   return { ok: true, code: null };
 }
 
+/** Kod przyczyny dla próby porzuconej w stanie `prepared`. */
+export const PREPARED_EXPIRED_CODE = "prepared_expired";
+
+/**
+ * Czas, po którym porzucone `prepared` przestaje blokować sprawę.
+ *
+ * `prepared` powstaje przed pierwszym requestem i blokuje kolejne próby w tej
+ * sprawie. Gdy proces padnie w tym oknie, blokady nie zdejmie nikt: anulowanie
+ * jest ruchem człowieka, a ten nigdy nie zobaczył potwierdzenia, więc nie wie,
+ * że coś jest do anulowania. Sprawa wisiała wtedy bez końca.
+ */
+export const PREPARED_TTL_MS = 1_800_000;
+
+export interface LedgerOutcome {
+  readonly ok: boolean;
+  readonly code: string | null;
+  /** false = stan był już taki sam, nic nie zapisano (powtórzone żądanie). */
+  readonly changed: boolean;
+}
+
+/**
+ * Terminalizacja porzuconego `prepared`.
+ *
+ * Wolno WYŁĄCZNIE przy `prepared`, bo tylko przy nim wiemy na pewno, że do
+ * dostawcy nic nie poleciało: wpis powstaje przed `beginSending`, a więc przed
+ * jakimkolwiek requestem. Przy `sending` i `uncertain` request mógł dotrzeć,
+ * więc zdjęcie blokady zegarem otwierałoby drogę drugiej wiadomości u klienta —
+ * te stany rozstrzyga człowiek po sprawdzeniu u dostawcy, nigdy zegar.
+ */
+export function expirePrepared(
+  store: InboxStore,
+  requestId: string,
+  now: number,
+  ttlMs = PREPARED_TTL_MS,
+): LedgerOutcome {
+  const attempt = store.getAttempt(requestId);
+  if (!attempt) return { ok: false, code: "not_found", changed: false };
+
+  // Powtórzone sprzątanie tej samej próby jest sukcesem bez zapisu.
+  if (attempt.status === "failed" && attempt.failureCode === PREPARED_EXPIRED_CODE) {
+    return { ok: true, code: null, changed: false };
+  }
+  if (attempt.status !== "prepared") {
+    return { ok: false, code: `not_expirable:${attempt.status}`, changed: false };
+  }
+  if (now - attempt.createdAt < ttlMs) return { ok: false, code: "too_early", changed: false };
+
+  store.putAttempt({
+    ...attempt,
+    status: "failed",
+    failureCode: PREPARED_EXPIRED_CODE,
+    completedAt: now,
+  });
+  return { ok: true, code: null, changed: true };
+}
+
+/**
+ * Sprzątanie wszystkich wygasłych `prepared`. Zwraca zterminalizowane próby.
+ *
+ * Przegląd całego ledgera, a nie jednej sprawy, bo o blokadzie nikt nie wie:
+ * gdyby trzeba było wskazać `requestId`, sprzątanie wymagałoby tej samej
+ * wiedzy, której brak jest przyczyną problemu.
+ */
+export function expirePreparedAttempts(
+  store: InboxStore,
+  now: number,
+  ttlMs = PREPARED_TTL_MS,
+): string[] {
+  const expired: string[] = [];
+  for (const attempt of store.listAttempts()) {
+    if (attempt.status !== "prepared") continue;
+    if (expirePrepared(store, attempt.requestId, now, ttlMs).changed) expired.push(attempt.requestId);
+  }
+  return expired;
+}
+
 /**
  * Przejście `prepared -> sending`. Zwraca false, gdy ktoś już to zrobił.
  *
@@ -228,11 +304,36 @@ export function applyDeliveryEvent(
 }
 
 /**
- * Ręczne rozstrzygnięcie stanu niepewnego przez właściciela.
+ * Wynik zapisany w ledgerze widziany jako „poszło" albo „nie poszło".
+ *
+ * `cancelled` jest tu równoważne „nie poszło": anulować wolno wyłącznie
+ * `prepared`, a przy nim nie było jeszcze żadnego requestu.
+ */
+function terminalOutcome(status: OutboundAttempt["status"]): "sent" | "not_sent" | null {
+  if (status === "sent") return "sent";
+  if (status === "failed" || status === "cancelled") return "not_sent";
+  return null;
+}
+
+/**
+ * Ręczne rozstrzygnięcie próby przez właściciela.
  *
  * Wolno wyłącznie po sprawdzeniu dokładnej wiadomości u dostawcy i nigdy nie
  * wymyśla zewnętrznego czasu wiadomości: `completedAt` to czas ROZSTRZYGNIĘCIA,
  * a nie czas rzekomej wysyłki. Prawdziwy marker uzupełnia kolejny sync.
+ *
+ * Rozstrzygalne są `uncertain` ORAZ `sending`, ale `prepared` nie. Różnica nie
+ * jest kosmetyczna: przy `sending` wpis jest już utrwalony, a proces mógł paść
+ * dokładnie w oknie przed odczytem odpowiedzi, więc request MÓGŁ polecieć do
+ * dostawcy i tylko człowiek jest w stanie sprawdzić, czy wiadomość u klienta
+ * jest. Bez tej ścieżki utrwalone `sending` nie miało żadnego wyjścia —
+ * ani rozstrzygnięcia, ani anulowania — i blokowało sprawę na zawsze. Przy
+ * `prepared` nic nie poleciało, więc właściwą operacją jest anulowanie
+ * (`cancelPrepared`) albo wygaszenie (`expirePrepared`), a nie orzekanie
+ * o losie wysyłki, której nie było.
+ *
+ * Odczekanie liczymy od `postStartedAt`, a gdy go brak — od utworzenia próby.
+ * Chodzi o to, żeby nie orzekać, póki odpowiedź dostawcy może jeszcze przyjść.
  */
 export function resolveUncertain(
   store: InboxStore,
@@ -240,18 +341,38 @@ export function resolveUncertain(
   outcome: "sent" | "not_sent",
   now: number,
   minimumWaitMs = 120_000,
-): { readonly ok: boolean; readonly code: string | null } {
+): LedgerOutcome {
   const attempt = store.getAttempt(requestId);
-  if (!attempt) return { ok: false, code: "not_found" };
-  if (attempt.status !== "uncertain") return { ok: false, code: `not_uncertain:${attempt.status}` };
-  if (attempt.postStartedAt !== null && now - attempt.postStartedAt < minimumWaitMs) {
-    return { ok: false, code: "too_early" };
+  if (!attempt) return { ok: false, code: "not_found", changed: false };
+
+  /*
+   * Idempotencja rozstrzygnięcia.
+   *
+   * Powtórzenie z TYM SAMYM wynikiem jest sukcesem bez zapisu. To najczęstszy
+   * przebieg ze wszystkich: zapis się udał, odpowiedź do człowieka nie doszła,
+   * więc klika drugi raz. Odbicie go błędem uczyło, że przycisk „nie działa".
+   * Wynik SPRZECZNY jest odrzucany: stan końcowy nie może się cofnąć, bo wpis
+   * „nie wysłano" nad wysłaną wiadomością zamienia ją w niewidzialną i sprawa
+   * idzie do klienta drugi raz.
+   */
+  const settled = terminalOutcome(attempt.status);
+  if (settled !== null) {
+    return settled === outcome
+      ? { ok: true, code: null, changed: false }
+      : { ok: false, code: `conflicting_resolution:${attempt.status}`, changed: false };
   }
+
+  if (attempt.status !== "uncertain" && attempt.status !== "sending") {
+    return { ok: false, code: `not_resolvable:${attempt.status}`, changed: false };
+  }
+  const startedAt = attempt.postStartedAt ?? attempt.createdAt;
+  if (now - startedAt < minimumWaitMs) return { ok: false, code: "too_early", changed: false };
+
   store.putAttempt({
     ...attempt,
     status: outcome === "sent" ? "sent" : "failed",
     failureCode: outcome === "sent" ? null : "manually_resolved_not_sent",
     completedAt: now,
   });
-  return { ok: true, code: null };
+  return { ok: true, code: null, changed: true };
 }

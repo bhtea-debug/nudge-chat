@@ -28,39 +28,63 @@ afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-function seed(store: InboxStore, count: number): void {
-  for (let index = 0; index < count; index += 1) {
-    const record: StoredCase = {
-      caseId: `ic_${String(index).padStart(4, "0")}`,
-      provider: "email",
-      accountKey: "sklep",
-      externalConversationId: `conv-${index}`,
-      subject: null,
-      participantLabel: null,
-      orderRef: null,
-      firstSeenAt: NOW - index * 1_000,
-      lastMessageAt: NOW - index * 1_000,
-      lastIncomingMessageId: `mid:${index}`,
-      lastIncomingAt: NOW - index * 1_000,
-      messageCount: 1,
-      requiresResponse: true,
-      pendingAction: false,
-      classifierVersion: CLASSIFIER_VERSION,
-      classificationReason: "customer_message",
-      needsReview: false,
-      sourceClosed: false,
-      hasAttachments: false,
-    };
-    store.upsertCase(record);
-  }
+/** Sprawa numer `index`: im wyższy numer, tym starsza — czyli tym niżej listy. */
+function caseRecord(index: number, overrides: Partial<StoredCase> = {}): StoredCase {
+  return {
+    caseId: `ic_${String(index).padStart(4, "0")}`,
+    provider: "email",
+    accountKey: "sklep",
+    externalConversationId: `conv-${index}`,
+    subject: null,
+    participantLabel: null,
+    orderRef: null,
+    firstSeenAt: NOW - index * 1_000,
+    lastMessageAt: NOW - index * 1_000,
+    lastIncomingMessageId: `mid:${index}`,
+    lastIncomingAt: NOW - index * 1_000,
+    messageCount: 1,
+    requiresResponse: true,
+    pendingAction: false,
+    classifierVersion: CLASSIFIER_VERSION,
+    classificationReason: "customer_message",
+    needsReview: false,
+    sourceClosed: false,
+    hasAttachments: false,
+    ...overrides,
+  };
 }
 
-function drain(store: InboxStore, pageSize: number): { ids: string[]; pages: number } {
+function seed(store: InboxStore, count: number): void {
+  for (let index = 0; index < count; index += 1) store.upsertCase(caseRecord(index));
+}
+
+/** Wysiew wybranych numerów: magazyn nie umie kasować, więc brak sprawy w kolejce odwzorowujemy brakiem w wysiewie. */
+function seedOnly(store: InboxStore, indices: readonly number[]): void {
+  for (const index of indices) store.upsertCase(caseRecord(index));
+}
+
+function indexOfCase(caseId: string): number {
+  return Number(caseId.slice("ic_".length));
+}
+
+interface DrainOptions {
+  readonly cursor?: string | null;
+  readonly state?: "actionable" | "all";
+  readonly maxPages?: number;
+}
+
+function drain(
+  store: InboxStore,
+  pageSize: number,
+  options: DrainOptions = {},
+): { ids: string[]; pages: number } {
+  const state = options.state ?? "all";
+  const maxPages = options.maxPages ?? 50;
   const ids: string[] = [];
-  let cursor: string | null = null;
+  let cursor: string | null = options.cursor ?? null;
   let pages = 0;
-  for (; pages < 50; pages += 1) {
-    const page = queryQueue(store, { now: NOW, state: "all", limit: pageSize, cursor });
+  for (; pages < maxPages; pages += 1) {
+    const page = queryQueue(store, { now: NOW, state, limit: pageSize, cursor });
     ids.push(...page.cases.map((entry) => entry.caseId));
     if (!page.truncated) {
       pages += 1;
@@ -191,16 +215,140 @@ describe("stronicowanie kolejki", () => {
     expect(new Set(ids).size).toBe(10);
   });
 
-  it("nieznany kursor zaczyna od początku zamiast zgadywać pozycję", () => {
+  it("kursor wskazujacy nieistniejaca sprawe nadal wyznacza POZYCJE", () => {
     const store = freshStore();
     seed(store, 5);
+    /*
+     * Kursor niesie klucz porządku, nie wskaźnik na rekord. Sprawa o tym
+     * identyfikatorze nigdy nie istniała, a mimo to wiadomo, gdzie jesteśmy:
+     * czytamy wszystko ostro poniżej `NOW - 2000` w porządku kolejki.
+     * „ic_0002zzz" jest w porządku alfabetycznym za „ic_0002", więc sama
+     * sprawa ic_0002 (ten sam czas) zostaje POWYŻEJ kursora.
+     */
     const page = queryQueue(store, {
       now: NOW,
       state: "all",
       limit: 10,
-      cursor: Buffer.from("123|ic_nie_istnieje", "utf8").toString("base64url"),
+      cursor: Buffer.from(`${NOW - 2_000}|ic_0002zzz`, "utf8").toString("base64url"),
     });
-    expect(page.cases).toHaveLength(5);
+    expect(page.cases.map((entry) => entry.caseId)).toEqual(["ic_0003", "ic_0004"]);
+  });
+
+  it("uszkodzony kursor czyta od poczatku zamiast wysadzac odczyt", () => {
+    const store = freshStore();
+    seed(store, 5);
+    const uszkodzone = [
+      "###nie-base64###",
+      Buffer.from("bez-separatora", "utf8").toString("base64url"),
+      // Kursor w starym, nieliczbowym kształcie: ma być odrzucony, nie policzony.
+      Buffer.from("poczatek|ic_0001", "utf8").toString("base64url"),
+      Buffer.from("|ic_0001", "utf8").toString("base64url"),
+    ];
+    for (const cursor of uszkodzone) {
+      const page = queryQueue(store, { now: NOW, state: "all", limit: 10, cursor });
+      expect(page.cases).toHaveLength(5);
+      expect(page.nextCursor).toBeNull();
+    }
+  });
+
+  it("sprawa, ktora przeskoczyla nad kursor, nie zabiera ze soba innych", () => {
+    const store = freshStore();
+    seed(store, 10);
+
+    const first = queryQueue(store, { now: NOW, state: "all", limit: 4 });
+    expect(first.cases.map((entry) => entry.caseId)).toEqual([
+      "ic_0000",
+      "ic_0001",
+      "ic_0002",
+      "ic_0003",
+    ]);
+
+    // ic_0008 leżała daleko pod kursorem i dostała nową wiadomość: ląduje na
+    // czele listy, czyli nad kursorem. Wolno jej zniknąć z tego przewijania
+    // (klient zobaczy ją przy odświeżeniu od góry) — reszcie nie wolno.
+    store.upsertCase(caseRecord(8, { lastMessageAt: NOW + 5_000, lastIncomingAt: NOW + 5_000 }));
+
+    const rest = drain(store, 4, { cursor: first.nextCursor });
+    const widziane = [...first.cases.map((entry) => entry.caseId), ...rest.ids];
+
+    for (const caseId of ["ic_0004", "ic_0005", "ic_0006", "ic_0007", "ic_0009"]) {
+      expect(widziane).toContain(caseId);
+    }
+    expect(new Set(widziane).size).toBe(widziane.length);
+  });
+
+  it("zniknięcie rekordu kursora nie powtarza poprzedniej strony", () => {
+    const store = freshStore();
+    seedOnly(store, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    const first = queryQueue(store, { now: NOW, state: "all", limit: 4 });
+    expect(first.cases.map((entry) => entry.caseId)).toEqual([
+      "ic_0000",
+      "ic_0001",
+      "ic_0002",
+      "ic_0003",
+    ]);
+
+    // Sprawa z kursora znika z kolejki (scalenie wątków, czyszczenie źródła).
+    const po = freshStore();
+    seedOnly(po, [0, 1, 2, 4, 5, 6, 7, 8, 9]);
+
+    const rest = drain(po, 4, { cursor: first.nextCursor });
+    expect(rest.ids).toEqual(["ic_0004", "ic_0005", "ic_0006", "ic_0007", "ic_0008", "ic_0009"]);
+  });
+
+  it("nowa sprawa na czole listy nie robi luki w dalszej czesci", () => {
+    const store = freshStore();
+    seed(store, 10);
+
+    const first = queryQueue(store, { now: NOW, state: "all", limit: 4 });
+
+    // Świeże zgłoszenie: wchodzi nad kursor, więc nie należy do tego
+    // przewijania. Nie wolno mu jednak przesunąć okna i zjeść ic_0004.
+    store.upsertCase(
+      caseRecord(99, { lastMessageAt: NOW + 10_000, lastIncomingAt: NOW + 10_000 }),
+    );
+
+    const rest = drain(store, 4, { cursor: first.nextCursor });
+    expect(rest.ids).toEqual(["ic_0004", "ic_0005", "ic_0006", "ic_0007", "ic_0008", "ic_0009"]);
+  });
+
+  it('przy state="actionable" obsluzone sprawy nie zatrzymuja postepu', () => {
+    const store = freshStore();
+    seedOnly(store, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    const zebrane: string[] = [];
+    let cursor: string | null = null;
+    let strony = 0;
+    for (; strony < 20; strony += 1) {
+      const page = queryQueue(store, { now: NOW, limit: 3, cursor });
+      zebrane.push(...page.cases.map((entry) => entry.caseId));
+
+      // Człowiek odpowiada na ostatnią sprawę strony: wypada ona z filtra
+      // „do zrobienia", czyli rekord z kursora przestaje istnieć w widoku.
+      const last = page.cases[page.cases.length - 1];
+      if (last) {
+        store.upsertCase(
+          caseRecord(indexOfCase(last.caseId), {
+            requiresResponse: false,
+            pendingAction: false,
+          }),
+        );
+      }
+
+      if (!page.truncated) {
+        strony += 1;
+        break;
+      }
+      cursor = page.nextCursor;
+    }
+
+    // Postęp: cztery strony po trzy i koniec. Bez keyseta odczyt wracał na
+    // początek i krążył po tych samych sprawach przy wiecznie prawdziwym
+    // `truncated`.
+    expect(strony).toBe(4);
+    expect(zebrane).toHaveLength(12);
+    expect(new Set(zebrane).size).toBe(12);
   });
 
   it("kompletność widoku zależy od zdrowia źródeł, nie od liczby rekordów", () => {

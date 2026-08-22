@@ -1,17 +1,36 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  DEFAULT_TICK_INTERVAL_MS,
+  RECONCILE_EVERY_TICKS,
+  type InboxConfig,
+} from "./config.js";
 import { FRESHNESS_POLICY, overallFreshness, type SourceHealth } from "./contract.js";
 import {
   backoffDelay,
   channelFreshness,
+  lastInboundReceiptAt,
   mayReportEmptyQueue,
   recordFailure,
+  recordInboundReceipt,
+  RECONCILE_OVERDUE_MS,
   recordSuccess,
   sanitizeMessage,
 } from "./health.js";
+import { fetchConversations } from "./providers/meta/graph.js";
+import { createRuntime } from "./runtime.js";
 import { InboxStore } from "./store.js";
+
+/*
+ * Graph API jest zamockowane w CALYM pliku: test kadencji ma mierzyc, KIEDY
+ * petla siega po uzgodnienie, a nie to, czy jest siec.
+ */
+vi.mock("./providers/meta/graph.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./providers/meta/graph.js")>();
+  return { ...actual, fetchConversations: vi.fn() };
+});
 
 const dirs: string[] = [];
 const NOW = 1_700_000_000_000;
@@ -202,5 +221,207 @@ describe("swiezosc kanalu", () => {
     recordFailure(store, { key, label: "sklep", active: true }, "error", "timeout", NOW + 2);
     expect(store.getHealth(key)?.state).toBe("backoff");
     expect(mayReportEmptyQueue(channelFreshness(store, NOW + 2))).toBe(false);
+  });
+});
+
+describe("odbior a uzgodnienie", () => {
+  const META = { provider: "facebook", accountKey: "page-1" };
+  const EMAIL = { provider: "email", accountKey: "sklep" };
+
+  it("Meta z zywymi webhookami ANI RAZU nie wchodzi w alarm przez pelna godzine", () => {
+    const store = freshStore();
+    recordSuccess(store, { key: EMAIL, label: "sklep", active: true }, NOW);
+    // Jedno udane uzgodnienie na starcie. Kolejne bylo by dopiero za godzine.
+    recordSuccess(store, { key: META, label: "Facebook", active: true }, NOW);
+
+    for (let minuta = 1; minuta <= 60; minuta += 1) {
+      const at = NOW + minuta * 60_000;
+      // Poczta synchronizuje sie co piec minut; Meta dostaje WYLACZNIE webhooki.
+      if (minuta % 5 === 0) recordSuccess(store, { key: EMAIL, label: "sklep", active: true }, at);
+      if (minuta % 3 === 0) {
+        recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, at);
+      }
+
+      const freshness = channelFreshness(store, at);
+      expect(freshness.state, `minuta ${minuta}`).not.toBe("red");
+      expect(freshness.degradedSources, `minuta ${minuta}`).toHaveLength(0);
+      // Odbior nie udaje uzgodnienia: znacznik jest OSOBNY.
+      expect(freshness.receipts.some((entry) => entry.source === "facebook:page-1")).toBe(minuta >= 3);
+    }
+  });
+
+  it("brak uzgodnienia mimo webhookow jest OSOBNYM, jawnym stanem", () => {
+    const store = freshStore();
+    recordSuccess(store, { key: EMAIL, label: "sklep", active: true }, NOW);
+    recordSuccess(store, { key: META, label: "Facebook", active: true }, NOW);
+
+    const godzina = NOW + 60 * 60_000;
+    recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, godzina);
+    // Po godzinie uzgodnienie jeszcze nie jest zalegle: taka jest kadencja.
+    expect(channelFreshness(store, godzina).reconcileOverdue).not.toContain("facebook:page-1");
+
+    const dwieGodziny = NOW + 120 * 60_000;
+    recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, dwieGodziny);
+    const freshness = channelFreshness(store, dwieGodziny);
+    // Webhooki plyna, wiec ODBIOR jest swiezy...
+    expect(freshness.receipts.find((entry) => entry.source === "facebook:page-1")?.at).toBe(dwieGodziny);
+    // ...ale KOMPLETNOSCI nikt nie potwierdzil i to musi byc widac.
+    expect(freshness.reconcileOverdue).toContain("facebook:page-1");
+  });
+
+  it("webhook NIE zamalowuje bledu uzgodnienia", () => {
+    const store = freshStore();
+    recordSuccess(store, { key: EMAIL, label: "sklep", active: true }, NOW);
+    recordFailure(store, { key: META, label: "Facebook", active: true }, "reconnect_required", "token wygasl", NOW);
+    recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, NOW + 1_000);
+
+    const freshness = channelFreshness(store, NOW + 2_000);
+    // Zerwane uprawnienia zostaja czerwone: odbior mowi o kanale, nie o bledzie.
+    expect(freshness.state).toBe("red");
+    expect(freshness.degradedSources).toContain("facebook:page-1");
+  });
+
+  it("znacznik odbioru nie liczy sie jako samodzielne zrodlo", () => {
+    const store = freshStore();
+    recordInboundReceipt(store, { key: META, label: "Facebook", active: true }, NOW);
+    // Sam znacznik nie robi z kanalu spokojnego dnia: aktywnych zrodel brak.
+    expect(mayReportEmptyQueue(channelFreshness(store, NOW))).toBe(false);
+    expect(lastInboundReceiptAt(store, META)).toBe(NOW);
+    expect(lastInboundReceiptAt(store, EMAIL)).toBeNull();
+  });
+});
+
+describe("kadencja uzgodnien Meta w petli ticku", () => {
+  const META = { provider: "facebook" as const, accountKey: "page-1" };
+  const graph = vi.mocked(fetchConversations);
+
+  beforeEach(() => {
+    graph.mockReset();
+  });
+
+  function metaConfig(): InboxConfig {
+    return {
+      enabled: true,
+      stateDir: "state",
+      // Bez skrzynek pocztowych: ten test dotyczy WYLACZNIE bramki Meta i nie
+      // ma prawa wyjsc na IMAP.
+      email: [],
+      meta: [
+        { provider: "facebook", accountKey: "page-1", pageId: "page-1", label: "Facebook", accessToken: "t" },
+      ],
+      allegroEnabled: false,
+      outbound: {
+        resendApiKey: null,
+        resendWebhookSecret: null,
+        metaAppSecret: null,
+        metaVerifyToken: null,
+      },
+      backfillDays: 30,
+      tickFirstDelayMs: 100,
+      tickIntervalMs: 5 * 60_000,
+      backfillMode: "import",
+      companyDomains: ["brownhouseandtea.pl"],
+    };
+  }
+
+  const pusteUzgodnienie = {
+    messages: [],
+    pages: 1,
+    truncated: false,
+    truncatedConversations: false,
+    truncatedMessages: [],
+    newestUpdatedAt: null,
+  };
+
+  it("po nieudanej probie i wygasnieciu backoffu zwykly tick PONAWIA probe", async () => {
+    const store = freshStore();
+    const runtime = createRuntime(metaConfig(), store);
+
+    // 1. Pierwszy tick: uzgodnienie sie udaje.
+    graph.mockResolvedValueOnce(pusteUzgodnienie);
+    await runtime.tick(NOW);
+    expect(graph).toHaveBeenCalledTimes(1);
+    expect(store.getHealth(META)?.lastSuccessfulSyncAt).toBe(NOW);
+
+    // 2. Po godzinie uzgodnienie jest nalezne i tym razem PADA.
+    const zaGodzine = NOW + 60 * 60_000 + 1_000;
+    graph.mockRejectedValueOnce(new Error("zerwane polaczenie"));
+    await runtime.tick(zaGodzine);
+    expect(graph).toHaveBeenCalledTimes(2);
+    const poBledzie = store.getHealth(META)!;
+    expect(poBledzie.consecutiveFailures).toBe(1);
+    expect(poBledzie.nextAttemptAt).toBe(zaGodzine + 60_000);
+    // Sukces sprzed godziny zostaje zapisany — i wlasnie o niego szlo.
+    expect(poBledzie.lastSuccessfulSyncAt).toBe(NOW);
+
+    // 3. Backoff jeszcze trwa: nie probujemy.
+    graph.mockResolvedValue(pusteUzgodnienie);
+    await runtime.tick(zaGodzine + 30_000);
+    expect(graph).toHaveBeenCalledTimes(2);
+
+    /*
+     * 4. Backoff WYGASL. Zrodlo musi dostac ponowna probe w najblizszym
+     *    zwyklym ticku. Bramka patrzaca tylko na „czy kiedykolwiek byl sukces"
+     *    trzymala je uspione az do ticku uzgadniajacego, czyli do godziny.
+     */
+    await runtime.tick(zaGodzine + 90_000);
+    expect(graph).toHaveBeenCalledTimes(3);
+    expect(store.getHealth(META)?.consecutiveFailures).toBe(0);
+  });
+
+  it("udane i swieze uzgodnienie NIE jest powtarzane w kazdym ticku", async () => {
+    const store = freshStore();
+    const runtime = createRuntime(metaConfig(), store);
+
+    graph.mockResolvedValue(pusteUzgodnienie);
+    await runtime.tick(NOW);
+    expect(graph).toHaveBeenCalledTimes(1);
+
+    // Piec minut pozniej uzgodnienie jest wciaz swieze: Graph API kosztuje.
+    await runtime.tick(NOW + 5 * 60_000);
+    expect(graph).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+/**
+ * Znacznik odbioru jest SZCZEGOLEM WEWNETRZNYM.
+ *
+ * Zapisujemy go jako wpis zdrowia, bo magazyn nie ma innego miejsca na taki
+ * slad. To jest jednak decyzja implementacyjna, a nie element kontraktu:
+ * odbiorca odpowiedzi zaklada z listy `sources` wiersze stanu i rysuje z nich
+ * kafelki zrodel, wiec wyciek znacznika oznaczalby nieistniejace konto
+ * „Facebook — odbior" w interfejsie obslugi klienta.
+ */
+describe("znacznik odbioru nie jest zrodlem", () => {
+  it("NIE pojawia sie na liscie zrodel ani w reconcileOverdue", () => {
+    const store = freshStore();
+    const key = { provider: "facebook", accountKey: "page-1" };
+    recordSuccess(store, { key, label: "Facebook", active: true }, NOW - 30 * 60_000);
+    recordInboundReceipt(store, { key, label: "Facebook", active: true }, NOW);
+
+    const freshness = channelFreshness(store, NOW);
+    const klucze = freshness.sources.map((entry) => `${entry.provider}:${entry.accountKey}`);
+    expect(klucze).toEqual(["facebook:page-1"]);
+    expect(klucze.some((k) => k.includes("#receipt"))).toBe(false);
+    expect(freshness.reconcileOverdue.some((k) => k.includes("#receipt"))).toBe(false);
+
+    // ...ale sam czas odbioru JEST widoczny, w swoim wlasnym polu.
+    expect(freshness.receipts).toEqual([{ source: "facebook:page-1", at: NOW }]);
+  });
+});
+
+/**
+ * Prog „uzgodnienie zaleglo" MUSI wynikac z kadencji, a nie stac obok niej.
+ *
+ * Kontrola po rundzie 3 zlapala dokladnie ten ksztalt bledu: okno pomijania
+ * liczone z konfiguracji i prog wpisany z reki jako 90 minut. Obie liczby
+ * wygladaly poprawnie i rozjechalyby sie przy pierwszej zmianie kadencji.
+ */
+describe("prog zaleglego uzgodnienia", () => {
+  it("wynika z kadencji, a nie z wpisanej liczby", () => {
+    expect(RECONCILE_OVERDUE_MS).toBe(Math.round(1.5 * RECONCILE_EVERY_TICKS * DEFAULT_TICK_INTERVAL_MS));
+    // Kontrola zdrowego rozsadku: przy domyslnej kadencji to poltorej godziny.
+    expect(RECONCILE_OVERDUE_MS).toBe(90 * 60_000);
   });
 });

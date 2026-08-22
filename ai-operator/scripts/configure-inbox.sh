@@ -11,6 +11,15 @@ set -uo pipefail
 #   inbound-live     — import i bieżąca synchronizacja. Wymaga kompletu źródeł.
 #   outbound-live    — wysyłka. Wymaga dodatkowo Resend i rozdzielnych tokenów.
 #
+# Tryby przychodzące most odpowiedzi ODRZUCAJĄ, a nie tylko pomijają: most
+# włącza się samą obecnością CUSTOMER_CASE_REPLY_BRIDGE_TOKEN, więc „podgląd"
+# z ustawioną tą zmienną to podgląd z czynną ścieżką pisania do klientów.
+#
+# Wymagania są przepisane z walidacji wykonywanej przy starcie procesu
+# (src/bin/mcp-http.ts oraz src/config.ts). Trzymanie ich osobno okazało się
+# złudzeniem: bramka mówiła „kompletna", a proces kończył się kodem 1, zanim
+# przeczytał pierwszą wiadomość. Każda zmiana tam wymaga zmiany tutaj.
+#
 # ── CZEGO TEN SKRYPT NIE ROBI ─────────────────────────────────────────────────
 # Nie wypisuje ŻADNEJ wartości sekretu — ani na stdout, ani w komunikacie błędu.
 # Sprawdza wyłącznie OBECNOŚĆ i kształt. Nie ustawia zmiennych, nie wdraża,
@@ -30,6 +39,9 @@ EXPECTED_ENVIRONMENT_ID="e8e60c09-4de2-4fb3-a11d-6e9048371e54"
 EXPECTED_SERVICE_ID="c4a9c0ad-7c0e-4494-a16e-321e0e382b6c"
 REQUIRED_MOUNT="/data"
 REQUIRED_MAILBOXES="sklep biuro hurt"
+# Ta sama stała co MIN_TOKEN_LENGTH w src/bin/mcp-http.ts. Krótszy token nie
+# jest sekretem, tylko hasłem do zgadnięcia, i proces przy takim nie wstaje.
+MIN_TOKEN_LENGTH=32
 
 case "$MODE" in
   inbound-preview|inbound-live|outbound-live) ;;
@@ -121,9 +133,65 @@ VARS="$(railway variables --service "$SERVICE" --kv 2>/dev/null)" \
 
 has_var() { printf '%s' "$VARS" | grep -q "^$1="; }
 value_of() { printf '%s' "$VARS" | sed -n "s/^$1=//p" | head -1; }
+# Kod traktuje pustą wartość jak brak zmiennej (wszędzie `?.trim() || null`),
+# więc bramka też musi — inaczej NAZWA= przechodzi, a proces widzi brak.
+has_value() { [ -n "$(value_of "$1")" ]; }
 
 MISSING=()
-require_var() { has_var "$1" || MISSING+=("$1"); }
+
+# Ta sama zmienna potrafi być wymagana z dwóch powodów naraz (np. TEABREW_BASE_URL
+# przez MODE=live i przez most odpowiedzi). Lista braków ma ją pokazać raz.
+add_missing() {
+  local existing
+  for existing in ${MISSING+"${MISSING[@]}"}; do
+    [ "$existing" = "$1" ] && return 0
+  done
+  MISSING+=("$1")
+}
+
+require_var() { has_value "$1" || add_missing "$1"; }
+
+# Proces odrzuca token krótszy niż MIN_TOKEN_LENGTH, więc sama OBECNOŚĆ nie
+# wystarcza. Bramka, która przepuszcza token 13-znakowy, potwierdza
+# konfigurację, przy której serwer nie wstaje.
+require_token() {
+  local value
+  if ! has_value "$1"; then
+    add_missing "$1"
+    return 0
+  fi
+  value="$(value_of "$1")"
+  [ "${#value}" -ge "$MIN_TOKEN_LENGTH" ] \
+    || add_missing "$1 (minimum $MIN_TOKEN_LENGTH znaków)"
+}
+
+# Token opcjonalny: proces bez niego wstaje, ale z za krótkim — nie. Ustawiony
+# po części jest gorszy niż nieustawiony, bo wygląda na zabezpieczenie.
+check_token_length() {
+  local value
+  has_value "$1" || return 0
+  value="$(value_of "$1")"
+  [ "${#value}" -ge "$MIN_TOKEN_LENGTH" ] \
+    || add_missing "$1 (ustawiony, ale krótszy niż $MIN_TOKEN_LENGTH znaków)"
+}
+
+# Wspólna wartość dwóch tokenów wygląda jak zabezpieczenie, którym nie jest:
+# kto może czytać kolejkę, mógłby wtedy pisać do klientów. Proces wylicza takie
+# pary w forbiddenReuse i odmawia startu — komunikat podaje wyłącznie NAZWY.
+require_distinct() {
+  local left right
+  left="$(value_of "$1")"
+  right="$(value_of "$2")"
+  [ -n "$left" ] && [ -n "$right" ] || return 0
+  [ "$left" != "$right" ] \
+    || fail "Zmienne $1 i $2 mają IDENTYCZNE wartości. Proces odmawia startu."
+}
+
+# Pary „albo obie, albo żadna" — config.ts przerywa start przy jednej połówce.
+require_pair() {
+  if has_value "$1" && ! has_value "$2"; then add_missing "$2 (wymagane razem z $1)"; fi
+  if has_value "$2" && ! has_value "$1"; then add_missing "$1 (wymagane razem z $2)"; fi
+}
 
 require_var INBOX_ENABLED
 require_var INBOX_STATE_DIR
@@ -154,6 +222,37 @@ case "$MODE" in
     ok "import aktywowany jawnie"
     ;;
 esac
+
+# ── 3b. Co jest potrzebne, żeby PROCES w ogóle wstał ────────────────────────
+# Przepisane z walidacji przy ładowaniu modułu (src/bin/mcp-http.ts) i z
+# loadConfig (src/config.ts). Bez tej sekcji bramka sprawdzała kanał pocztowy
+# serwera, który kończy się kodem 1, zanim ten kanał zdąży ruszyć.
+
+RUNTIME_MODE="fixture"
+has_value MODE && RUNTIME_MODE="$(value_of MODE)"
+case "$RUNTIME_MODE" in
+  fixture|live) ok "MODE=$RUNTIME_MODE" ;;
+  *) fail "MODE musi być \"fixture\" albo \"live\" (jest: $RUNTIME_MODE). Proces przerywa start w loadConfig." ;;
+esac
+
+# Claude jest jedyną powierzchnią tego produktu, więc bez MCP_BEARER_TOKEN nie
+# ma czego uruchamiać — proces odmawia startu w KAŻDYM trybie kanału.
+require_token MCP_BEARER_TOKEN
+check_token_length MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN
+require_distinct MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN MCP_BEARER_TOKEN
+
+# MODE=live: config.ts woła na tych zmiennych req(), czyli rzuca wyjątkiem przy
+# pierwszym loadConfig, a nie dopiero przy pierwszym połączeniu z IMAP.
+if [ "$RUNTIME_MODE" = "live" ]; then
+  require_var MAIL_IMAP_HOST
+  require_var MAIL_IMAP_USER
+  require_var MAIL_IMAP_PASSWORD
+  require_var TEABREW_BASE_URL
+  require_var TEABREW_AI_OPERATOR_TOKEN
+fi
+
+require_pair MARKETING_PLANNER_BASE_URL MARKETING_PLANNER_TOKEN
+require_pair BUDZECIK_BASE_URL BUDZECIK_COPILOT_TOKEN
 
 # ── 4. Skrzynki: KOMPLET, nie „przynajmniej jedna" ──────────────────────────
 # Jedna brakująca skrzynka to jedna niewidoczna kolejka klientów — i nikt się
@@ -215,22 +314,62 @@ else
   warn "INBOX_META_ACCOUNTS nieustawione — Instagram i Facebook będą wyłączone."
 fi
 
-# ── 6. Wysyłka ──────────────────────────────────────────────────────────────
+# ── 6. Most odpowiedzi i wysyłka ────────────────────────────────────────────
+# Most odpowiedzi klientom włącza SAMA obecność CUSTOMER_CASE_REPLY_BRIDGE_TOKEN
+# — mcp-http.ts liczy REPLY_BRIDGE_ENABLED z jego długości, bez żadnego
+# osobnego przełącznika. Dlatego tryb przychodzący nie może go „po prostu nie
+# sprawdzać": to jedyne miejsce, w którym da się jeszcze zauważyć, że podgląd
+# wstałby z czynną ścieżką pisania do klientów.
+
+# Origin dopuszczany przez most: HTTPS bez danych logowania, ścieżki, query
+# i fragmentu. HTTP wyłącznie na pętli zwrotnej i tylko poza MODE=live.
+teabrew_base_url_ok() {
+  case "$1" in
+    *"@"*|*"?"*|*"#"*) return 1 ;;
+  esac
+  printf '%s' "$1" | grep -Eq '^https://[A-Za-z0-9._-]+(:[0-9]+)?/?$' && return 0
+  [ "$RUNTIME_MODE" != "live" ] \
+    && printf '%s' "$1" | grep -Eq '^http://(127\.0\.0\.1|localhost)(:[0-9]+)?/?$' \
+    && return 0
+  return 1
+}
+
 if [ "$MODE" = "outbound-live" ]; then
   require_var INBOX_RESEND_API_KEY
   require_var INBOX_RESEND_WEBHOOK_SECRET
-  require_var MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN
-  require_var CUSTOMER_CASE_REPLY_BRIDGE_TOKEN
+  require_token MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN
+  # Proces wymaga obu tokenów mostu RAZEM i przerywa start, gdy ustawiony jest
+  # tylko jeden — plus adresu, pod który most ma wysyłać.
+  require_token CUSTOMER_CASE_REPLY_BRIDGE_TOKEN
+  require_token TEABREW_AI_OPERATOR_REPLY_TOKEN
+  require_var TEABREW_BASE_URL
 
-  if has_var MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN && has_var CUSTOMER_CASE_REPLY_BRIDGE_TOKEN; then
-    # Wspólny token odczytu i wysyłki wygląda jak zabezpieczenie, którym nie
-    # jest: kto może czytać kolejkę, mógłby wtedy pisać do klientów.
-    [ "$(value_of MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN)" != "$(value_of CUSTOMER_CASE_REPLY_BRIDGE_TOKEN)" ] \
-      || fail "Token odczytu i token wysyłki są IDENTYCZNE."
-    ok "tokeny odczytu i wysyłki są rozdzielne"
+  if has_value TEABREW_BASE_URL; then
+    teabrew_base_url_ok "$(value_of TEABREW_BASE_URL)" \
+      || fail "TEABREW_BASE_URL musi być originem HTTPS bez danych logowania, ścieżki, query i fragmentu.
+HTTP jest dopuszczony wyłącznie na pętli zwrotnej i tylko poza MODE=live."
+    ok "TEABREW_BASE_URL ma kształt akceptowany przez most odpowiedzi"
   fi
+
+  # Komplet par z forbiddenReuse w mcp-http.ts. Skrypt znał wcześniej jedną
+  # z nich, więc sześć pozostałych sposobów na wspólny token przechodziło.
+  require_distinct CUSTOMER_CASE_REPLY_BRIDGE_TOKEN MCP_BEARER_TOKEN
+  require_distinct CUSTOMER_CASE_REPLY_BRIDGE_TOKEN MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN
+  require_distinct CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_TOKEN
+  require_distinct CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN
+  require_distinct TEABREW_AI_OPERATOR_REPLY_TOKEN MCP_BEARER_TOKEN
+  require_distinct TEABREW_AI_OPERATOR_REPLY_TOKEN MCP_TRUSTED_FIRMOWY_CHAT_BEARER_TOKEN
+  require_distinct TEABREW_AI_OPERATOR_REPLY_TOKEN TEABREW_AI_OPERATOR_TOKEN
+  ok "tokeny mostu, MCP i odczytu TeaBrew są rozdzielne"
 else
-  has_var INBOX_RESEND_API_KEY \
+  for bridge_var in CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN; do
+    has_value "$bridge_var" && fail "Tryb $MODE ma most odpowiedzi WYŁĄCZONY, a $bridge_var jest ustawione.
+Sama obecność tej zmiennej włącza pisanie do klientów — kod nie ma osobnego przełącznika.
+Usuń ją: railway variables --service $SERVICE --unset $bridge_var"
+  done
+  ok "most odpowiedzi wyłączony"
+
+  has_value INBOX_RESEND_API_KEY \
     && warn "INBOX_RESEND_API_KEY ustawione, ale tryb to $MODE — wysyłka pozostanie wyłączona po stronie kodu." \
     || true
 fi

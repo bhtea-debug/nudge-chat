@@ -44,6 +44,18 @@ export interface InboxOutboundConfig {
   readonly metaVerifyToken: string | null;
 }
 
+/**
+ * Domyślny odstęp między przebiegami adaptera.
+ *
+ * Wyciągnięty do stałej, bo zależy od niego próg „uzgodnienie zaległo”
+ * w `health.ts`. Dwie liczby wpisane osobno rozjechałyby się przy pierwszej
+ * zmianie i nikt by tego nie zauważył, bo obie wyglądają na poprawne.
+ */
+export const DEFAULT_TICK_INTERVAL_MS = 300_000;
+
+/** Co ile przebiegów robimy PEŁNE uzgodnienie ze źródłem webhookowym. */
+export const RECONCILE_EVERY_TICKS = 12;
+
 export interface InboxConfig {
   readonly enabled: boolean;
   readonly stateDir: string;
@@ -178,7 +190,9 @@ export function loadInboxConfig(): InboxConfig {
     tickFirstDelayMs:
       Number.isFinite(tickFirstDelay) && tickFirstDelay >= 100 ? Math.floor(tickFirstDelay) : 25_000,
     tickIntervalMs:
-      Number.isFinite(tickInterval) && tickInterval >= 1_000 ? Math.floor(tickInterval) : 300_000,
+      Number.isFinite(tickInterval) && tickInterval >= 1_000
+        ? Math.floor(tickInterval)
+        : DEFAULT_TICK_INTERVAL_MS,
     backfillMode,
     companyDomains: [...new Set([...mailboxDomains, ...extraDomains])],
   };

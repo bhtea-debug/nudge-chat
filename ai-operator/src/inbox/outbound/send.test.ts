@@ -283,6 +283,31 @@ describe("wysylka odpowiedzi", () => {
     expect(store.activeAttemptForCase("ic_sprawa")).not.toBeNull();
   });
 
+  it("stanu prepared NIE rozstrzyga sie recznie: nic jeszcze nie polecialo", () => {
+    const store = freshStore();
+    seedCase(store);
+    prepareAttempt({
+      store,
+      requestId: "req-prep-000000000003",
+      caseId: "ic_sprawa",
+      text: "Szkic",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+
+    /*
+     * „Wyslano" nad `prepared` byloby orzeczeniem o wysylce, ktorej nie bylo:
+     * wpis powstaje PRZED pierwszym requestem. Wlasciwa operacja to anulowanie
+     * albo wygaszenie, i tamta droga jest otwarta.
+     */
+    expect(resolveUncertain(store, "req-prep-000000000003", "sent", NOW + 200_000)).toMatchObject({
+      ok: false,
+      code: "not_resolvable:prepared",
+    });
+    expect(store.getAttempt("req-prep-000000000003")?.status).toBe("prepared");
+    expect(cancelPrepared(store, "req-prep-000000000003", NOW + 200_000).ok).toBe(true);
+  });
+
   it("reczne rozstrzygniecie wymaga odczekania i nie wymysla czasu wiadomosci", async () => {
     const store = freshStore();
     seedCase(store);

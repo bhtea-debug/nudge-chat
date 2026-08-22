@@ -1,5 +1,5 @@
 import { ImapMailProvider } from "../mail/imap.js";
-import { loadInboxConfig, type InboxConfig, type InboxEmailSource } from "./config.js";
+import { RECONCILE_EVERY_TICKS, loadInboxConfig, type InboxConfig, type InboxEmailSource } from "./config.js";
 import type { SourceKey } from "./contract.js";
 import { recordFailure, recordSuccess, sanitizeMessage, type FailureKind } from "./health.js";
 import {
@@ -21,7 +21,8 @@ import { ingestMetaEvents } from "./providers/meta/ingest.js";
  */
 
 /** Co ile ticków zwykłych wchodzi szeroki skan uzgadniający. */
-const RECONCILE_EVERY = 12;
+// Jedna definicja dla adaptera i dla progu „uzgodnienie zaległo”.
+const RECONCILE_EVERY = RECONCILE_EVERY_TICKS;
 /**
  * Zakładka okna uzgodnienia Meta.
  *
@@ -110,6 +111,14 @@ export function createRuntime(
   const state = store ?? new InboxStore({ dir: config.stateDir, allowCompaction: true });
   const readers = new Map<string, ImapReader>();
   let ticks = 0;
+  /**
+   * Jak świeże musi być udane uzgodnienie Meta, żeby wolno je było pominąć.
+   *
+   * Nominalny okres uzgodnienia: co dwunasty tick. Liczone z konfiguracji, a
+   * nie wpisane na sztywno, bo interwał ticku jest ustawialny i para liczb
+   * rozjechałaby się przy pierwszej zmianie.
+   */
+  const reconcileMinIntervalMs = RECONCILE_EVERY * config.tickIntervalMs;
 
   function readerFor(source: InboxEmailSource): ImapReader {
     if (readerFactory) {
@@ -282,14 +291,27 @@ export function createRuntime(
      * skonfigurowane. Źródło świeciło się na zielono, nie wykonawszy ani
      * jednego odczytu — czyli kropka mówiła coś, czego nikt nie sprawdził.
      * Teraz zielone światło daje wyłącznie udany odczyt albo zweryfikowany
-     * webhook.
+     * webhook (`recordInboundReceipt` w obsłudze webhooka Meta), przy czym
+     * webhook potwierdza ODBIÓR, a nie kompletność.
      */
     for (const source of config.meta) {
       const key: SourceKey = { provider: source.provider, accountKey: source.accountKey };
       const health = state.getHealth(key);
       if (health?.nextAttemptAt && now < health.nextAttemptAt) continue;
-      // Uzgodnienie jest kosztowne; w zwykłym ticku polegamy na webhooku.
-      if (!reconcile && health?.lastSuccessfulSyncAt) continue;
+      /*
+       * Uzgodnienie jest kosztowne, więc w zwykłym ticku pomijamy je, gdy
+       * poprzednie SIĘ UDAŁO i jest jeszcze świeże.
+       *
+       * Poprzednia bramka patrzyła tylko na to, czy kiedykolwiek był sukces.
+       * A że `recordFailure` świadomie zachowuje `lastSuccessfulSyncAt`,
+       * źródło po JEDNEJ nieudanej próbie zasypiało aż do ticku uzgadniającego
+       * — czyli nawet na godzinę — mimo że backoff wygasał po minucie. Backoff
+       * wyżej stawał się wtedy ozdobą, bo i tak nikt nie ponawiał.
+       */
+      if (!reconcile) {
+        const lastOk = health?.state === "ok" ? health.lastSuccessfulSyncAt : null;
+        if (lastOk !== null && lastOk !== undefined && now - lastOk < reconcileMinIntervalMs) continue;
+      }
 
       try {
         const result = await fetchConversations({

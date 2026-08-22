@@ -110,21 +110,31 @@ export function queryQueue(store: InboxStore, options: QueueOptions): QueueResul
    * i jedna z nich nie trafiłaby na żadną.
    */
   cases.sort((a, b) => {
-    const byTime = (b.lastMessageAt ?? b.firstSeenAt) - (a.lastMessageAt ?? a.firstSeenAt);
+    const byTime = sortKey(b) - sortKey(a);
     return byTime !== 0 ? byTime : a.caseId.localeCompare(b.caseId);
   });
 
   const total = cases.length;
-  const start = options.cursor ? cursorOffset(cases, options.cursor) : 0;
-  const window = cases.slice(start, start + limit);
-  const consumed = start + window.length;
-  const truncated = consumed < total;
-  const page = window;
+  const cursor = options.cursor ? decodeCursor(options.cursor) : null;
+  /*
+   * Keyset: bierzemy rekordy ostro „mniejsze" od kursora w porządku kolejki.
+   * Żadnego szukania indeksu — pozycja jest określona samym kluczem, więc
+   * zniknięcie rekordu z kursora niczego nie cofa.
+   */
+  const remaining = cursor ? cases.filter((entry) => isBelowCursor(entry, cursor)) : cases;
+  const page = remaining.slice(0, limit);
+  const truncated = page.length < remaining.length;
 
   return {
     cases: page.map((entry) => toDto(store, entry, options.now, contentMode, options.mailboxes)),
     count: total,
     truncated,
+    /*
+     * Postęp jest zagwarantowany: ostatni rekord strony jest ostro mniejszy od
+     * kursora, którym go pobrano, a następna strona bierze tylko rekordy ostro
+     * mniejsze od niego. Pusta strona nie ma następnika, więc pętla po stronach
+     * zawsze się kończy.
+     */
     nextCursor: truncated && page.length > 0 ? encodeCursor(page[page.length - 1]!) : null,
     freshness: channelFreshness(store, options.now),
     completeView: mayReportEmptyQueue(channelFreshness(store, options.now)),
@@ -134,31 +144,80 @@ export function queryQueue(store: InboxStore, options: QueueOptions): QueueResul
 
 
 /**
- * Kursor jako pozycja OSTATNIEJ sprawy poprzedniej strony.
- *
- * Nie offset liczbowy: między stronami dochodzą nowe sprawy i offset
- * przesunąłby okno tak, że jedna sprawa zostałaby pominięta bez śladu.
+ * Klucz porządku kolejki. Jedno miejsce, żeby sortowanie i kursor nie mogły
+ * rozjechać się w interpretacji „kiedy ta sprawa ostatnio drgnęła".
  */
-function encodeCursor(entry: StoredCase): string {
-  return Buffer.from(`${entry.lastMessageAt ?? entry.firstSeenAt}|${entry.caseId}`, "utf8").toString(
-    "base64url",
-  );
+function sortKey(entry: StoredCase): number {
+  return entry.lastMessageAt ?? entry.firstSeenAt;
 }
 
-function cursorOffset(cases: readonly StoredCase[], cursor: string): number {
+/**
+ * Kursor keyset: DOKŁADNIE klucz sortowania ostatniej sprawy wydanej strony,
+ * czyli czas i caseId. Nie offset i nie „pozycja sprawy o tym identyfikatorze".
+ *
+ * Poprzednia wersja niosła te same dwie wartości, ale czas ignorowała i szukała
+ * bieżącego indeksu po caseId. To był nazwany offset: gdy sprawa z kursora
+ * zniknęła albo wypadła z filtra „do zrobienia", odczyt wracał na początek i
+ * powtarzał niemal całą poprzednią stronę — przy stronie 200 do 199 slotów
+ * zmarnowanych, a przy state="actionable" widok krążył po pierwszej stronie
+ * przy wiecznie prawdziwym `truncated`.
+ *
+ * KONTRAKT wobec zmian w trakcie stronicowania (kolejka żyje pod czytającym):
+ * - sprawa, która po wydaniu strony przesunęła się W GÓRĘ nad kursor (dostała
+ *   nową wiadomość), nie wejdzie już do tego przewijania. Świadomie: żeby ją
+ *   złapać, trzeba by cofnąć kursor, czyli zrezygnować z postępu. Klient
+ *   zobaczy ją przy następnym odczycie od góry, bo wtedy jest na czele;
+ * - sprawa, która przesunęła się W DÓŁ pod kursor, może wyjść drugi raz.
+ *   Duplikat jest tani, luka nie jest;
+ * - sprawa DODANA nad kursorem nie należy do tego przewijania, dodana pod
+ *   kursorem — należy;
+ * - sprawa z kursora może zniknąć albo wypaść z filtra bez żadnych skutków:
+ *   kursor jest kluczem w porządku, nie wskaźnikiem na rekord;
+ * - GWARANCJA: żadna sprawa, która przez cały czas przewijania siedzi pod
+ *   kursorem, nie zostanie pominięta. Na tym stoi obietnica `nextCursor ===
+ *   null` znaczy widok kompletny.
+ */
+function encodeCursor(entry: StoredCase): string {
+  return Buffer.from(`${sortKey(entry)}|${entry.caseId}`, "utf8").toString("base64url");
+}
+
+interface QueueCursor {
+  readonly sortKey: number;
+  readonly caseId: string;
+}
+
+function decodeCursor(cursor: string): QueueCursor | null {
   let decoded: string;
   try {
     decoded = Buffer.from(cursor, "base64url").toString("utf8");
   } catch {
-    return 0;
+    return null;
   }
   const separator = decoded.lastIndexOf("|");
-  if (separator < 0) return 0;
+  if (separator < 0) return null;
+  const rawKey = decoded.slice(0, separator).trim();
   const caseId = decoded.slice(separator + 1);
-  const index = cases.findIndex((entry) => entry.caseId === caseId);
-  // Sprawa z kursora mogła zniknąć z filtra między stronami. Zaczynamy wtedy
-  // od początku zamiast zgadywać pozycję: powtórka jest tania, luka nie jest.
-  return index < 0 ? 0 : index + 1;
+  const key = Number(rawKey);
+  /*
+   * Kursor uszkodzony albo z kształtu, którego nie umiemy zinterpretować.
+   * Czytamy od początku: powtórka jest niewygodna, ale przewidywalna, a pusty
+   * wynik z NaN w porównaniach wyglądałby jak koniec listy i skłamałby
+   * o kompletności widoku.
+   */
+  if (rawKey.length === 0 || caseId.length === 0 || !Number.isFinite(key)) return null;
+  return { sortKey: key, caseId };
+}
+
+/**
+ * Czy sprawa leży ostro PONIŻEJ kursora w porządku kolejki: malejąco po czasie,
+ * a przy remisie rosnąco po caseId. Porównanie identyfikatorów musi być tym
+ * samym, którego używa sortowanie, inaczej rekordy o identycznym czasie
+ * wypadałyby po obu stronach granicy.
+ */
+function isBelowCursor(entry: StoredCase, cursor: QueueCursor): boolean {
+  const key = sortKey(entry);
+  if (key !== cursor.sortKey) return key < cursor.sortKey;
+  return entry.caseId.localeCompare(cursor.caseId) > 0;
 }
 
 /**

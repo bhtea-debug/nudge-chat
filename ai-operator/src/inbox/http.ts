@@ -1,10 +1,11 @@
 import { z } from "zod";
 import type { ContentMode } from "./contract.js";
-import { channelFreshness } from "./health.js";
+import { channelFreshness, recordFailure, recordInboundReceipt } from "./health.js";
 import { queryCase, queryMessages, queryQueue } from "./query.js";
 import type { InboxRuntime } from "./runtime.js";
 import {
   cancelPrepared,
+  expirePreparedAttempts,
   prepareAttempt,
   resolveUncertain,
 } from "./outbound/ledger.js";
@@ -32,6 +33,22 @@ import { resendDeliveryState, verifyResendWebhook } from "./outbound/webhooks.js
 
 export const INBOX_READ_PREFIX = "/internal/inbox";
 export const INBOX_REPLY_PATH = "/internal/inbox/reply";
+/**
+ * Jak długo czekamy na wysyłkę pasującą do zdarzenia doręczenia.
+ *
+ * Tyle, ile wynosi tolerancja podpisu Resenda: po tym czasie ponowienia i tak
+ * dostają 401, więc dłuższe odpychanie zdarzenia niczego już nie ratuje.
+ */
+const RESEND_RETRY_WINDOW_MS = 5 * 60_000;
+
+/** Czas zdarzenia z ładunku; brak albo śmieć znaczy „teraz”. */
+function resendEventTime(payload: { created_at?: unknown }, fallback: number): number {
+  const raw = payload.created_at;
+  if (typeof raw !== "string") return fallback;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 export const META_WEBHOOK_PATH = "/webhook/meta";
 export const RESEND_WEBHOOK_PATH = "/webhook/resend";
 
@@ -287,6 +304,14 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
 
   if (request.operation === "resolve_sent" || request.operation === "resolve_not_sent") {
     const outcome = request.operation === "resolve_sent" ? "sent" : "not_sent";
+    /*
+     * Ledger rozstrzyga IDEMPOTENTNIE: powtorzenie z tym samym wynikiem jest
+     * sukcesem bez zapisu (`changed: false`), a wynik SPRZECZNY odbija sie
+     * kodem `conflicting_resolution:<status>`. Dlatego 409 zostaje tu tylko
+     * dla realnego konfliktu i dla stanow nierozstrzygalnych — powtorzone
+     * klikniecie czlowieka, ktory nie zobaczyl pierwszej odpowiedzi, dostaje
+     * 200, zamiast uczyc go, ze przycisk „nie dziala".
+     */
     const result = resolveUncertain(runtime.store, request.requestId, outcome, now);
     if (!result.ok) return failure(409, result.code ?? "cannot_resolve");
 
@@ -298,23 +323,41 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
      * czekajacego i pisze drugi raz. Odtworzony wpis mowi wprost, ze tresc
      * trzeba sprawdzic u dostawcy, bo ledger trzyma tylko skrot i dlugosc.
      * Naprawa jest idempotentna i NIE wysyla niczego ponownie.
+     *
+     * Probe czytamy PO rozstrzygnieciu, wiec dziala tak samo dla stanu
+     * `uncertain`, jak dla utrwalonego `sending`.
      */
-    let repairedHistory = false;
-    if (outcome === "sent") {
-      const attempt = runtime.store.getAttempt(request.requestId);
-      if (attempt) repairedHistory = repairOutgoingMessage(runtime.store, attempt, now);
-    }
+    const attempt = runtime.store.getAttempt(request.requestId);
+    const repairedHistory =
+      attempt?.status === "sent" ? repairOutgoingMessage(runtime.store, attempt, now) : false;
 
     return envelope(
       {
-        status: outcome === "sent" ? "sent" : "failed",
+        // Stan FAKTYCZNY z ledgera, nie wywnioskowany z zadania: zgodne
+        // ponowienie nad proba anulowana ma pokazac `cancelled`, a nie
+        // `failed`, bo to dwie rozne historie tej samej sprawy.
+        status: attempt?.status ?? (outcome === "sent" ? "sent" : "failed"),
         requestId: request.requestId,
         manuallyResolved: true,
+        /** false = ten sam wynik byl juz zapisany; powtorka nie jest bledem. */
+        changed: result.changed,
         repairedHistory,
       },
       now,
     );
   }
+
+  /*
+   * Sprzatanie porzuconych `prepared` PRZED wysylka.
+   *
+   * `prepared` powstaje przed pierwszym requestem i blokuje kazda kolejna
+   * probe w sprawie. Gdy proces padl w tym oknie, blokady nie zdejmie nikt:
+   * anulowanie jest ruchem czlowieka, a ten nigdy nie zobaczyl potwierdzenia,
+   * wiec nie wie, ze jest co anulowac — i sprawa wisi bez konca. Zegar wolno
+   * tu zastosowac WYLACZNIE dlatego, ze przy `prepared` do dostawcy nic nie
+   * polecialo; `sending` i `uncertain` ledger zostawia nietkniete.
+   */
+  expirePreparedAttempts(runtime.store, now);
 
   const transport = buildTransport(context, request);
   if (!transport.ok) return failure(transport.status, transport.error);
@@ -529,6 +572,34 @@ export function handleMetaWebhook(context: MetaWebhookContext): HttpResult {
     applyDeliveryEvent(runtime.store, { externalMessageId: mid }, "delivered");
   }
 
+  /*
+   * Potwierdzenie ODBIORU, po trwałym zapisie.
+   *
+   * Komentarz nad pętlą Meta w `runtime.ts` obiecuje, że zielone światło daje
+   * udany odczyt ALBO zweryfikowany webhook. Druga połowa nie miała pokrycia:
+   * webhook zapisywał wiadomość i nie dotykał zdrowia, więc źródło z żywymi
+   * webhookami wyglądało na stare przez większość godziny — a przez najstarszy
+   * sukces ciągnęło na czerwono cały kanał, razem ze zdrowymi skrzynkami.
+   *
+   * Znacznik jest OSOBNY od `lastSuccessfulSyncAt` i celowo nie udaje pełnego
+   * uzgodnienia: webhook nie wie, czego dostawca nie dowiózł. Zapisujemy go
+   * dopiero PO `ingestMetaEvents`, żeby awaria zapisu nie zostawiła śladu
+   * „odebrano" po wiadomości, której nie ma na dysku.
+   */
+  for (const entryId of new Set(parsed.data.entry.map((entry) => entry.id))) {
+    const account = runtime.config.meta.find((candidate) => candidate.accountKey === entryId);
+    if (!account) continue;
+    recordInboundReceipt(
+      runtime.store,
+      {
+        key: { provider: account.provider, accountKey: account.accountKey },
+        label: account.label,
+        active: true,
+      },
+      context.now,
+    );
+  }
+
   return envelope(
     { accepted: true, stored: result.stored, duplicates: result.duplicates, echoes: result.echoes },
     context.now,
@@ -561,23 +632,95 @@ export function handleResendWebhook(context: ResendWebhookContext): HttpResult {
     return failure(401, "invalid_signature");
   }
 
-  // Deduplikacja TRWAŁA: pamięć procesu ginie przy restarcie, a dostawca
-  // ponawia doręczenie także po nim.
-  if (!context.svixId || !context.runtime.store.acceptWebhook(context.svixId, context.now)) {
-    return envelope({ accepted: true, duplicate: true }, context.now);
-  }
+  // Weryfikacja podpisu i tak odrzuca żądanie bez `svix-id`; ta linia trzyma
+  // to wprost, bo dalej cały porządek deduplikacji stoi na tym identyfikatorze.
+  if (!context.svixId) return failure(400, "missing_svix_id");
 
-  let payload: { type?: unknown; data?: { email_id?: unknown } };
+  let payload: { type?: unknown; created_at?: unknown; data?: { email_id?: unknown } };
   try {
     payload = JSON.parse(context.rawBody);
   } catch {
+    // 400 PRZED oznaczeniem svix-id jako obsłużonego. Odwrotna kolejność
+    // kasowała zdarzenie: ponowienie dostawało 200 „duplikat", choć nic się
+    // nie wydarzyło.
     return failure(400, "invalid_json");
   }
 
   const state = typeof payload.type === "string" ? resendDeliveryState(payload.type) : null;
   const emailId = typeof payload.data?.email_id === "string" ? payload.data.email_id : null;
-  if (!state || !emailId) return envelope({ accepted: true, applied: false }, context.now);
+  if (!state || !emailId) {
+    /*
+     * Zdarzenie bez skutku (`email.sent`, `email.delivery_delayed`, ładunek
+     * bez `email_id`). Ponowienie niczego by nie zmieniło, więc domykamy je
+     * jawnie: `svix-id` zużyty, odpowiedź 200 z podanym powodem.
+     */
+    context.runtime.store.acceptWebhook(context.svixId, context.now);
+    return envelope(
+      { accepted: true, applied: false, reason: state ? "missing_email_id" : "unsupported_event_type" },
+      context.now,
+    );
+  }
 
+  /*
+   * Nieznany `email_id` to WYŚCIG, nie koniec obsługi.
+   *
+   * Webhook odbicia potrafi wyprzedzić zapis `externalMessageId` przez ścieżkę
+   * wysyłki. Odpowiedź 200 z `applied: false` spalała wtedy jedyne
+   * powiadomienie o tym, że wiadomość do klienta NIE doszła: dostawca nie
+   * ponawiał, a monitoring nie widział żadnego błędu. Utrata była całkowicie
+   * cicha. Kod 5xx jest jedynym wyjściem, po którym zdarzenie wróci — i
+   * dlatego `svix-id` nie może tu zostać oznaczony jako obsłużony.
+   */
+  const target = context.runtime.store
+    .listAttempts()
+    .find((entry) => entry.externalMessageId === emailId);
+  if (!target) {
+    /*
+     * Ponawianie ma KONIEC.
+     *
+     * Wyścig z zapisem `externalMessageId` trwa sekundy, nie godziny. Wiadomość
+     * wysłana przez to samo konto Resend, ale przez inną integrację, nigdy nie
+     * trafi do naszego ledgera i odpowiadanie na nią 5xx w nieskończoność
+     * zamieniłoby jeden nieistotny webhook w stały strumień błędów.
+     *
+     * Po upływie okna przyjmujemy zdarzenie, ale NIE udajemy, że je
+     * zastosowaliśmy: zapisujemy awarię przy źródle, żeby zniknięcie odbicia
+     * było widoczne w kanale zamiast zostać w logu.
+     */
+    const age = context.now - resendEventTime(payload, context.now);
+    if (age <= RESEND_RETRY_WINDOW_MS) return failure(503, "delivery_target_not_found");
+
+    context.runtime.store.acceptWebhook(context.svixId, context.now);
+    recordFailure(
+      context.runtime.store,
+      { key: { provider: "email", accountKey: "resend#delivery" }, label: "Resend — doręczenia", active: true },
+      "error",
+      `Zdarzenie doręczenia bez pasującej wysyłki (${emailId.slice(0, 12)}…)`,
+      context.now,
+    );
+    return envelope(
+      { accepted: true, applied: false, reason: "delivery_target_not_found" },
+      context.now,
+    );
+  }
+
+  /*
+   * Kolejność: ZASTOSUJ, potem oznacz jako obsłużone.
+   *
+   * Wcześniej trwały znacznik `svix-id` powstawał przed parsowaniem
+   * i zastosowaniem, więc każde zakończenie inne niż udane zastosowanie —
+   * błąd zapisu, restart, nierozpoznany ładunek — kasowało zdarzenie na
+   * zawsze: ponowienie dostawało 200 „duplikat", nie zrobiwszy niczego.
+   *
+   * Odwrócenie kolejności jest bezpieczne, bo `applyDeliveryEvent` jest
+   * monotoniczne: stan dostarczenia nigdy się nie cofa, a zdarzenie o randze
+   * nie wyższej niż zapisana nic nie zmienia. Powtórka jest więc bez skutku
+   * i wolno ją rozpoznać dopiero PO zastosowaniu.
+   */
   const applied = applyDeliveryEvent(context.runtime.store, { externalMessageId: emailId }, state);
+  const pierwszeDoreczenie = context.runtime.store.acceptWebhook(context.svixId, context.now);
+  if (!pierwszeDoreczenie) return envelope({ accepted: true, duplicate: true }, context.now);
+  // `applied: false` przy PIERWSZYM doręczeniu znaczy, że zdarzenie było
+  // słabsze od już zapisanego. Ponowienie nic by nie dało.
   return envelope({ accepted: true, applied }, context.now);
 }

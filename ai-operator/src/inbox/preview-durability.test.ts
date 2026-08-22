@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ParsedRecord } from "../mail/imap.js";
 import type { InboxConfig } from "./config.js";
+import { lastInboundReceiptAt } from "./health.js";
 import { handleMetaWebhook } from "./http.js";
 import { createRuntime } from "./runtime.js";
 import { InboxStore } from "./store.js";
@@ -362,5 +363,96 @@ describe("webhook Meta nie potwierdza przed trwalym zapisem", () => {
 
     const afterCrash = new InboxStore({ dir });
     expect(afterCrash.allMessages()).toHaveLength(0);
+  });
+});
+
+describe("webhook Meta potwierdza ODBIOR, nie kompletnosc", () => {
+  const KEY = { provider: "facebook", accountKey: "page-1" };
+
+  function signedBody(mid: string): { body: string; signature: string } {
+    const body = JSON.stringify({
+      object: "page",
+      entry: [
+        {
+          id: "page-1",
+          time: 1,
+          messaging: [
+            {
+              sender: { id: "klient-88" },
+              recipient: { id: "page-1" },
+              timestamp: NOW,
+              message: { mid, text: "Czy wysylacie w sobote?" },
+            },
+          ],
+        },
+      ],
+    });
+    const signature = `sha256=${createHmac("sha256", APP_SECRET).update(Buffer.from(body, "utf8")).digest("hex")}`;
+    return { body, signature };
+  }
+
+  it("zweryfikowany webhook odswieza zdrowie odbioru i przezywa restart", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    const runtime = createRuntime(config(), store);
+    const { body, signature } = signedBody("m_odbior_1");
+
+    expect(lastInboundReceiptAt(store, KEY)).toBeNull();
+    const result = handleMetaWebhook({
+      runtime,
+      method: "POST",
+      params: new URLSearchParams(),
+      rawBody: body,
+      signatureHeader: signature,
+      now: NOW,
+    });
+    expect(result.status).toBe(200);
+    expect(lastInboundReceiptAt(store, KEY)).toBe(NOW);
+
+    /*
+     * Znacznik odbioru MUSI byc trwaly z tego samego powodu, co wiadomosc:
+     * po restarcie zrodlo bez niego wyglada na milczace od ostatniego
+     * uzgodnienia, czyli nawet od godziny.
+     */
+    expect(lastInboundReceiptAt(new InboxStore({ dir }), KEY)).toBe(NOW);
+  });
+
+  it("webhook NIE udaje pelnego uzgodnienia", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    const runtime = createRuntime(config(), store);
+    const { body, signature } = signedBody("m_odbior_2");
+
+    handleMetaWebhook({
+      runtime,
+      method: "POST",
+      params: new URLSearchParams(),
+      rawBody: body,
+      signatureHeader: signature,
+      now: NOW,
+    });
+
+    // Zdrowie SAMEGO zrodla zostaje nietkniete: webhook nie wie, czy czegos
+    // nie brakuje, a zielona kropka „mamy wszystko" wymaga uzgodnienia.
+    expect(store.getHealth(KEY)).toBeNull();
+  });
+
+  it("bledny podpis NIE odswieza zdrowia odbioru", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    const runtime = createRuntime(config(), store);
+    const { body } = signedBody("m_odbior_3");
+
+    const result = handleMetaWebhook({
+      runtime,
+      method: "POST",
+      params: new URLSearchParams(),
+      rawBody: body,
+      signatureHeader: `sha256=${"0".repeat(64)}`,
+      now: NOW,
+    });
+    expect(result.status).toBe(401);
+    // Inaczej dowolny host w internecie utrzymywalby zrodlo na zielono.
+    expect(lastInboundReceiptAt(store, KEY)).toBeNull();
   });
 });
