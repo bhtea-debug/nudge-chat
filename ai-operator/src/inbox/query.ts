@@ -1,6 +1,9 @@
 import type { ContentMode, InboxCase, InboxMessage } from "./contract.js";
 import { channelFreshness, mayReportEmptyQueue, type ChannelFreshness } from "./health.js";
 import type { InboxStore, StoredCase } from "./store.js";
+import { evaluateSla, type Priority, type SlaState } from "./sla.js";
+import { resolveRecipient } from "./outbound/recipient.js";
+import { metaSendWindow } from "./providers/meta/webhook.js";
 
 /**
  * Odczyt kolejki dla firmowego czatu.
@@ -31,6 +34,23 @@ export interface CaseDto {
   readonly sourceClosed: boolean;
   readonly classifierVersion: number;
   readonly classificationReason: string;
+  /** Sprawa niejednoznaczna — do potwierdzenia przez człowieka. */
+  readonly needsReview: boolean;
+  readonly priority: Priority | null;
+  readonly slaState: SlaState | null;
+  readonly responseDueAt: number | null;
+  readonly serviceMaxAt: number | null;
+  /**
+   * Odbiorca i konto nadawcze wyliczone SERWEROWO.
+   *
+   * Interfejs ma pokazać człowiekowi, dokąd i z czego pójdzie odpowiedź,
+   * zanim ją zatwierdzi — a wartości muszą pochodzić z tego samego źródła,
+   * którego użyje wysyłka. Podgląd liczony osobno w przeglądarce mógłby
+   * pokazać co innego, niż faktycznie poleci.
+   */
+  readonly replyTo: string | null;
+  readonly replyFrom: string | null;
+  readonly replyWindowClosesAt: number | null;
 }
 
 export interface QueueResult {
@@ -53,6 +73,8 @@ export interface QueueResult {
 
 export interface QueueOptions {
   readonly now: number;
+  /** Adresy skrzynek: potrzebne do podglądu konta nadawczego. */
+  readonly mailboxes?: ReadonlyMap<string, string>;
   readonly state?: "actionable" | "all";
   readonly providers?: readonly string[];
   readonly accountKeys?: readonly string[];
@@ -100,7 +122,7 @@ export function queryQueue(store: InboxStore, options: QueueOptions): QueueResul
   const page = window;
 
   return {
-    cases: page.map((entry) => toDto(store, entry, options.now, contentMode)),
+    cases: page.map((entry) => toDto(store, entry, options.now, contentMode, options.mailboxes)),
     count: total,
     truncated,
     nextCursor: truncated && page.length > 0 ? encodeCursor(page[page.length - 1]!) : null,
@@ -139,9 +161,27 @@ function cursorOffset(cases: readonly StoredCase[], cursor: string): number {
   return index < 0 ? 0 : index + 1;
 }
 
-function toDto(store: InboxStore, entry: StoredCase, now: number, mode: ContentMode): CaseDto {
+function toDto(
+  store: InboxStore,
+  entry: StoredCase,
+  now: number,
+  mode: ContentMode,
+  mailboxes?: ReadonlyMap<string, string>,
+): CaseDto {
   const showContent = mode !== "none";
   const preview = showContent ? buildPreview(store, entry, mode) : null;
+  const sla = evaluateSla({
+    waitingSince: entry.lastIncomingAt,
+    requiresResponse: entry.requiresResponse,
+    pendingAction: entry.pendingAction,
+    needsReview: entry.needsReview,
+    now,
+  });
+  const recipient = resolveRecipient(store, entry);
+  const window =
+    entry.provider === "instagram" || entry.provider === "facebook"
+      ? metaSendWindow(entry.lastIncomingAt, now)
+      : null;
   return {
     caseId: entry.caseId,
     provider: entry.provider,
@@ -168,6 +208,16 @@ function toDto(store: InboxStore, entry: StoredCase, now: number, mode: ContentM
     sourceClosed: entry.sourceClosed,
     classifierVersion: entry.classifierVersion,
     classificationReason: entry.classificationReason,
+    needsReview: entry.needsReview,
+    priority: sla.priority,
+    slaState: sla.state,
+    responseDueAt: sla.responseDueAt,
+    serviceMaxAt: sla.serviceMaxAt,
+    // Odbiorca jest daną klienta: bez uprawnienia do treści pokazujemy null,
+    // a nie adres „w celach informacyjnych".
+    replyTo: showContent && recipient.ok ? recipient.recipient : null,
+    replyFrom: mailboxes?.get(entry.accountKey) ?? null,
+    replyWindowClosesAt: window?.expiresAt ?? null,
   };
 }
 

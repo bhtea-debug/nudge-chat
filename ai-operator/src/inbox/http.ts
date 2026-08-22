@@ -148,6 +148,9 @@ export function handleInboxRead(request: ReadRequest): HttpResult {
           limit: Number.isFinite(limit) ? limit : 200,
           contentMode: mode,
           cursor: params.get("cursor"),
+          // Podgląd konta nadawczego pochodzi z konfiguracji adaptera,
+          // nie z żądania: interfejs ma pokazać to, co faktycznie wyśle.
+          mailboxes: new Map(runtime.config.email.map((entry) => [entry.accountKey, entry.address])),
         }),
         now,
       );
