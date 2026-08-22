@@ -23,8 +23,29 @@ import type { ParsedRecord } from "../../../mail/imap.js";
 const DEFAULT_OVERLAP = 20;
 /** Jak głęboko sięga uzgodnienie. Znajduje luki, których kursor już nie widzi. */
 const DEFAULT_RECONCILE_LOOKBACK = 500;
+/** Domyślne okno pierwszego importu. */
+const DEFAULT_BACKFILL_DAYS = 30;
+/** Ile wiadomości pobieramy jednym fetchem. Sufit pamięci procesu. */
+const DEFAULT_BATCH_SIZE = 50;
+
+/**
+ * Podział UID-ów na zakresy po `size` sztuk.
+ *
+ * Lista UID-ów jest przekazywana wprost, a nie jako `od:do`: po skasowanych
+ * wiadomościach zakres bywa dziurawy i serwer zwracałby przy nim więcej,
+ * niż wybraliśmy.
+ */
+function chunkUids(uids: readonly number[], size: number): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < uids.length; index += size) {
+    out.push(uids.slice(index, index + size).join(","));
+  }
+  return out;
+}
 
 export interface ImapReader {
+  /** UID-y nie starsze niż data. Tylko pierwszy import. */
+  uidsSince?(since: Date, folder?: string, signal?: AbortSignal): Promise<number[]>;
   mailboxState(
     folder?: string,
     signal?: AbortSignal,
@@ -51,6 +72,18 @@ export interface EmailSyncOptions {
    * rekordów: „dużo wiadomości" zdarza się też po dwudniowej awarii.
    */
   readonly backfill?: boolean;
+  /** Ile dni historii obejmuje PIERWSZY import. */
+  readonly backfillDays?: number;
+  /**
+   * `preview` liczy i nie zapisuje ani jednej wiadomości.
+   *
+   * Domyślny, bo import historyczny jest nieodwracalny: raz wciągniętej
+   * korespondencji sprzed pięciu lat nie da się usunąć z kolejki obsługi
+   * klienta bez ręcznego sprzątania.
+   */
+  readonly backfillMode?: "preview" | "import";
+  /** Ile wiadomości pobieramy naraz. Chroni pamięć procesu. */
+  readonly batchSize?: number;
 }
 
 export interface EmailSyncResult {
@@ -65,6 +98,10 @@ export interface EmailSyncResult {
   readonly uidValidityChanged: boolean;
   readonly touchedCaseIds: string[];
   readonly backfill: boolean;
+  /** Ile wiadomości mieści się w oknie historii. Liczba, nigdy treść. */
+  readonly previewCount: number | null;
+  readonly previewOnly: boolean;
+  readonly batches: number;
 }
 
 export async function syncEmailAccount(options: EmailSyncOptions): Promise<EmailSyncResult> {
@@ -83,12 +120,64 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
     cursorBefore === null || uidValidityChanged ? null : cursorBefore;
 
   const mode = options.mode ?? "incremental";
-  const range =
-    mode === "reconcile"
-      ? reconciliationRange(effectiveCursor, options.reconcileLookback ?? DEFAULT_RECONCILE_LOOKBACK)
-      : incrementalRange(effectiveCursor, options.overlap ?? DEFAULT_OVERLAP);
+  const isFirstRun = effectiveCursor === null;
+  const backfillMode = options.backfillMode ?? "preview";
+  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE);
 
-  const { records, problems } = await reader.fetchRange(range, account.folder, options.signal);
+  /**
+   * PIERWSZY przebieg nie skanuje `1:*`.
+   *
+   * Zamiast tego pyta serwer o UID-y nie starsze niż okno historii. Skrzynka
+   * z dziesięcioletnią korespondencją inaczej trafiłaby w całości do pamięci
+   * procesu i do kolejki obsługi klienta — nieodwracalnie.
+   */
+  let ranges: string[];
+  let previewCount: number | null = null;
+  let previewOnly = false;
+
+  if (isFirstRun && reader.uidsSince) {
+    const days = Math.max(1, options.backfillDays ?? DEFAULT_BACKFILL_DAYS);
+    const since = new Date(now - days * 24 * 60 * 60_000);
+    const uids = await reader.uidsSince(since, account.folder, options.signal);
+    previewCount = uids.length;
+
+    if (backfillMode === "preview") {
+      // Podgląd: liczba i zakres, zero zapisów. Aktywacja importu jest osobną,
+      // jawną decyzją człowieka (INBOX_BACKFILL_MODE=import).
+      previewOnly = true;
+      return {
+        accountKey: account.accountKey,
+        fetched: 0,
+        stored: 0,
+        duplicates: 0,
+        collisions: 0,
+        problems: [],
+        cursorBefore: rawCursor,
+        cursorAfter: rawCursor,
+        uidValidityChanged,
+        touchedCaseIds: [],
+        backfill: true,
+        previewCount,
+        previewOnly: true,
+        batches: 0,
+      };
+    }
+    ranges = chunkUids(uids, batchSize);
+  } else {
+    ranges = [
+      mode === "reconcile"
+        ? reconciliationRange(effectiveCursor, options.reconcileLookback ?? DEFAULT_RECONCILE_LOOKBACK)
+        : incrementalRange(effectiveCursor, options.overlap ?? DEFAULT_OVERLAP),
+    ];
+  }
+
+  const records: ParsedRecord[] = [];
+  const problems: string[] = [];
+  for (const range of ranges) {
+    const batch = await reader.fetchRange(range, account.folder, options.signal);
+    records.push(...batch.records);
+    problems.push(...batch.problems);
+  }
 
   const { threadIndex, subjectIndex } = buildIndexes(store, key);
 
@@ -190,6 +279,9 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
     uidValidityChanged,
     touchedCaseIds: [...touched],
     backfill: options.backfill ?? cursorBefore === null,
+    previewCount,
+    previewOnly,
+    batches: ranges.length,
   };
 }
 

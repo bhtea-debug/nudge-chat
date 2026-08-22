@@ -22,6 +22,16 @@ export interface InboxEmailSource extends EmailAccount {
 }
 
 export interface InboxMetaSource extends MetaAccount {
+  /**
+   * Identyfikator używany w wywołaniach Graph API.
+   *
+   * Dla Instagrama to PAGE ID połączonej strony, a NIE identyfikator konta
+   * Instagram: wysyłka i lista rozmów idą pod adres strony, natomiast webhooki
+   * przychodzą z `entry.id` równym identyfikatorowi konta IG. Zmieszanie tych
+   * dwóch identyfikatorów daje 404 przy wysyłce i nierozpoznane konto przy
+   * odbiorze. Zweryfikowane w dokumentacji Meta 2026-08-22.
+   */
+  readonly pageId: string;
   readonly accessToken: string;
 }
 
@@ -122,6 +132,9 @@ export function loadInboxConfig(): InboxConfig {
         // Klucz konta to identyfikator strony/konta Meta, nie alias z listy:
         // po nim przychodzą webhooki i po nim rozpoznajemy właściciela rozmowy.
         accountKey: required(`${prefix}_ID`),
+        // Dla Facebooka strona jest tym samym kontem; dla Instagrama trzeba
+        // podać PAGE ID osobno, bo webhook i API mówią o innych numerach.
+        pageId: value(`${prefix}_PAGE_ID`) ?? required(`${prefix}_ID`),
         label: value(`${prefix}_LABEL`) ?? (provider === "instagram" ? "Instagram" : "Facebook"),
         accessToken: required(`${prefix}_TOKEN`),
       };

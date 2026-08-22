@@ -331,6 +331,7 @@ function buildTransport(
         account: {
           provider: account.provider,
           accountKey: account.accountKey,
+          pageId: account.pageId,
           accessToken: account.accessToken,
         },
         recipientId: resolved.recipient,

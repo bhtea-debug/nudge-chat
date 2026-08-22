@@ -311,7 +311,7 @@ describe("kontrakt HTTP kanalu", () => {
         metaAppSecret: "sekret",
         metaVerifyToken: "verify",
       },
-      meta: [{ provider: "facebook", accountKey: "123", label: "Facebook", accessToken: "t" }],
+      meta: [{ provider: "facebook", accountKey: "123", pageId: "123", label: "Facebook", accessToken: "t" }],
     });
     const result = handleMetaWebhook({
       runtime,

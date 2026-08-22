@@ -10,17 +10,30 @@ import { metaSendWindow } from "../providers/meta/webhook.js";
  * dostawcy jest rzutem monetą między zgubioną a podwójną wiadomością,
  * a podwójna wiadomość u klienta jest gorsza.
  *
- * Dokumentacja:
- * https://www.postman.com/meta/messenger-platform-api/documentation/iyp204x/messenger-platform-api
- * https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api
+ * Zweryfikowane w dokumentacji Meta 2026-08-22:
+ * `POST /{PAGE-ID}/messages`, token strony, `messaging_type: RESPONSE`,
+ * okno 24 h. Instagram używa TEGO SAMEGO adresu z IGSID jako odbiorcą.
+ *
+ * https://developers.facebook.com/documentation/business-messaging/messenger-platform/send-messages
+ * https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/messaging-api/
  */
 
-const DEFAULT_GRAPH_VERSION = "v21.0";
+const DEFAULT_GRAPH_VERSION = "v25.0";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 export interface MetaSendAccount {
   readonly provider: "instagram" | "facebook";
+  /** Identyfikator konta w webhookach (`entry.id`). */
   readonly accountKey: string;
+  /**
+   * Adres wywołania Send API. Dla OBU platform jest to PAGE ID.
+   *
+   * Instagram wysyła przez połączoną stronę, a nie przez konto IG: pierwsza
+   * wersja tego kodu strzelała pod identyfikator konta Instagram i dostałaby
+   * 404 przy pierwszej prawdziwej odpowiedzi. Zweryfikowane w dokumentacji
+   * Meta 2026-08-22 (`POST /{PAGE-ID}/messages`, IGSID jako odbiorca).
+   */
+  readonly pageId: string;
   readonly accessToken: string;
   readonly graphVersion?: string;
 }
@@ -59,7 +72,7 @@ export async function sendViaMeta(input: MetaSendInput): Promise<MetaSendResult>
   }
 
   const version = input.account.graphVersion ?? DEFAULT_GRAPH_VERSION;
-  const url = `https://graph.facebook.com/${version}/${encodeURIComponent(input.account.accountKey)}/messages`;
+  const url = `https://graph.facebook.com/${version}/${encodeURIComponent(input.account.pageId)}/messages`;
   const fetchImpl = input.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs ?? DEFAULT_TIMEOUT_MS);

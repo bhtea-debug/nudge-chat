@@ -536,7 +536,7 @@ describe("Meta Send API", () => {
   it("wygasle okno blokuje wysylke przed jakimkolwiek requestem", async () => {
     const spy = vi.fn();
     const result = await sendViaMeta({
-      account: { provider: "facebook", accountKey: "1234567890", accessToken: "token" },
+      account: { provider: "facebook", accountKey: "1234567890", pageId: "1234567890", accessToken: "token" },
       recipientId: "klient-77",
       text: "Juz sprawdzam",
       attempt: attempt!,
@@ -551,7 +551,7 @@ describe("Meta Send API", () => {
   it("5xx nie powoduje drugiej wysylki", async () => {
     let calls = 0;
     const result = await sendViaMeta({
-      account: { provider: "facebook", accountKey: "1234567890", accessToken: "token" },
+      account: { provider: "facebook", accountKey: "1234567890", pageId: "1234567890", accessToken: "token" },
       recipientId: "klient-77",
       text: "Juz sprawdzam",
       attempt: attempt!,
@@ -568,7 +568,7 @@ describe("Meta Send API", () => {
 
   it("wygasly token daje jasny stan reconnect", async () => {
     const result = await sendViaMeta({
-      account: { provider: "instagram", accountKey: "ig-999", accessToken: "token" },
+      account: { provider: "instagram", accountKey: "ig-999", pageId: "page-555", accessToken: "token" },
       recipientId: "klient-77",
       text: "Juz sprawdzam",
       attempt: attempt!,

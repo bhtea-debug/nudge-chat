@@ -325,6 +325,30 @@ export class ImapMailProvider implements MailProvider {
     return { records, problems };
   }
 
+  /**
+   * UID-y wiadomości nie starszych niż podana data.
+   *
+   * Istnieje wyłącznie dla pierwszego importu. Skan `1:*` na skrzynce
+   * z dziesięcioletnią historią zaciąga wszystko do pamięci i jest
+   * nieodwracalny: raz zaimportowanej korespondencji sprzed pięciu lat nie da
+   * się „odimportować" z kolejki obsługi klienta.
+   */
+  async uidsSince(since: Date, folder?: string, signal?: AbortSignal): Promise<number[]> {
+    const client = await this.connect();
+    const path = folder ?? this.folder;
+    signal?.throwIfAborted();
+    const lock = await client.getMailboxLock(path, {
+      readOnly: true,
+      acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS,
+    });
+    try {
+      const uids = await this.searchUids(client, { since }, signal);
+      return [...uids].sort((a, b) => a - b);
+    } finally {
+      lock.release();
+    }
+  }
+
   private async threadFolderList(): Promise<readonly string[]> {
     return (await this.resolveFolders()).threadFolders;
   }
