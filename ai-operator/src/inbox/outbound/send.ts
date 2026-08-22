@@ -7,7 +7,7 @@ import {
   markerStillValid,
   prepareAttempt,
 } from "./ledger.js";
-import { recordOutgoingMessage } from "./record.js";
+import { recordOutgoingMessage, repairOutgoingMessage } from "./record.js";
 import { replySubject, sendViaResend, type ResendMailbox, type ResendResult } from "./resend.js";
 import { sendViaMeta, type MetaSendAccount, type MetaSendResult } from "./meta-send.js";
 
@@ -21,7 +21,13 @@ import { sendViaMeta, type MetaSendAccount, type MetaSendResult } from "./meta-s
  */
 
 export type SendOutcome =
-  | { readonly status: "sent"; readonly requestId: string; readonly externalMessageId: string | null }
+  | {
+      readonly status: "sent";
+      readonly requestId: string;
+      readonly externalMessageId: string | null;
+      /** true = powtórzone żądanie uzupełniło brakującą wiadomość w wątku. */
+      readonly repairedHistory?: boolean;
+    }
   | { readonly status: "failed"; readonly requestId: string; readonly code: string; readonly message: string }
   | { readonly status: "uncertain"; readonly requestId: string; readonly code: string; readonly message: string }
   | { readonly status: "rejected"; readonly requestId: string; readonly code: string; readonly message: string };
@@ -65,7 +71,24 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
   // requestId dostaje wynik pierwotnej próby, a nie drugą wysyłkę.
   const existing = prepared.attempt;
   if (existing.status === "sent") {
-    return { status: "sent", requestId, externalMessageId: existing.externalMessageId };
+    /*
+     * Zanim odpowiemy „już wysłane", sprawdzamy, czy historia się zgadza.
+     *
+     * Awaria zapisu albo restart między `finishSent` a zapisem wiadomości
+     * zostawia stan, w którym ledger mówi „wysłano", a wątek tego nie ma.
+     * Bez tej naprawy każde kolejne żądanie zwracało wczesne `sent`
+     * i wiadomość nie pojawiała się w wątku już nigdy.
+     *
+     * Naprawa NIE wykonuje żadnego requestu do dostawcy: wiadomość u klienta
+     * już jest, chodzi wyłącznie o naszą historię.
+     */
+    const repaired = repairOutgoingMessage(store, existing, request.now());
+    return {
+      status: "sent",
+      requestId,
+      externalMessageId: existing.externalMessageId,
+      repairedHistory: repaired,
+    };
   }
   if (existing.status === "failed") {
     return {

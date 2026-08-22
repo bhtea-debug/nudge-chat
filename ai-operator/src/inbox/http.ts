@@ -430,7 +430,14 @@ export function handleMetaWebhook(context: MetaWebhookContext): HttpResult {
   }
 
   const events = normalizeMetaPayload(parsed.data, runtime.config.meta, context.now);
-  const result = ingestMetaEvents(runtime.store, events);
+  /*
+   * `durable: true` — zapis na dysk PRZED odpowiedzią 200.
+   *
+   * Po 200 Meta uznaje wiadomość za doręczoną i jej nie ponowi. Bez wymuszenia
+   * utrata zasilania w oknie między zapisem a odpowiedzią kasuje wiadomość
+   * bez śladu — a to jest dokładnie ta cicha utrata, której zabrania kontrakt.
+   */
+  const result = ingestMetaEvents(runtime.store, events, { durable: true });
 
   for (const mid of result.deliveries) {
     applyDeliveryEvent(runtime.store, { externalMessageId: mid }, "delivered");

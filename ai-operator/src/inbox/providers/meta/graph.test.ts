@@ -287,4 +287,137 @@ describe("odczyt rozmow z Graph API", () => {
       expect((error as GraphError).code).toBe("rate_limited");
     }
   });
+
+  it("podaza za zagniezdzona paginacja wiadomosci w JEDNEJ rozmowie", async () => {
+    const urls: string[] = [];
+    const result = await fetchConversations({
+      account: facebook,
+      sinceMs: 0,
+      now: NOW,
+      fetchImpl: (async (url: string) => {
+        urls.push(url);
+        if (url.includes("/conversations")) {
+          return jsonResponse({
+            data: [
+              {
+                id: "conv-duza",
+                updated_time: "2026-08-20T12:00:00+0000",
+                participants: { data: [{ id: "page-123" }, { id: "klient-77" }] },
+                messages: {
+                  data: [
+                    { id: "m_1", message: "Pierwsza", created_time: "2026-08-20T10:00:00+0000", from: { id: "klient-77" } },
+                  ],
+                  paging: { next: "https://graph.facebook.com/msg-page-2" },
+                },
+              },
+            ],
+          });
+        }
+        // Druga strona WIADOMOSCI tej samej rozmowy.
+        return jsonResponse({
+          data: [
+            { id: "m_2", message: "Druga", created_time: "2026-08-20T11:00:00+0000", from: { id: "klient-77" } },
+          ],
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    expect(urls.some((url) => url.includes("msg-page-2"))).toBe(true);
+    expect(result.messages.map((m) => m.externalMessageId).sort()).toEqual(["m_1", "m_2"]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("wyczerpany sufit stron WIADOMOSCI jest zglaszany, nie przemilczany", async () => {
+    const result = await fetchConversations({
+      account: facebook,
+      sinceMs: 0,
+      now: NOW,
+      maxMessagePages: 2,
+      fetchImpl: (async (url: string) => {
+        if (url.includes("/conversations")) {
+          return jsonResponse({
+            data: [
+              {
+                id: "conv-nieskonczona",
+                updated_time: "2026-08-20T12:00:00+0000",
+                participants: { data: [{ id: "page-123" }, { id: "klient-77" }] },
+                messages: { data: [], paging: { next: "https://graph.facebook.com/msg-1" } },
+              },
+            ],
+          });
+        }
+        // Kazda strona wiadomosci ma nastepna: rozmowa bez konca.
+        return jsonResponse({ data: [], paging: { next: "https://graph.facebook.com/msg-next" } });
+      }) as unknown as typeof fetch,
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.truncatedMessages).toEqual(["conv-nieskonczona"]);
+    // Rozroznienie ma znaczenie: brakuje wiadomosci, nie rozmow.
+    expect(result.truncatedConversations).toBe(false);
+  });
+
+  it("wyczerpany sufit stron ROZMOW jest odrozniany od sufitu wiadomosci", async () => {
+    const result = await fetchConversations({
+      account: facebook,
+      sinceMs: 0,
+      now: NOW,
+      maxPages: 2,
+      fetchImpl: (async () =>
+        jsonResponse(conversationsPayload([], "https://graph.facebook.com/next"))) as unknown as typeof fetch,
+    });
+    expect(result.truncatedConversations).toBe(true);
+    expect(result.truncatedMessages).toEqual([]);
+  });
+
+  it("zwraca najnowszy updated_time jako kursor okna", async () => {
+    const result = await fetchConversations({
+      account: facebook,
+      sinceMs: 0,
+      now: NOW,
+      fetchImpl: (async () =>
+        jsonResponse({
+          data: [
+            {
+              id: "conv-a",
+              updated_time: "2026-08-20T10:00:00+0000",
+              participants: { data: [{ id: "page-123" }, { id: "klient-77" }] },
+              messages: { data: [] },
+            },
+            {
+              id: "conv-b",
+              updated_time: "2026-08-21T15:00:00+0000",
+              participants: { data: [{ id: "page-123" }, { id: "klient-88" }] },
+              messages: { data: [] },
+            },
+          ],
+        })) as unknown as typeof fetch,
+    });
+    expect(result.newestUpdatedAt).toBe(Date.parse("2026-08-21T15:00:00+0000"));
+  });
+
+  it("wygasly token w zagniezdzonej paginacji tez jest rozpoznawany", async () => {
+    await expect(
+      fetchConversations({
+        account: facebook,
+        sinceMs: 0,
+        now: NOW,
+        fetchImpl: (async (url: string) => {
+          if (url.includes("/conversations")) {
+            return jsonResponse({
+              data: [
+                {
+                  id: "conv-x",
+                  updated_time: "2026-08-20T12:00:00+0000",
+                  participants: { data: [{ id: "page-123" }, { id: "klient-77" }] },
+                  messages: { data: [], paging: { next: "https://graph.facebook.com/msg-1" } },
+                },
+              ],
+            });
+          }
+          return new Response("{}", { status: 401 });
+        }) as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(GraphError);
+  });
 });

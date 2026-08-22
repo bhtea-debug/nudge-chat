@@ -27,6 +27,12 @@ const FixtureMessage = z.object({
   from: z.object({ name: z.string().nullable().default(null), address: z.string() }),
   to: z.array(z.object({ name: z.string().nullable().default(null), address: z.string() })).default([]),
   cc: z.array(z.object({ name: z.string().nullable().default(null), address: z.string() })).default([]),
+  // Fixture może modelować Reply-To, żeby dało się pokazać ścieżkę
+  // „From: no-reply, klient w Reply-To" bez prawdziwej skrzynki.
+  replyTo: z
+    .object({ name: z.string().nullable().default(null), address: z.string() })
+    .nullable()
+    .default(null),
   date: z.string(),
   folder: z.string().default("INBOX"),
   seen: z.boolean().default(false),
@@ -121,6 +127,7 @@ export class FixtureMailProvider implements MailProvider {
         from: m.from,
         to: m.to,
         cc: m.cc,
+        replyTo: m.replyTo,
         date: resolveFixtureDate(m.date),
         folder: m.folder,
         seen: m.seen,

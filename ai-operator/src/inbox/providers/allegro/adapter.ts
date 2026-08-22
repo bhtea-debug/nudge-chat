@@ -96,6 +96,7 @@ export function toInboxMessage(
       mimeType: attachment.mimeType,
       sizeBytes: null,
     })),
+    replyToAddress: null,
     rfcMessageId: null,
     rfcInReplyTo: null,
     rfcReferences: [],

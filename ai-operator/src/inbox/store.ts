@@ -289,12 +289,36 @@ export class InboxStore {
   /**
    * Trwały claim wiadomości. Wywoływany PRZED klasyfikacją; zwraca `false`,
    * gdy rekord już był (powtórka webhooka, retry partii, restart w połowie).
+   *
+   * Domyślnie BEZ `fsync`: w pętli synchronizacji utrata zapisu przed
+   * wymuszeniem kończy się powtórnym pobraniem, bo kursor się nie przesunął.
    */
   claimMessage(message: InboxMessage): boolean {
     const key = this.messageKey(message);
     if (this.messages.has(key)) return false;
     this.write({ t: "message", at: Date.now(), message });
     return true;
+  }
+
+  /**
+   * Claim z natychmiastowym wymuszeniem na dysk.
+   *
+   * Dla webhooków, gdzie nie ma kursora, który by nas uratował: po odpowiedzi
+   * 200 dostawca uznaje wiadomość za doręczoną i NIE ponowi jej. Zwrócenie 200
+   * przed `fsync` znaczy, że utrata zasilania w tym oknie kasuje wiadomość
+   * bez śladu i bez szansy na odzyskanie inaczej niż uzgodnieniem.
+   */
+  claimMessageDurable(message: InboxMessage): boolean {
+    const claimed = this.claimMessage(message);
+    // Wymuszamy zawsze, także gdy to duplikat: partia mogła zawierać także
+    // nowe wiadomości, a `fsync` opróżnia cały bufor pliku.
+    this.flush();
+    return claimed;
+  }
+
+  /** Wymuszenie na dysk wszystkiego, co dotąd dopisano. */
+  flush(): void {
+    this.journal.flush();
   }
 
   messagesForCase(caseId: string): InboxMessage[] {

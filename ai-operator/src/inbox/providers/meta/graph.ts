@@ -26,6 +26,8 @@ const DEFAULT_GRAPH_VERSION = "v25.0";
 const DEFAULT_TIMEOUT_MS = 25_000;
 /** Ile stron rozmów bierzemy w jednym uzgodnieniu. Sufit czasu i pamięci. */
 const MAX_PAGES = 10;
+/** Ile stron wiadomości w JEDNEJ rozmowie. Rozmowa-potwór nie blokuje reszty. */
+const MAX_MESSAGE_PAGES = 20;
 
 export interface GraphAccount extends MetaAccount {
   /** Identyfikator używany w wywołaniach API. Dla Instagrama to PAGE ID. */
@@ -37,8 +39,18 @@ export interface GraphAccount extends MetaAccount {
 export interface GraphConversationsResult {
   readonly messages: InboxMessage[];
   readonly pages: number;
-  /** true = zostały jeszcze rozmowy poza pobranymi stronami. */
+  /**
+   * Niekompletność. Rozróżniamy DWA rodzaje, bo mają różne skutki:
+   *  - `conversations`: nie doszliśmy do wszystkich rozmów,
+   *  - `messages`: w którejś rozmowie zostały nieprzeczytane wiadomości.
+   *
+   * Jedna wspólna flaga kazałaby zgadywać, czego brakuje.
+   */
   readonly truncated: boolean;
+  readonly truncatedConversations: boolean;
+  readonly truncatedMessages: string[];
+  /** Najnowszy `updated_time` widziany w tym przebiegu. Kursor okna. */
+  readonly newestUpdatedAt: number | null;
 }
 
 interface GraphMessage {
@@ -52,7 +64,7 @@ interface GraphMessage {
 interface GraphConversation {
   id?: unknown;
   updated_time?: unknown;
-  messages?: { data?: GraphMessage[] };
+  messages?: { data?: GraphMessage[]; paging?: { next?: unknown } };
   participants?: { data?: Array<{ id?: unknown }> };
 }
 
@@ -73,6 +85,7 @@ export async function fetchConversations(input: {
   readonly fetchImpl?: typeof fetch;
   readonly signal?: AbortSignal;
   readonly maxPages?: number;
+  readonly maxMessagePages?: number;
 }): Promise<GraphConversationsResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const version = input.account.graphVersion ?? DEFAULT_GRAPH_VERSION;
@@ -86,7 +99,9 @@ export async function fetchConversations(input: {
     `&limit=25`;
 
   let pages = 0;
-  let truncated = false;
+  let truncatedConversations = false;
+  const truncatedMessages: string[] = [];
+  let newestUpdatedAt: number | null = null;
 
   for (; pages < maxPages && url; pages += 1) {
     const controller = new AbortController();
@@ -114,15 +129,115 @@ export async function fetchConversations(input: {
     }
 
     for (const conversation of payload.data ?? []) {
+      const updated =
+        typeof conversation.updated_time === "string" ? Date.parse(conversation.updated_time) : Number.NaN;
+      if (Number.isFinite(updated) && (newestUpdatedAt === null || updated > newestUpdatedAt)) {
+        newestUpdatedAt = updated;
+      }
+
       messages.push(...normalizeConversation(conversation, input.account, input.sinceMs, input.now));
+
+      /*
+       * Rozmowa może mieć WIĘCEJ wiadomości, niż zmieściło się w zagnieżdżonym
+       * polu. Meta zwraca wtedy `messages.paging.next` i bez podążenia za nim
+       * rozmowa o dużym ruchu gubi starsze wiadomości przy każdym uzgodnieniu —
+       * czyli dokładnie tam, gdzie awaria webhooka boli najbardziej.
+       */
+      const nestedNext =
+        typeof conversation.messages?.paging?.next === "string"
+          ? conversation.messages.paging.next
+          : null;
+      if (!nestedNext) continue;
+
+      const conversationId = typeof conversation.id === "string" ? conversation.id : "?";
+      const nested = await fetchConversationMessages({
+        startUrl: nestedNext,
+        conversation,
+        account: input.account,
+        sinceMs: input.sinceMs,
+        now: input.now,
+        fetchImpl,
+        signal: input.signal,
+        maxPages: input.maxMessagePages ?? MAX_MESSAGE_PAGES,
+      });
+      messages.push(...nested.messages);
+      if (nested.truncated) truncatedMessages.push(conversationId);
     }
 
     const next = typeof payload.paging?.next === "string" ? payload.paging.next : null;
     url = next;
-    if (next && pages + 1 >= maxPages) truncated = true;
+    if (next && pages + 1 >= maxPages) truncatedConversations = true;
   }
 
-  return { messages, pages, truncated };
+  return {
+    messages,
+    pages,
+    truncated: truncatedConversations || truncatedMessages.length > 0,
+    truncatedConversations,
+    truncatedMessages,
+    newestUpdatedAt,
+  };
+}
+
+/**
+ * Kolejne strony wiadomości JEDNEJ rozmowy.
+ *
+ * Osobna funkcja, bo ma własny sufit stron: rozmowa z tysiącem wiadomości nie
+ * może zablokować uzgodnienia pozostałych rozmów. Wyczerpanie sufitu jest
+ * ZGŁASZANE, a nie przemilczane — inaczej brak wiadomości wyglądałby jak jej
+ * nieistnienie.
+ */
+async function fetchConversationMessages(input: {
+  readonly startUrl: string;
+  readonly conversation: GraphConversation;
+  readonly account: GraphAccount;
+  readonly sinceMs: number;
+  readonly now: number;
+  readonly fetchImpl: typeof fetch;
+  readonly signal?: AbortSignal;
+  readonly maxPages: number;
+}): Promise<{ messages: InboxMessage[]; truncated: boolean }> {
+  const messages: InboxMessage[] = [];
+  let url: string | null = input.startUrl;
+  let pages = 0;
+  let truncated = false;
+
+  for (; pages < input.maxPages && url; pages += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    input.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+
+    let payload: { data?: GraphMessage[]; paging?: { next?: unknown } };
+    try {
+      const response = await input.fetchImpl(url, {
+        headers: { Authorization: `Bearer ${input.account.accessToken}` },
+        signal: controller.signal,
+      });
+      if (response.status === 401 || response.status === 403) {
+        throw new GraphError("reconnect_required", "Token konta wygasl albo brakuje uprawnien");
+      }
+      if (response.status === 429) throw new GraphError("rate_limited", "Meta ograniczyla tempo odczytu");
+      if (!response.ok) throw new GraphError(`http_${response.status}`, "Meta odrzucila odczyt wiadomosci");
+      payload = (await response.json()) as typeof payload;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    messages.push(
+      ...normalizeConversation(
+        { ...input.conversation, messages: { data: payload.data ?? [] } },
+        input.account,
+        input.sinceMs,
+        input.now,
+      ),
+    );
+
+    const next = typeof payload.paging?.next === "string" ? payload.paging.next : null;
+    url = next;
+    if (next && pages + 1 >= input.maxPages) truncated = true;
+  }
+
+  return { messages, truncated };
 }
 
 export class GraphError extends Error {
@@ -182,6 +297,7 @@ function normalizeConversation(
       body: text,
       bodyTruncated: false,
       attachments: [],
+      replyToAddress: null,
       rfcMessageId: null,
       rfcInReplyTo: null,
       rfcReferences: [],

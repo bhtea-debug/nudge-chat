@@ -398,6 +398,7 @@ describe("autoreferencja nie może udawać rodzica w skrzynce", () => {
           id: selfRef.id,
           subject: selfRef.subject,
           from: { address: "auto@example.invalid" },
+          replyTo: null,
           date: new Date().toISOString(),
           references: selfRef.references,
           text: "Automatyczna odpowiedź.",

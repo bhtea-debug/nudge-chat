@@ -20,6 +20,7 @@ function message(partial: Partial<InboxMessage> & { body: string }): InboxMessag
     bodyTruncated: false,
     attachments: [],
     rfcMessageId: null,
+    replyToAddress: null,
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,

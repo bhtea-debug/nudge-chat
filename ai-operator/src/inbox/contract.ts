@@ -74,6 +74,14 @@ export const InboxMessage = z
     body: z.string().max(64_000),
     bodyTruncated: z.boolean(),
     attachments: z.array(AttachmentMeta).max(50),
+    /**
+     * Adres z `Reply-To`, jeżeli był jednoznaczny.
+     *
+     * Trzymany OSOBNO od `authorLabel`: nadawca i adres do odpowiedzi to dwie
+     * różne rzeczy, a sklejenie ich uniemożliwiłoby pokazanie człowiekowi,
+     * że odpowiedź poleci gdzie indziej, niż przyszła.
+     */
+    replyToAddress: z.string().max(320).nullable(),
     /** Nagłówki wątkowania RFC — wyłącznie e-mail. */
     rfcMessageId: z.string().max(998).nullable().default(null),
     rfcInReplyTo: z.string().max(998).nullable().default(null),

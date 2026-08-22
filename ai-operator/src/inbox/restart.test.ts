@@ -45,6 +45,7 @@ function message(partial: Partial<InboxMessage> = {}): InboxMessage {
     bodyTruncated: false,
     attachments: [],
     rfcMessageId: "klient-1@example.com",
+    replyToAddress: null,
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
@@ -168,6 +169,7 @@ describe("restart w polowie operacji", () => {
       bulkHint: false,
       body: "Juz wysylamy",
       rfcMessageId: null,
+      replyToAddress: null,
     });
 
     expect(ingestMetaEvents(store, [{ kind: "message", message: echo }]).stored).toBe(1);

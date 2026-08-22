@@ -32,6 +32,17 @@ export const MailMessage = z.object({
   from: MailAddress.nullable(),
   to: z.array(MailAddress),
   cc: z.array(MailAddress),
+  /**
+   * Nagłówek `Reply-To`, jeżeli jest JEDNOZNACZNY.
+   *
+   * Formularze kontaktowe i systemy zgłoszeniowe wysyłają z `From: no-reply`,
+   * a prawdziwy adres klienta wkładają właśnie tutaj. Odpowiedź na `From`
+   * trafiłaby wtedy w czarną dziurę, a my zapisalibyśmy ją jako wysłaną.
+   *
+   * `null`, gdy nagłówka nie ma ALBO gdy zawiera więcej niż jeden adres:
+   * wybieranie jednego z wielu byłoby zgadywaniem, do kogo pisze klient.
+   */
+  replyTo: MailAddress.nullable(),
   date: z.string().describe("ISO 8601"),
   /** Folder / etykieta w rozumieniu dostawcy, np. "INBOX". */
   folder: z.string(),

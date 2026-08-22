@@ -54,6 +54,7 @@ function message(id: string, overrides: Partial<InboxMessage> = {}): InboxMessag
     bodyTruncated: false,
     attachments: [],
     rfcMessageId: `${id}@example.com`,
+    replyToAddress: null,
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,

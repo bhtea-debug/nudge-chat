@@ -202,6 +202,7 @@ export function normalizeMetaPayload(
             mimeType: typeof attachment.type === "string" ? attachment.type : null,
             sizeBytes: null,
           })),
+          replyToAddress: null,
           rfcMessageId: null,
           rfcInReplyTo: null,
           rfcReferences: [],

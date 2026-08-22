@@ -345,6 +345,7 @@ describe("Resend", () => {
       bodyTruncated: false,
       attachments: [],
       rfcMessageId: "klient-1@example.com",
+      replyToAddress: null,
       rfcInReplyTo: null,
       rfcReferences: ["root@example.com"],
       isEcho: false,

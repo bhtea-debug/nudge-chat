@@ -121,6 +121,7 @@ function seedMessage(store: InboxStore, overrides: Partial<InboxMessage> = {}): 
     bodyTruncated: false,
     attachments: [],
     rfcMessageId: "klient-1@example.com",
+    replyToAddress: null,
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,

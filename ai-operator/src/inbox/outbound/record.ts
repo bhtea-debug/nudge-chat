@@ -51,6 +51,7 @@ export function recordOutgoingMessage(input: {
     body: input.text,
     bodyTruncated: false,
     attachments: [],
+    replyToAddress: null,
     rfcMessageId: null,
     rfcInReplyTo: null,
     rfcReferences: [],
@@ -59,13 +60,61 @@ export function recordOutgoingMessage(input: {
     contentFingerprint: contentSha256(input.text).slice(0, 32),
   };
 
-  if (!store.claimMessage(message)) return null;
+  /*
+   * Zapis TRWAŁY, nie zwykły.
+   *
+   * Ledger jest już w stanie `sent` i wymuszony na dysk. Gdyby wiadomość
+   * czekała w buforze, restart zostawiłby stan, w którym ledger mówi
+   * „wysłano", a wątek tego nie potwierdza — i przy powtórzeniu żądania
+   * dostalibyśmy wczesny zwrot `sent` bez odtworzenia historii.
+   */
+  if (!store.claimMessageDurable(message)) return null;
 
   // Przeliczenie sprawy: po naszej odpowiedzi kolejka nie ma już powodu
   // pokazywać jej jako czekającej na reakcję.
   const projected = projectCase(store, attempt.caseId);
   if (projected) store.upsertCase(projected);
+  store.flush();
   return message;
+}
+
+/**
+ * Naprawa historii dla próby, która JUŻ jest w stanie `sent`.
+ *
+ * Scenariusz: dostawca potwierdził wysyłkę, ledger zapisał `sent`, a proces
+ * padł przed zapisem wiadomości do wątku. Powtórzenie tego samego żądania
+ * musi uzupełnić brakującą wiadomość i przeliczyć sprawę — BEZ drugiego
+ * POST-u do dostawcy, bo wiadomość u klienta już jest.
+ *
+ * Zwraca `true`, gdy czegoś brakowało i zostało uzupełnione.
+ */
+export function repairOutgoingMessage(
+  store: InboxStore,
+  attempt: OutboundAttempt,
+  now: number,
+): boolean {
+  if (attempt.status !== "sent") return false;
+  const expectedId = attempt.externalMessageId
+    ? outgoingId(attempt.provider, attempt.externalMessageId)
+    : `attempt:${attempt.requestId}`;
+  const key = { provider: attempt.provider, accountKey: attempt.accountKey };
+  if (store.hasMessage(key, expectedId)) return false;
+
+  /*
+   * Treść odpowiedzi NIE jest przechowywana w ledgerze (jest tam tylko hash
+   * i długość), więc odtworzona wiadomość nie może udawać, że zna tekst.
+   * Zapisujemy wpis oznaczony jako odtworzony: wątek pokazuje, że odpowiedź
+   * poszła, i mówi wprost, że treść trzeba sprawdzić u dostawcy.
+   */
+  const restored = recordOutgoingMessage({
+    store,
+    attempt,
+    text: `[Odpowiedź wysłana ${new Date(attempt.completedAt ?? now).toLocaleString("pl-PL")}. ` +
+      `Treść odtworzona z ledgera: ${attempt.contentLength} znaków, SHA-256 ${attempt.contentSha256.slice(0, 12)}…]`,
+    externalMessageId: attempt.externalMessageId,
+    now,
+  });
+  return restored !== null;
 }
 
 /**

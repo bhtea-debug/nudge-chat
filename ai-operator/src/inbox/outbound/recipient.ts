@@ -20,6 +20,8 @@ export type RecipientResolution =
       readonly accountKey: string;
       /** Wiadomość, na którą odpowiadamy — do nagłówków wątkowania. */
       readonly inReplyTo: InboxMessage | null;
+      /** true = adres pochodzi z `Reply-To`, nie z `From`. */
+      readonly differsFromSender?: boolean;
     }
   | { readonly ok: false; readonly code: string };
 
@@ -35,10 +37,21 @@ export function resolveRecipient(store: InboxStore, record: StoredCase): Recipie
   const last = incoming[incoming.length - 1] ?? null;
 
   if (record.provider === "email") {
-    // Adres bierzemy z OSTATNIEJ wiadomości klienta, nie z pola sprawy:
-    // `participantLabel` jest polem prezentacyjnym i mogłoby zostać nadpisane
-    // przez projekcję, a odbiorca musi wynikać z konkretnej wiadomości.
-    const address = last?.authorLabel ?? null;
+    /*
+     * Kolejność jest istotna: `Reply-To` PRZED `From`.
+     *
+     * Formularz kontaktowy i system zgłoszeniowy wysyłają z `From: no-reply`,
+     * a prawdziwy adres klienta wkładają w `Reply-To`. Odpowiedź na `From`
+     * trafiłaby w skrzynkę, której nikt nie czyta — a my zapisalibyśmy ją
+     * jako dostarczoną i zamknęli sprawę.
+     *
+     * Adres bierzemy z OSTATNIEJ wiadomości klienta, nie z pola sprawy:
+     * `participantLabel` jest polem prezentacyjnym i mogłoby zostać nadpisane
+     * przez projekcję, a odbiorca musi wynikać z konkretnej wiadomości.
+     */
+    const replyTo = last?.replyToAddress ?? null;
+    const from = last?.authorLabel ?? null;
+    const address = isPlausibleAddress(replyTo) ? replyTo : from;
     if (!isPlausibleAddress(address)) return { ok: false, code: "recipient_unknown" };
     return {
       ok: true,
@@ -46,6 +59,8 @@ export function resolveRecipient(store: InboxStore, record: StoredCase): Recipie
       provider: record.provider,
       accountKey: record.accountKey,
       inReplyTo: last,
+      // Widoczne dla człowieka: odpowiedź poleci gdzie indziej, niż przyszła.
+      differsFromSender: isPlausibleAddress(replyTo) && replyTo.toLowerCase() !== from?.toLowerCase(),
     };
   }
 

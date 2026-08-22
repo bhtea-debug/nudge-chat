@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,6 +46,7 @@ function seed(store: InboxStore, overrides: Partial<StoredCase> = {}): StoredCas
     bodyTruncated: false,
     attachments: [],
     rfcMessageId: "klient-1@example.com",
+    replyToAddress: null,
     rfcInReplyTo: null,
     rfcReferences: [],
     isEcho: false,
@@ -143,6 +144,7 @@ describe("odpowiedz w watku", () => {
       bodyTruncated: false,
       attachments: [],
       rfcMessageId: "klient-2@example.com",
+      replyToAddress: null,
       rfcInReplyTo: "klient-1@example.com",
       rfcReferences: [],
       isEcho: false,
@@ -196,6 +198,7 @@ describe("odpowiedz w watku", () => {
           bodyTruncated: false,
           attachments: [],
           rfcMessageId: null,
+          replyToAddress: null,
           rfcInReplyTo: null,
           rfcReferences: [],
           isEcho: true,
@@ -264,5 +267,143 @@ describe("odpowiedz w watku", () => {
     expect(store.messagesForCase("ic_sprawa")).toHaveLength(1);
     // Sprawa zostaje otwarta: dopisanie odpowiedzi udawałoby wiedzę, której nie mamy.
     expect(store.getCase("ic_sprawa")!.requiresResponse).toBe(true);
+  });
+
+  it("crash po finishSent: powtorzenie NAPRAWIA historie bez drugiego POSTu", async () => {
+    const store = freshStore();
+    seed(store);
+    const calls: string[] = [];
+
+    // 1. Wysylka sie udaje u dostawcy.
+    await sendReply({
+      store,
+      requestId: "req-crash-000000000001",
+      caseId: "ic_sprawa",
+      text: "Paczka wyszla dzisiaj.",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: {
+        send: async (attempt) => {
+          calls.push(attempt.requestId);
+          return { status: "sent", externalMessageId: "resend-crash" };
+        },
+      },
+      now: () => NOW,
+    });
+    expect(store.messagesForCase("ic_sprawa")).toHaveLength(2);
+
+    // 2. Symulacja awarii ZAPISU historii: kasujemy wiadomosc wychodzaca
+    //    z pamieci i z dziennika, zostawiajac ledger w stanie `sent`.
+    const dir = dirs[dirs.length - 1]!;
+    const path = join(dir, "inbox.jsonl");
+    const kept = readFileSync(path, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() && !line.includes('"direction":"outgoing"'))
+      .join("\n");
+    writeFileSync(path, kept + "\n", "utf8");
+
+    const afterCrash = new InboxStore({ dir });
+    expect(afterCrash.getAttempt("req-crash-000000000001")?.status).toBe("sent");
+    // Ledger mowi „wyslano", ale watek tego nie ma — dokladnie ten stan.
+    expect(afterCrash.messagesForCase("ic_sprawa")).toHaveLength(1);
+    expect(
+      afterCrash.hasMessage({ provider: "email", accountKey: "sklep" }, "resend:resend-crash"),
+    ).toBe(false);
+
+    // 3. Powtorzenie TEGO SAMEGO zadania naprawia historie.
+    const repeat = await sendReply({
+      store: afterCrash,
+      requestId: "req-crash-000000000001",
+      caseId: "ic_sprawa",
+      text: "Paczka wyszla dzisiaj.",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: {
+        send: async (attempt) => {
+          calls.push(attempt.requestId);
+          return { status: "sent", externalMessageId: "resend-crash" };
+        },
+      },
+      now: () => NOW + 60_000,
+    });
+
+    expect(repeat.status).toBe("sent");
+    expect(repeat.status === "sent" && repeat.repairedHistory).toBe(true);
+    // ZERO dodatkowych requestow do dostawcy: wiadomosc u klienta juz jest.
+    expect(calls).toEqual(["req-crash-000000000001"]);
+    // Watek ma odpowiedz, a sprawa nie czeka juz na reakcje.
+    expect(afterCrash.messagesForCase("ic_sprawa")).toHaveLength(2);
+    expect(
+      afterCrash.hasMessage({ provider: "email", accountKey: "sklep" }, "resend:resend-crash"),
+    ).toBe(true);
+    expect(afterCrash.getCase("ic_sprawa")!.requiresResponse).toBe(false);
+  });
+
+  it("odtworzona wiadomosc nie udaje, ze zna tresc", async () => {
+    const store = freshStore();
+    seed(store);
+    await sendReply({
+      store,
+      requestId: "req-crash-000000000002",
+      caseId: "ic_sprawa",
+      text: "Tajna tresc odpowiedzi",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: transport({ status: "sent", externalMessageId: "resend-x" }),
+      now: () => NOW,
+    });
+
+    const dir = dirs[dirs.length - 1]!;
+    const path = join(dir, "inbox.jsonl");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8")
+        .split("\n")
+        .filter((line) => line.trim() && !line.includes('"direction":"outgoing"'))
+        .join("\n") + "\n",
+      "utf8",
+    );
+
+    const afterCrash = new InboxStore({ dir });
+    await sendReply({
+      store: afterCrash,
+      requestId: "req-crash-000000000002",
+      caseId: "ic_sprawa",
+      text: "Tajna tresc odpowiedzi",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: transport({ status: "sent", externalMessageId: "resend-x" }),
+      now: () => NOW + 60_000,
+    });
+
+    const outgoing = afterCrash
+      .messagesForCase("ic_sprawa")
+      .find((message) => message.direction === "outgoing")!;
+    // Ledger trzyma hash, nie tekst — odtworzony wpis mowi to wprost.
+    expect(outgoing.body).not.toContain("Tajna tresc");
+    expect(outgoing.body).toContain("odtworzona z ledgera");
+  });
+
+  it("gdy historia jest kompletna, powtorzenie nie zmienia niczego", async () => {
+    const store = freshStore();
+    seed(store);
+    await sendReply({
+      store,
+      requestId: "req-crash-000000000003",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: transport({ status: "sent", externalMessageId: "resend-y" }),
+      now: () => NOW,
+    });
+    const before = store.messagesForCase("ic_sprawa").length;
+
+    const repeat = await sendReply({
+      store,
+      requestId: "req-crash-000000000003",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      transport: transport({ status: "sent", externalMessageId: "resend-y" }),
+      now: () => NOW + 1_000,
+    });
+    expect(repeat.status === "sent" && repeat.repairedHistory).toBe(false);
+    expect(store.messagesForCase("ic_sprawa")).toHaveLength(before);
   });
 });

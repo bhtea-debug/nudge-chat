@@ -50,6 +50,7 @@ function record(uid: number, ageDays: number): ParsedRecord {
       from: { name: null, address: `klient${uid}@example.com` },
       to: [{ name: null, address: account.address }],
       cc: [],
+      replyTo: null,
       date,
       folder: "INBOX",
       seen: false,

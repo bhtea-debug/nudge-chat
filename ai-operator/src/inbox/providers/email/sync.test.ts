@@ -50,6 +50,7 @@ function record(mail: FakeMail, folder = "INBOX"): ParsedRecord {
       from: { name: null, address: mail.from },
       to: [{ name: null, address: "sklep@brownhouseandtea.pl" }],
       cc: [],
+      replyTo: null,
       date: mail.date ?? "2026-08-20T10:00:00.000Z",
       folder,
       seen: false,

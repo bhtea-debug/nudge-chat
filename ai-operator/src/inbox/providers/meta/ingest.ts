@@ -24,7 +24,7 @@ export interface IngestResult {
 export function ingestMetaEvents(
   store: InboxStore,
   events: readonly NormalizedMetaEvent[],
-  options: { readonly backfill?: boolean } = {},
+  options: { readonly backfill?: boolean; readonly durable?: boolean } = {},
 ): IngestResult {
   let stored = 0;
   let duplicates = 0;
@@ -54,7 +54,12 @@ export function ingestMetaEvents(
     }
     if (message.isEcho) echoes += 1;
 
-    if (store.claimMessage(message)) {
+    // `durable` używa webhook: po 200 dostawca nie ponowi wiadomości, więc
+    // zapis musi być na dysku ZANIM odpowiemy.
+    const claimed = options.durable
+      ? store.claimMessageDurable(message)
+      : store.claimMessage(message);
+    if (claimed) {
       stored += 1;
       touched.add(message.caseId);
     } else {
@@ -68,6 +73,9 @@ export function ingestMetaEvents(
     const projected = projectCase(store, caseId);
     if (projected) store.upsertCase(projected);
   }
+  // Projekcje też muszą być trwałe przed ACK: inaczej po restarcie wiadomość
+  // jest, a sprawa jej nie widzi do następnego uzgodnienia.
+  if (options.durable && touched.size > 0) store.flush();
 
   return {
     stored,

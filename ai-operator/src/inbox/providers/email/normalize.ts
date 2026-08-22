@@ -118,6 +118,9 @@ export function normalizeEmail(input: NormalizeInput): {
       mimeType: attachment.contentType,
       sizeBytes: attachment.sizeBytes,
     })),
+    // Adres do odpowiedzi bierzemy z nagłówka, nie z nadawcy: formularz
+    // kontaktowy wysyła z `no-reply`, a klienta wkłada w `Reply-To`.
+    replyToAddress: record.message.replyTo?.address?.toLowerCase() ?? null,
     rfcMessageId: hasRealMessageId ? rfcMessageId : null,
     rfcInReplyTo: inReplyTo,
     rfcReferences: references,

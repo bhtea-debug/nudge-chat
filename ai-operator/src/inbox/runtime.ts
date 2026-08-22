@@ -17,6 +17,30 @@ import { ingestMetaEvents } from "./providers/meta/ingest.js";
 
 /** Co ile ticków zwykłych wchodzi szeroki skan uzgadniający. */
 const RECONCILE_EVERY = 12;
+/**
+ * Zakładka okna uzgodnienia Meta.
+ *
+ * Kursor cofamy o godzinę, bo `updated_time` rozmowy i czas wiadomości to dwie
+ * różne rzeczy: rozmowa zaktualizowana o 12:00 może zawierać wiadomość
+ * z 11:58, a okno bez zakładki zostawiłoby ją poza zakresem na zawsze.
+ */
+const META_WINDOW_OVERLAP_MS = 60 * 60_000;
+
+/** Początek okna uzgodnienia: kursor albo pełny backfill przy pierwszym razie. */
+function metaWindowStart(
+  state: InboxStore,
+  key: SourceKey,
+  now: number,
+  backfillDays: number,
+): number {
+  const raw = state.getCursor(key);
+  const parsed = raw === null ? Number.NaN : Number(raw);
+  const fullWindow = now - backfillDays * 24 * 60 * 60_000;
+  if (!Number.isFinite(parsed)) return fullWindow;
+  // Nigdy nie sięgamy dalej wstecz niż okno backfillu: kursor z przyszłości
+  // albo zepsuty nie ma prawa rozszerzyć zakresu.
+  return Math.max(fullWindow, parsed);
+}
 
 export interface InboxRuntime {
   readonly config: InboxConfig;
@@ -126,7 +150,18 @@ export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRun
             kind: "error",
             message: `pierwszy import czeka na zatwierdzenie (${result.previewCount ?? 0})`,
           });
-        } else if (result.problems.length > 0) {
+          /*
+           * KONIEC obsługi tego źródła.
+           *
+           * Bez tego `continue` przebieg szedł dalej do folderu wysłanych,
+           * który zapisuje wiadomości, sprawy i kursor — czyli tryb „podgląd"
+           * wykonywał zapisy. Podgląd ma być całkowicie bezskutkowy, inaczej
+           * jest tylko obietnicą.
+           */
+          continue; // podglad nie wykonuje ZADNYCH zapisow
+        }
+
+        if (result.problems.length > 0) {
           // Partia z nieczytelnym rekordem NIE jest sukcesem: kursor stoi,
           // a zdrowie musi to pokazać, zamiast raportować świeżość.
           recordFailure(
@@ -207,7 +242,9 @@ export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRun
             pageId: source.pageId,
             accessToken: source.accessToken,
           },
-          sinceMs: now - config.backfillDays * 24 * 60 * 60_000,
+          // Okno liczone od zapisanego kursora, a nie zawsze od pełnego
+          // backfillu: bez tego każde uzgodnienie przemiata miesiąc historii.
+          sinceMs: metaWindowStart(state, key, now, config.backfillDays),
           now,
           signal,
         });
@@ -223,7 +260,40 @@ export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRun
           pages: result.pages,
           truncated: result.truncated,
         });
-        recordSuccess(state, { key, label: source.label, active: true }, now);
+
+        /*
+         * Niepełne uzgodnienie NIE jest sukcesem.
+         *
+         * Wcześniej zapisywaliśmy sukces także wtedy, gdy zostały nieprzeczytane
+         * rozmowy albo wiadomości — a wtedy zielona kropka mówiła „mamy
+         * wszystko" o stanie, w którym wprost wiemy, że czegoś brakuje.
+         * Następny przebieg dokończy pracę; do tego czasu źródło jest
+         * zdegradowane i widać to w kanale.
+         */
+        if (result.truncated) {
+          const what = result.truncatedConversations
+            ? "rozmowy poza pobranymi stronami"
+            : `nieprzeczytane wiadomości w ${result.truncatedMessages.length} rozmowach`;
+          recordFailure(
+            state,
+            { key, label: source.label, active: true },
+            "error",
+            `uzgodnienie niepełne: ${what}`,
+            now,
+          );
+          failures.push({
+            source: `${source.provider}:${source.accountKey}`,
+            kind: "error",
+            message: `uzgodnienie niepełne: ${what}`,
+          });
+        } else {
+          recordSuccess(state, { key, label: source.label, active: true }, now);
+          // Kursor okna: następne uzgodnienie startuje od ostatniej znanej
+          // aktywności minus zakładka, żeby nie zostawić luki na granicy.
+          if (result.newestUpdatedAt !== null) {
+            state.commitCursor(key, String(result.newestUpdatedAt - META_WINDOW_OVERLAP_MS));
+          }
+        }
       } catch (error) {
         const code = error instanceof GraphError ? error.code : "error";
         const kind: FailureKind =

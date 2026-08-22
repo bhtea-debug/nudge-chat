@@ -792,6 +792,7 @@ export class ImapMailProvider implements MailProvider {
       from: addr(parsed.from?.value?.[0]),
       to: (parsed.to && !Array.isArray(parsed.to) ? parsed.to.value : []).map(addr).filter(nonNull),
       cc: (parsed.cc && !Array.isArray(parsed.cc) ? parsed.cc.value : []).map(addr).filter(nonNull),
+      replyTo: singleReplyTo(parsed),
       date,
       folder,
       seen: msg.flags?.has("\\Seen") ?? false,
@@ -822,6 +823,21 @@ export class ImapMailProvider implements MailProvider {
 export interface ParsedRecord {
   readonly message: MailMessage;
   readonly body: string;
+}
+
+/**
+ * `Reply-To` tylko wtedy, gdy jest JEDNOZNACZNY.
+ *
+ * Nagłówek dopuszcza listę adresów. Wybranie z niej pierwszego byłoby
+ * zgadywaniem, do kogo klient chce dostać odpowiedź, więc przy więcej niż
+ * jednym adresie wolimy nie mieć nic i zostać przy `From`.
+ */
+function singleReplyTo(parsed: ParsedMail): MailAddress | null {
+  const raw = parsed.replyTo;
+  if (!raw || Array.isArray(raw)) return null;
+  const values = raw.value ?? [];
+  if (values.length !== 1) return null;
+  return addr(values[0]);
 }
 
 function addr(v?: { name?: string; address?: string }): MailAddress | null {

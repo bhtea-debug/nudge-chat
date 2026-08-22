@@ -304,6 +304,17 @@ export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSy
   const { account, store, reader, now } = options;
   if (!account.sentFolder) return null;
 
+  /*
+   * Druga, niezależna bramka podglądu.
+   *
+   * Wywołujący ma nie wchodzić tu w trybie `preview`, ale bramka stoi także
+   * tutaj: funkcja zapisująca wiadomości i kursor nie może zależeć wyłącznie
+   * od dyscypliny wołającego. Jeden pominięty `continue` w pętli oznaczał
+   * zapisy w trybie, który miał być bezskutkowy.
+   */
+  const firstRun = decodeCursor(store.getCursor({ provider: "email", accountKey: `${account.accountKey}#sent` })) === null;
+  if (firstRun && (options.backfillMode ?? "preview") === "preview") return null;
+
   const key: SourceKey = { provider: "email", accountKey: `${account.accountKey}#sent` };
   const rawCursor = store.getCursor(key);
   const cursorBefore = decodeCursor(rawCursor);

@@ -264,6 +264,7 @@ describe("filtr przed modelem", () => {
     from: { name: null, address: "kto@klient.example" },
     to: [],
     cc: [],
+    replyTo: null,
     date: "2026-08-18T09:00:00.000Z",
     folder: "INBOX",
     seen: false,
