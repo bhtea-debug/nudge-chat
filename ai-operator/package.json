@@ -33,7 +33,8 @@
     "push:test": "node scripts/push-test.mjs",
     "ocena": "tsx --env-file-if-exists=.env src/bin/ocena.ts",
     "benchmark": "tsx src/bin/benchmark-modeli.ts",
-    "benchmark:policy": "tsx src/bin/benchmark-modeli.ts --policy=rossmann-v1"
+    "benchmark:policy": "tsx src/bin/benchmark-modeli.ts --policy=rossmann-v1",
+    "inbox:sprawdz": "bash scripts/configure-inbox.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

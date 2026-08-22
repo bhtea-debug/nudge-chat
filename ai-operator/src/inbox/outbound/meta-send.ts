@@ -20,6 +20,8 @@ import { metaSendWindow } from "../providers/meta/webhook.js";
 
 const DEFAULT_GRAPH_VERSION = "v25.0";
 const DEFAULT_TIMEOUT_MS = 20_000;
+/** Kody, które mogą przyjść już PO przyjęciu wiadomości przez dostawcę. */
+const AMBIGUOUS_STATUSES = new Set([408, 425, 429]);
 
 export interface MetaSendAccount {
   readonly provider: "instagram" | "facebook";
@@ -100,11 +102,20 @@ export async function sendViaMeta(input: MetaSendInput): Promise<MetaSendResult>
         message: "Token konta wygasl albo brakuje uprawnien",
       };
     }
-    if (response.status === 429) {
-      return { status: "failed", code: "rate_limited", message: "Meta ograniczyla tempo wysylki" };
-    }
-    if (response.status >= 500) {
-      return { status: "uncertain", code: `http_${response.status}`, message: "Meta nie potwierdzila wysylki" };
+    /*
+     * 429 NIE jest pewną porażką.
+     *
+     * Limit tempa bywa naliczany po przyjęciu żądania, więc wiadomość mogła
+     * już pójść. Meta nie ma klucza idempotencji, więc automatyczne
+     * ponowienie po 429 jest najprostszą drogą do dwóch identycznych
+     * wiadomości u klienta. Stan jest niepewny i rozstrzyga go człowiek.
+     */
+    if (response.status >= 500 || AMBIGUOUS_STATUSES.has(response.status)) {
+      return {
+        status: "uncertain",
+        code: response.status === 429 ? "rate_limited" : `http_${response.status}`,
+        message: "Meta nie potwierdzila wyniku wysylki",
+      };
     }
     if (!response.ok) {
       return { status: "failed", code: `http_${response.status}`, message: "Meta odrzucila wysylke" };

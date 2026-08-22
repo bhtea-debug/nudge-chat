@@ -35,7 +35,7 @@ import { messageDedupKey } from "./ids.js";
  * powtórnym pobraniem, a `fsync` opróżnia cały bufor pliku, więc zapis kursora
  * utrwala też całą poprzedzającą go partię.
  */
-const DURABLE_EVENTS = new Set(["cursor", "outbound", "health"]);
+const DURABLE_EVENTS = new Set(["cursor", "outbound", "health", "webhook"]);
 
 const DEFAULT_DIR = "state";
 const LOG = "inbox.jsonl";
@@ -84,6 +84,7 @@ interface CursorRecord {
 
 type Event =
   | { readonly t: "message"; readonly at: number; readonly message: InboxMessage }
+  | { readonly t: "webhook"; readonly at: number; readonly id: string }
   | { readonly t: "case"; readonly at: number; readonly value: StoredCase }
   | { readonly t: "cursor"; readonly at: number; readonly value: CursorRecord }
   | { readonly t: "health"; readonly at: number; readonly value: SourceHealth }
@@ -91,6 +92,7 @@ type Event =
   | { readonly t: "snapshot"; readonly at: number; readonly value: Snapshot };
 
 interface Snapshot {
+  readonly webhookSeen?: Array<[string, number]>;
   readonly messages: InboxMessage[];
   readonly cases: StoredCase[];
   readonly cursors: CursorRecord[];
@@ -117,6 +119,15 @@ export class InboxStore {
   private readonly cursors = new Map<string, CursorRecord>();
   private readonly health = new Map<string, SourceHealth>();
   private readonly outbound = new Map<string, OutboundAttempt>();
+  /**
+   * Zdarzenia webhooka już przetworzone.
+   *
+   * TRWALE, nie w pamięci: dostawca ponawia doręczenie, a restart procesu
+   * kasował dotychczasową pamięć i to samo zdarzenie wykonywało efekt drugi
+   * raz. Przy potwierdzeniach dostarczenia to niegroźne, przy każdym
+   * przyszłym zdarzeniu ze skutkiem — już nie.
+   */
+  private readonly webhookSeen = new Map<string, number>();
   private eventCount = 0;
   private damage: JournalDamage | null = null;
   private readonly compactAbove: number;
@@ -206,6 +217,9 @@ export class InboxStore {
       case "outbound":
         this.outbound.set(event.value.requestId, event.value);
         break;
+      case "webhook":
+        this.webhookSeen.set(event.id, event.at);
+        break;
       case "snapshot":
         this.messages.clear();
         this.cases.clear();
@@ -217,6 +231,7 @@ export class InboxStore {
         for (const value of event.value.cursors) this.cursors.set(value.sourceKey, value);
         for (const value of event.value.health) this.health.set(sourceKeyString(value), value);
         for (const value of event.value.outbound) this.outbound.set(value.requestId, value);
+        for (const [id, at] of event.value.webhookSeen ?? []) this.webhookSeen.set(id, at);
         break;
       default: {
         // Nieznany typ zdarzenia z nowszej wersji kodu. Pomijamy zamiast
@@ -253,6 +268,7 @@ export class InboxStore {
         cursors: [...this.cursors.values()],
         health: [...this.health.values()],
         outbound: [...this.outbound.values()],
+        webhookSeen: [...this.webhookSeen.entries()],
       },
     };
     this.journal.rewrite([JSON.stringify(snapshot)]);
@@ -371,6 +387,20 @@ export class InboxStore {
 
   listAttempts(): OutboundAttempt[] {
     return [...this.outbound.values()];
+  }
+
+  /**
+   * Rejestracja zdarzenia webhooka. `false` = już je widzieliśmy.
+   *
+   * Stare wpisy są odsiewane przy zapisie snapshotu, a nie przy każdym
+   * sprawdzeniu: przegląd mapy na gorącej ścieżce webhooka kosztowałby
+   * więcej niż samo zdarzenie.
+   */
+  acceptWebhook(id: string, now: number, ttlMs = 7 * 24 * 60 * 60_000): boolean {
+    const seenAt = this.webhookSeen.get(id);
+    if (seenAt !== undefined && now - seenAt <= ttlMs) return false;
+    this.write({ t: "webhook", at: now, id });
+    return true;
   }
 
   /** Niepuste, gdy dziennik miał linie nie do odczytania. Widoczne w zdrowiu. */

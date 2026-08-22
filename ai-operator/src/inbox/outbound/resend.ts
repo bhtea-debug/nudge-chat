@@ -15,6 +15,8 @@ import type { OutboundAttempt } from "../store.js";
  */
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
+/** Kody, które mogą przyjść już PO przyjęciu wiadomości przez dostawcę. */
+const AMBIGUOUS_STATUSES = new Set([408, 425, 429]);
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 export interface ResendMailbox {
@@ -101,7 +103,16 @@ export async function sendViaResend(input: ResendSendInput): Promise<ResendResul
       signal: controller.signal,
     });
 
-    if (response.status >= 500) {
+    /*
+     * Nie każdy kod poniżej 500 znaczy „na pewno nie wysłano".
+     *
+     * 408 (timeout żądania), 425 (za wcześnie) i 429 (limit tempa) mogą
+     * przyjść po tym, jak serwer już przyjął wiadomość. Traktowanie ich jako
+     * pewnej porażki prowadzi wprost do ponowienia i drugiej wiadomości
+     * u klienta. Klucz idempotencji Resend chroni przed tym przy ponowieniu
+     * tej samej próby, ale stan i tak jest niepewny, dopóki nie sprawdzimy.
+     */
+    if (response.status >= 500 || AMBIGUOUS_STATUSES.has(response.status)) {
       return {
         status: "uncertain",
         code: `http_${response.status}`,

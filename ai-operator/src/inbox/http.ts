@@ -465,7 +465,9 @@ export function handleResendWebhook(context: ResendWebhookContext): HttpResult {
     return failure(401, "invalid_signature");
   }
 
-  if (!context.svixId || !context.runtime.webhookDedup.accept(context.svixId, context.now)) {
+  // Deduplikacja TRWAŁA: pamięć procesu ginie przy restarcie, a dostawca
+  // ponawia doręczenie także po nim.
+  if (!context.svixId || !context.runtime.store.acceptWebhook(context.svixId, context.now)) {
     return envelope({ accepted: true, duplicate: true }, context.now);
   }
 

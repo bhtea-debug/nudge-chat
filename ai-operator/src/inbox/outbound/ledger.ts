@@ -188,7 +188,31 @@ export function markUncertain(store: InboxStore, requestId: string, code: string
 
 export type DeliveryState = OutboundAttempt["deliveryState"];
 
-/** Aktualizacja z webhooka dostawcy. Nie zmienia statusu próby wstecz. */
+/**
+ * Ranga stanu dostarczenia.
+ *
+ * Webhooki przychodzą poza kolejnością: `delivered` potrafi dotrzeć po
+ * `bounced`, bo dostawca ponawia doręczenie starszego zdarzenia. Bez rangi
+ * spóźnione „dostarczono" kasowałoby informację o odbiciu i wątek wyglądałby
+ * na obsłużony, choć wiadomość do klienta nie doszła.
+ */
+function deliveryRank(state: DeliveryState): number {
+  switch (state) {
+    case "unknown":
+      return 0;
+    case "delivered":
+      return 1;
+    case "complained":
+      return 2;
+    case "bounced":
+    case "failed":
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+/** Aktualizacja z webhooka dostawcy. Monotoniczna: stan nigdy się nie cofa. */
 export function applyDeliveryEvent(
   store: InboxStore,
   match: { readonly requestId?: string; readonly externalMessageId?: string },
@@ -198,7 +222,7 @@ export function applyDeliveryEvent(
     ? store.getAttempt(match.requestId)
     : store.listAttempts().find((entry) => entry.externalMessageId === match.externalMessageId) ?? null;
   if (!attempt) return false;
-  if (attempt.deliveryState === state) return false;
+  if (deliveryRank(state) <= deliveryRank(attempt.deliveryState)) return false;
   store.putAttempt({ ...attempt, deliveryState: state });
   return true;
 }
