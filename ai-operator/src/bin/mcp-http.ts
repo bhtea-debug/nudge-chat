@@ -18,6 +18,7 @@ import {
   handleResendWebhook,
 } from "../inbox/http.js";
 import { inboxRuntime } from "../inbox/runtime.js";
+import { DISABLED_SCHEDULER_STATE, InboxScheduler } from "../inbox/scheduler.js";
 import { eventTypeOf, ingestChatMessage, messageFromWebhook, verifySignature } from "../connecteam/ingest.js";
 import {
   authorizationServerMetadata,
@@ -526,6 +527,12 @@ const server = createServer((req, res) => {
         firmowyChatEvents: Boolean(app.config.firmowyChat.eventsSecret),
         // Tylko gotowość techniczna. Nie ujawniamy tokenów ani adresu upstreamu.
         customerCaseReplyBridge: REPLY_BRIDGE_UPSTREAM !== null,
+        /*
+         * Stan schedulera kanału. „Brak nowych spraw" i „nic się nie
+         * synchronizuje" wyglądają z zewnątrz identycznie, więc health musi
+         * powiedzieć, kiedy skończył się ostatni PEŁNY przebieg.
+         */
+        inbox: inboxScheduler ? inboxScheduler.state() : DISABLED_SCHEDULER_STATE,
       });
       logAccess(200, "health", null, Date.now() - started);
       return;
@@ -1364,6 +1371,47 @@ function safeLastScan(): string | null {
   }
 }
 
+// ── scheduler kanału „Obsługa klienta" ───────────────────────────────────────
+
+/**
+ * Bez tego bloku `tick()` był funkcją, której nikt nie wołał: trwała
+ * synchronizacja stała w miejscu, a kolejka i health i tak coś pokazywały.
+ * Awaria wyglądająca jak działanie jest gorsza od awarii widocznej.
+ */
+let inboxScheduler: InboxScheduler | null = null;
+
+function startInboxScheduler(): void {
+  const runtime = inboxRuntime();
+  if (!runtime) {
+    process.stdout.write(`[${SERVER_NAME}] kanał obsługi klienta: wyłączony\n`);
+    return;
+  }
+  inboxScheduler = new InboxScheduler({
+    runtime,
+    firstDelayMs: runtime.config.tickFirstDelayMs,
+    intervalMs: runtime.config.tickIntervalMs,
+    onRun: (report, error) => {
+      if (error) {
+        process.stderr.write(`[inbox] przebieg nie udał się: ${error.message}\n`);
+        return;
+      }
+      if (!report) return;
+      // Log bez tematów, adresów i treści: same liczby.
+      const stored = report.email.reduce((sum, entry) => sum + entry.stored, 0);
+      process.stdout.write(
+        `[inbox] przebieg zakończony: źródeł ${report.email.length}, nowych ${stored}, ` +
+          `awarii ${report.failures.length}${report.reconcile ? ", uzgodnienie" : ""}\n`,
+      );
+    },
+  });
+  inboxScheduler.start();
+  process.stdout.write(
+    `[${SERVER_NAME}] kanał obsługi klienta: pierwszy przebieg za ` +
+      `${Math.round(runtime.config.tickFirstDelayMs / 1000)} s, potem co ` +
+      `${Math.round(runtime.config.tickIntervalMs / 1000)} s\n`,
+  );
+}
+
 // ── monitor w tym samym procesie ──────────────────────────────────────────────
 
 let monitorTimer: NodeJS.Timeout | null = null;
@@ -1406,6 +1454,8 @@ server.listen(PORT, () => {
     );
   }
 
+  startInboxScheduler();
+
   if (MONITOR_IN_PROCESS) {
     // Pierwszy przebieg z opóźnieniem: platforma hostingowa woła /health zaraz
     // po starcie i nie chcemy, żeby czekał na połączenie IMAP.
@@ -1420,8 +1470,11 @@ server.listen(PORT, () => {
 const shutdown = (signal: string): void => {
   process.stdout.write(`[${SERVER_NAME}] ${signal} — zamykam\n`);
   if (monitorTimer) clearInterval(monitorTimer);
+  // Przerwanie partii w połowie jest bezpieczne (kursor stoi), ale kosztuje
+  // powtórne pobranie. Dajemy trwającemu przebiegowi dokończyć.
+  const drained = inboxScheduler ? inboxScheduler.stop() : Promise.resolve();
   server.close(() => {
-    void app.close().finally(() => process.exit(0));
+    void drained.finally(() => void app.close().finally(() => process.exit(0)));
   });
   // Twardy limit: platformy dają zwykle kilkanaście sekund na zamknięcie.
   setTimeout(() => process.exit(0), 10_000).unref();

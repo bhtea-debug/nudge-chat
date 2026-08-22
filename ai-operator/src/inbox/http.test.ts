@@ -45,6 +45,9 @@ function config(overrides: Partial<InboxConfig> = {}): InboxConfig {
       metaVerifyToken: null,
     },
     backfillDays: 30,
+    tickFirstDelayMs: 100,
+    tickIntervalMs: 1_000,
+    backfillMode: "preview",
     ...overrides,
   };
 }
@@ -80,6 +83,30 @@ function seedCase(store: InboxStore, overrides: Partial<StoredCase> = {}): Store
   };
   store.upsertCase(record);
   return record;
+}
+
+/** Wiadomosc klienta. Bez niej nie ma z czego wyliczyc odbiorcy. */
+function seedIncomingMessage(store: InboxStore): void {
+  store.claimMessage({
+    provider: "email",
+    accountKey: "sklep",
+    externalConversationId: "conv-1",
+    externalMessageId: "mid:klient-1",
+    caseId: "ic_sprawa",
+    direction: "incoming",
+    sourceCreatedAt: NOW - 5_000,
+    receivedAt: NOW - 5_000,
+    authorLabel: "klient@example.com",
+    subject: "Zamowienie 4411",
+    body: "Gdzie paczka?",
+    bodyTruncated: false,
+    attachments: [],
+    rfcMessageId: "klient-1@example.com",
+    rfcInReplyTo: null,
+    rfcReferences: [],
+    isEcho: false,
+    contentFingerprint: "fp-seed",
+  });
 }
 
 describe("kontrakt HTTP kanalu", () => {
@@ -225,6 +252,7 @@ describe("kontrakt HTTP kanalu", () => {
   it("brak konfiguracji Resend blokuje wysylke zamiast probowac", async () => {
     const runtime = runtimeWith();
     seedCase(runtime.store);
+    seedIncomingMessage(runtime.store);
     const result = await handleInboxReply({
       runtime,
       humanConfirmation: "confirmed",
@@ -236,7 +264,6 @@ describe("kontrakt HTTP kanalu", () => {
         caseId: "ic_sprawa",
         expectedLastIncomingMessageId: "mid:klient-1",
         text: "Odpowiedz",
-        recipient: "klient@example.com",
       },
     });
     expect(result.status).toBe(503);
@@ -257,7 +284,6 @@ describe("kontrakt HTTP kanalu", () => {
         caseId: "ic_allegro",
         expectedLastIncomingMessageId: "mid:klient-1",
         text: "Odpowiedz",
-        recipient: "kupujacy",
       },
     });
     expect(result.status).toBe(409);

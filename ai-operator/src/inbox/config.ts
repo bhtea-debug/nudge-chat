@@ -44,6 +44,20 @@ export interface InboxConfig {
   readonly outbound: InboxOutboundConfig;
   /** Ile dni historii bierze pierwszy import. Rekomendacja, nie automat. */
   readonly backfillDays: number;
+  /**
+   * Rytm synchronizacji. Pierwszy przebieg jest opóźniony, żeby health po
+   * starcie nie czekał na połączenie IMAP.
+   */
+  readonly tickFirstDelayMs: number;
+  readonly tickIntervalMs: number;
+  /**
+   * Pierwszy import jest OSOBNĄ, jawną decyzją.
+   *
+   * Bez tego pierwsze uruchomienie zaciąga całą historię skrzynki, a zakres
+   * historyczny jest nieodwracalny. Domyślnie tryb jest podglądowy: adapter
+   * policzy, ile wiadomości mieści się w oknie, i nie zapisze ani jednej.
+   */
+  readonly backfillMode: "preview" | "import";
 }
 
 function envKey(accountKey: string): string {
@@ -114,6 +128,9 @@ export function loadInboxConfig(): InboxConfig {
     });
 
   const backfillDays = Number(value("INBOX_BACKFILL_DAYS") ?? "30");
+  const tickFirstDelay = Number(value("INBOX_TICK_FIRST_DELAY_MS") ?? "25000");
+  const tickInterval = Number(value("INBOX_TICK_INTERVAL_MS") ?? "300000");
+  const backfillMode = value("INBOX_BACKFILL_MODE") === "import" ? "import" : "preview";
 
   return {
     enabled: (value("INBOX_ENABLED") ?? "false") === "true",
@@ -128,6 +145,13 @@ export function loadInboxConfig(): InboxConfig {
       metaVerifyToken: value("INBOX_META_VERIFY_TOKEN"),
     },
     backfillDays: Number.isFinite(backfillDays) && backfillDays > 0 ? Math.floor(backfillDays) : 30,
+    // Dolne ograniczenia są celowe: tick co sekundę zajechałby serwer poczty,
+    // a zerowe opóźnienie startu blokowałoby health tuż po deployu.
+    tickFirstDelayMs:
+      Number.isFinite(tickFirstDelay) && tickFirstDelay >= 100 ? Math.floor(tickFirstDelay) : 25_000,
+    tickIntervalMs:
+      Number.isFinite(tickInterval) && tickInterval >= 1_000 ? Math.floor(tickInterval) : 300_000,
+    backfillMode,
   };
 }
 

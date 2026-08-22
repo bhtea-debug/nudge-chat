@@ -17,6 +17,7 @@ import {
   verifyMetaSignature,
 } from "./providers/meta/webhook.js";
 import { applyDeliveryEvent } from "./outbound/ledger.js";
+import { accountMatchesCase, resolveRecipient } from "./outbound/recipient.js";
 import { resendDeliveryState, verifyResendWebhook } from "./outbound/webhooks.js";
 
 /**
@@ -67,8 +68,12 @@ export const InboxReplyRequest = z.discriminatedUnion("operation", [
         .min(1)
         .max(4_000)
         .refine((value) => value === value.trim() && !value.includes("\u0000")),
-      /** Adres/identyfikator odbiorcy wyliczony po stronie czatu z tej samej sprawy. */
-      recipient: z.string().min(1).max(320),
+      /*
+       * `recipient` NIE jest polem żądania i `.strict()` odrzuca próbę jego
+       * podania. Odbiorca jest funkcją `caseId` i wynika z trwałej wiadomości,
+       * bo inaczej jedno spreparowane żądanie wysyłałoby treść przygotowaną
+       * dla klienta pod dowolny adres, z naszej zweryfikowanej domeny.
+       */
     })
     .strict(),
   z
@@ -278,25 +283,36 @@ function buildTransport(
   const { runtime } = context;
   const record = runtime.store.getCase(request.caseId)!;
 
+  // Odbiorca, dostawca i konto wynikają ze sprawy, nie z żądania.
+  const resolved = resolveRecipient(runtime.store, record);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      status: resolved.code === "provider_uses_dedicated_bridge" ? 409 : 422,
+      error: resolved.code,
+    };
+  }
+
   if (record.provider === "email") {
     const mailbox = runtime.config.email.find((entry) => entry.accountKey === record.accountKey);
     const apiKey = runtime.config.outbound.resendApiKey;
     // Fail-closed: bez klucza i bez zweryfikowanej skrzynki nie próbujemy.
     // Odpowiedź z cudzego adresu jest gorsza od braku odpowiedzi.
     if (!mailbox || !apiKey) return { ok: false, status: 503, error: "email_outbound_not_configured" };
-    const lastIncoming = runtime.store
-      .messagesForCase(request.caseId)
-      .filter((message) => message.direction === "incoming")
-      .pop();
+    // Konto nadawcze musi należeć do źródła sprawy: odpowiedź na wiadomość
+    // wysłaną do `hurt@` nie ma prawa wyjść z `sklep@`.
+    if (!accountMatchesCase(record, mailbox)) {
+      return { ok: false, status: 409, error: "account_does_not_match_case" };
+    }
     return {
       ok: true,
       transport: resendTransport({
         apiKey,
         mailbox: { accountKey: mailbox.accountKey, fromAddress: mailbox.address, fromName: mailbox.label },
-        to: request.recipient,
+        to: resolved.recipient,
         subject: record.subject,
         text: request.text,
-        inReplyTo: lastIncoming ?? null,
+        inReplyTo: resolved.inReplyTo,
         fetchImpl: context.fetchImpl,
       }),
     };
@@ -305,6 +321,9 @@ function buildTransport(
   if (record.provider === "instagram" || record.provider === "facebook") {
     const account = runtime.config.meta.find((entry) => entry.accountKey === record.accountKey);
     if (!account) return { ok: false, status: 503, error: "meta_outbound_not_configured" };
+    if (!accountMatchesCase(record, account)) {
+      return { ok: false, status: 409, error: "account_does_not_match_case" };
+    }
     return {
       ok: true,
       transport: metaTransport({
@@ -313,7 +332,7 @@ function buildTransport(
           accountKey: account.accountKey,
           accessToken: account.accessToken,
         },
-        recipientId: request.recipient,
+        recipientId: resolved.recipient,
         text: request.text,
         lastIncomingAt: record.lastIncomingAt,
         now: context.now,
