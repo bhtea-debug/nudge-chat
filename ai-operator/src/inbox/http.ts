@@ -8,6 +8,7 @@ import {
   prepareAttempt,
   resolveUncertain,
 } from "./outbound/ledger.js";
+import { repairOutgoingMessage } from "./outbound/record.js";
 import { metaTransport, resendTransport, sendReply, type SendOutcome } from "./outbound/send.js";
 import { ingestMetaEvents } from "./providers/meta/ingest.js";
 import {
@@ -285,22 +286,34 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
   }
 
   if (request.operation === "resolve_sent" || request.operation === "resolve_not_sent") {
-    const result = resolveUncertain(
-      runtime.store,
-      request.requestId,
-      request.operation === "resolve_sent" ? "sent" : "not_sent",
+    const outcome = request.operation === "resolve_sent" ? "sent" : "not_sent";
+    const result = resolveUncertain(runtime.store, request.requestId, outcome, now);
+    if (!result.ok) return failure(409, result.code ?? "cannot_resolve");
+
+    /*
+     * Rozstrzygniecie „dostarczona" musi TAKZE naprawic historie.
+     *
+     * Sam ledger wie, ze odpowiedz poszla, ale watek jej nie pokazuje, wiec
+     * sprawa dalej wyglada na bez odpowiedzi: kolejny czlowiek widzi klienta
+     * czekajacego i pisze drugi raz. Odtworzony wpis mowi wprost, ze tresc
+     * trzeba sprawdzic u dostawcy, bo ledger trzyma tylko skrot i dlugosc.
+     * Naprawa jest idempotentna i NIE wysyla niczego ponownie.
+     */
+    let repairedHistory = false;
+    if (outcome === "sent") {
+      const attempt = runtime.store.getAttempt(request.requestId);
+      if (attempt) repairedHistory = repairOutgoingMessage(runtime.store, attempt, now);
+    }
+
+    return envelope(
+      {
+        status: outcome === "sent" ? "sent" : "failed",
+        requestId: request.requestId,
+        manuallyResolved: true,
+        repairedHistory,
+      },
       now,
     );
-    return result.ok
-      ? envelope(
-          {
-            status: request.operation === "resolve_sent" ? "sent" : "failed",
-            requestId: request.requestId,
-            manuallyResolved: true,
-          },
-          now,
-        )
-      : failure(409, result.code ?? "cannot_resolve");
   }
 
   const transport = buildTransport(context, request);

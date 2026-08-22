@@ -3,6 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CLASSIFIER_VERSION, type InboxMessage } from "./contract.js";
+import type { InboxConfig } from "./config.js";
+import { handleInboxReply } from "./http.js";
+import { createRuntime } from "./runtime.js";
 import { InboxStore, type OutboundAttempt, type StoredCase } from "./store.js";
 import { beginSending, markUncertain, prepareAttempt, resolveUncertain } from "./outbound/ledger.js";
 import { sendReply } from "./outbound/send.js";
@@ -18,6 +21,41 @@ import { ingestMetaEvents } from "./providers/meta/ingest.js";
 
 const dirs: string[] = [];
 const NOW = 1_700_000_000_000;
+
+/** Minimalna konfiguracja: jedno konto e-mail, bez wysylki na zewnatrz. */
+function config(): InboxConfig {
+  return {
+    enabled: true,
+    stateDir: "state",
+    email: [
+      {
+        accountKey: "sklep",
+        label: "E-mail sklep",
+        address: "sklep@brownhouseandtea.pl",
+        folder: "INBOX",
+        sentFolder: null,
+        host: "imap.example.com",
+        port: 993,
+        secure: true,
+        user: "sklep",
+        pass: "x",
+      },
+    ],
+    meta: [],
+    allegroEnabled: false,
+    outbound: {
+      resendApiKey: null,
+      resendWebhookSecret: null,
+      metaAppSecret: null,
+      metaVerifyToken: null,
+    },
+    backfillDays: 30,
+    tickFirstDelayMs: 100,
+    tickIntervalMs: 1_000,
+    backfillMode: "preview",
+    companyDomains: ["brownhouseandtea.pl"],
+  };
+}
 
 function newDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "inbox-restart-"));
@@ -151,6 +189,82 @@ describe("restart w polowie operacji", () => {
     // Rozstrzygniecie recznie jest mozliwe dopiero po odczekaniu.
     expect(resolveUncertain(after, "req-0000000000000003", "sent", NOW + 1_000).ok).toBe(false);
     expect(resolveUncertain(after, "req-0000000000000003", "sent", NOW + 200_000).ok).toBe(true);
+  });
+
+  it("reczne `dostarczona` NAPRAWIA historie i nie wysyla niczego drugi raz", async () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    seedCase(store);
+    prepareAttempt({
+      store,
+      requestId: "req-0000000000000009",
+      caseId: "ic_sprawa",
+      text: "Odpowiedz, ktorej los byl nieznany",
+      expectedLastIncomingMessageId: "mid:klient-1",
+      now: NOW,
+    });
+    beginSending(store, "req-0000000000000009", NOW);
+    markUncertain(store, "req-0000000000000009", "restart_before_response");
+
+    /*
+     * Sam ledger nie wystarcza.
+     *
+     * Po recznym potwierdzeniu „u dostawcy jest" watek MUSI pokazac odpowiedz.
+     * Inaczej sprawa dalej wyglada na bez odpowiedzi i kolejna osoba pisze do
+     * klienta drugi raz — czyli reczne rozstrzygniecie samo produkuje duplikat,
+     * przed ktorym mialo chronic.
+     */
+    const wysylki: string[] = [];
+    const runtime = createRuntime(config(), store);
+    const result = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 200_000,
+      body: {
+        operation: "resolve_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT",
+        requestId: "req-0000000000000009",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      ok: true,
+      data: { status: "sent", manuallyResolved: true, repairedHistory: true },
+    });
+    // ZERO wysylek do dostawcy: rozstrzygniecie jest zapisem, nie ponowieniem.
+    expect(wysylki).toHaveLength(0);
+
+    // Odpowiedz jest w watku, takze po restarcie procesu.
+    const after = new InboxStore({ dir });
+    const wychodzace = after
+      .messagesForCase("ic_sprawa")
+      .filter((message) => message.direction === "outgoing");
+    expect(wychodzace).toHaveLength(1);
+    // Tresci ledger nie przechowuje, wiec odtworzony wpis NIE moze jej udawac.
+    expect(wychodzace[0]!.body).toContain("odtworzona z ledgera");
+
+    // Powtorzenie tej samej operacji nie dokłada drugiej wiadomosci.
+    const powtorka = await handleInboxReply({
+      runtime,
+      humanConfirmation: "confirmed",
+      now: NOW + 300_000,
+      body: {
+        operation: "resolve_sent",
+        confirmation: "CONFIRM_CUSTOMER_REPLY_WAS_SENT",
+        requestId: "req-0000000000000009",
+        caseId: "ic_sprawa",
+        expectedLastIncomingMessageId: "mid:klient-1",
+      },
+    });
+    expect(powtorka.status).toBe(409);
+    expect(
+      new InboxStore({ dir })
+        .messagesForCase("ic_sprawa")
+        .filter((message) => message.direction === "outgoing"),
+    ).toHaveLength(1);
   });
 
   it("spozniony webhook po recznym rozstrzygnieciu nie tworzy nowej sprawy", () => {
