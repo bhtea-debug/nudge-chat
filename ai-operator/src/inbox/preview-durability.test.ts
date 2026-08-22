@@ -190,24 +190,45 @@ describe("tryb podgladu jest bezskutkowy", () => {
     expect(sent!.stored).toBeGreaterThan(0);
   });
 
-  it("tick w trybie podgladu nie dotyka folderu wyslanych", async () => {
+  it("PELNY tick w trybie podgladu nie zapisuje ani wiadomosci, ani kursora", async () => {
     const dir = newDir();
     const store = new InboxStore({ dir });
-    const runtime = createRuntime(config(), store);
+    const reader = new BothFoldersReader();
+    // Czytnik wstrzykniety: test mierzy ZACHOWANIE petli, a nie cierpliwosc
+    // czekania, az prawdziwe polaczenie IMAP padnie na timeoucie.
+    const runtime = createRuntime(config({ meta: [] }), store, () => reader);
     const before = snapshot(dir);
 
-    // Tick zbuduje własny czytnik IMAP i wywali się na połączeniu — to jest
-    // w porządku: sprawdzamy, że przy podglądzie nie powstaje ŻADEN zapis
-    // stanu poza rekordem zdrowia.
-    await runtime.tick(NOW).catch(() => undefined);
+    const report = await runtime.tick(NOW);
 
-    const after = snapshot(dir);
-    const newLines = after.content.slice(before.content.length).trim().split("\n").filter(Boolean);
+    expect(report.email[0]?.previewOnly).toBe(true);
+    // Folder wyslanych NIE zostal nawet dotkniety.
+    expect(reader.calls.some((call) => call.includes("Sent"))).toBe(false);
+
+    const newLines = snapshot(dir).content.slice(before.content.length).trim().split("\n").filter(Boolean);
     for (const line of newLines) {
       const event = JSON.parse(line) as { t: string };
-      // Dozwolone są wyłącznie wpisy zdrowia. Żadnych wiadomości, spraw ani kursorów.
+      // Dozwolone sa wylacznie wpisy zdrowia. Zadnych wiadomosci, spraw ani kursorow.
       expect(["health"], `nieoczekiwane zdarzenie ${event.t} w trybie podgladu`).toContain(event.t);
     }
+    expect(store.allMessages()).toHaveLength(0);
+    expect(store.getCursor({ provider: "email", accountKey: "sklep" })).toBeNull();
+    expect(store.getCursor({ provider: "email", accountKey: "sklep#sent" })).toBeNull();
+  });
+
+  it("PELNY tick po aktywacji importu dotyka OBU folderow", async () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir });
+    const reader = new BothFoldersReader();
+    // Meta wylaczona: ten test dotyczy WYLACZNIE folderow pocztowych i nie ma
+    // wychodzic do sieci.
+    const runtime = createRuntime(config({ backfillMode: "import", meta: [] }), store, () => reader);
+
+    await runtime.tick(NOW);
+
+    expect(reader.calls.some((call) => call.startsWith("fetch:INBOX"))).toBe(true);
+    expect(reader.calls.some((call) => call.startsWith("fetch:Sent"))).toBe(true);
+    expect(store.allMessages().length).toBeGreaterThan(0);
   });
 });
 

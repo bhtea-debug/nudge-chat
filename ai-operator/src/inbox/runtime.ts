@@ -2,7 +2,12 @@ import { ImapMailProvider } from "../mail/imap.js";
 import { loadInboxConfig, type InboxConfig, type InboxEmailSource } from "./config.js";
 import type { SourceKey } from "./contract.js";
 import { recordFailure, recordSuccess, sanitizeMessage, type FailureKind } from "./health.js";
-import { syncEmailAccount, syncSentFolder, type EmailSyncResult } from "./providers/email/sync.js";
+import {
+  syncEmailAccount,
+  syncSentFolder,
+  type EmailSyncResult,
+  type ImapReader,
+} from "./providers/email/sync.js";
 import { InboxStore } from "./store.js";
 import { WebhookDedup } from "./outbound/webhooks.js";
 import { fetchConversations, GraphError } from "./providers/meta/graph.js";
@@ -84,13 +89,30 @@ export function inboxRuntime(): InboxRuntime | null {
   return runtime;
 }
 
-/** Do testów: budowa runtime bez czytania środowiska. */
-export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRuntime {
+/**
+ * Do testów: budowa runtime bez czytania środowiska.
+ *
+ * `readerFactory` pozwala podstawić czytnik IMAP. Bez tego jedynym sposobem
+ * przetestowania pętli ticku było czekanie, aż prawdziwe połączenie padnie
+ * na timeoucie — czyli test, który mierzy cierpliwość, a nie zachowanie.
+ */
+export function createRuntime(
+  config: InboxConfig,
+  store?: InboxStore,
+  readerFactory?: (source: InboxEmailSource) => ImapReader,
+): InboxRuntime {
   const state = store ?? new InboxStore({ dir: config.stateDir });
-  const readers = new Map<string, ImapMailProvider>();
+  const readers = new Map<string, ImapReader>();
   let ticks = 0;
 
-  function readerFor(source: InboxEmailSource): ImapMailProvider {
+  function readerFor(source: InboxEmailSource): ImapReader {
+    if (readerFactory) {
+      const existing = readers.get(source.accountKey);
+      if (existing) return existing;
+      const made = readerFactory(source);
+      readers.set(source.accountKey, made);
+      return made;
+    }
     const existing = readers.get(source.accountKey);
     if (existing) return existing;
     // Osobne połączenie na skrzynkę: wspólna pula znaczyłaby, że zerwanie
@@ -195,6 +217,9 @@ export function createRuntime(config: InboxConfig, store?: InboxStore): InboxRun
               reader: readerFor(source),
               now,
               backfillDays: config.backfillDays,
+              // Bez tego pola folder wysłanych widział domyślny „preview"
+              // i nie działał także po jawnej aktywacji importu.
+              backfillMode: config.backfillMode,
               companyDomains: config.companyDomains,
               signal,
             });
