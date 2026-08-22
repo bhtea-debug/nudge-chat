@@ -40,6 +40,32 @@ export interface ReplayResult<T> {
   readonly damage: JournalDamage | null;
 }
 
+/**
+ * `fsync` na katalogu — BEST EFFORT.
+ *
+ * Na Windowsie deskryptor katalogu nie wspiera `fsync`, a `open` na ścieżce
+ * katalogu potrafi rzucić `EISDIR`/`EPERM`. Wyjątek stąd wysadziłby
+ * konstruktor store'a i proces w ogóle by nie wstał, więc świadomie wybieramy
+ * słabszą gwarancję zamiast braku startu.
+ */
+function fsyncDirectory(path: string): void {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    fsyncSync(fd);
+  } catch {
+    // Platforma nie pozwala. Zapis pliku i tak jest już wymuszony.
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Zamknięcie deskryptora katalogu nie zmienia trwałości danych.
+      }
+    }
+  }
+}
+
 export class Journal {
   private fd: number | null = null;
 
@@ -125,6 +151,13 @@ export class Journal {
       closeSync(fd);
     }
     renameSync(tmp, this.path);
+    /*
+     * `rename` jest atomowy dla CZYTAJĄCYCH, ale sam wpis katalogowy też
+     * musi trafić na dysk. Bez tego po zaniku zasilania katalog może wciąż
+     * wskazywać stary plik albo nie wskazywać żadnego — czyli deklarowana
+     * odporność kończyłaby się dokładnie tam, gdzie zaczyna być potrzebna.
+     */
+    fsyncDirectory(dirname(this.path));
   }
 
   /**

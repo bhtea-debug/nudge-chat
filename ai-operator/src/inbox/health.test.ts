@@ -158,4 +158,49 @@ describe("swiezosc kanalu", () => {
     expect(sanitizeMessage("zobacz https://api.example.com/x?token=1")).toBe("zobacz [adres]");
     expect(sanitizeMessage("x".repeat(500))).toHaveLength(200);
   });
+
+  it("backoff NIE jest stanem zdrowym", () => {
+    const result = overallFreshness(
+      [source({ state: "backoff", lastSuccessfulSyncAt: NOW - 10_000 })],
+      NOW,
+    );
+    // Zrodlo, ktore wlasnie nie odpowiedzialo i czeka na ponowienie, nie moze
+    // swiecic na zielono: kropka mowilaby „mamy wszystko" wbrew temu, co wiemy.
+    expect(result.state).toBe("red");
+    expect(result.degradedSources).toHaveLength(1);
+  });
+
+  it("rate_limited tez jest zdegradowane", () => {
+    const result = overallFreshness(
+      [source({ state: "rate_limited", lastSuccessfulSyncAt: NOW - 10_000 })],
+      NOW,
+    );
+    expect(result.state).toBe("red");
+  });
+
+  it("konfiguracja BEZ aktywnych zrodel nie jest pusta kolejka", () => {
+    const store = freshStore();
+    // Zadnego zrodla: to brak kanalu, nie spokojny dzien.
+    expect(mayReportEmptyQueue(channelFreshness(store, NOW))).toBe(false);
+
+    recordSuccess(
+      store,
+      { key: { provider: "email", accountKey: "sklep" }, label: "sklep", active: false },
+      NOW,
+    );
+    // Samo NIEAKTYWNE zrodlo tez nie wystarcza.
+    expect(mayReportEmptyQueue(channelFreshness(store, NOW))).toBe(false);
+  });
+
+  it("zrodlo w backoffie zabrania komunikatu o pustej kolejce", () => {
+    const store = freshStore();
+    const key = { provider: "email", accountKey: "sklep" };
+    recordSuccess(store, { key, label: "sklep", active: true }, NOW);
+    expect(mayReportEmptyQueue(channelFreshness(store, NOW))).toBe(true);
+
+    recordFailure(store, { key, label: "sklep", active: true }, "error", "timeout", NOW + 1);
+    recordFailure(store, { key, label: "sklep", active: true }, "error", "timeout", NOW + 2);
+    expect(store.getHealth(key)?.state).toBe("backoff");
+    expect(mayReportEmptyQueue(channelFreshness(store, NOW + 2))).toBe(false);
+  });
 });

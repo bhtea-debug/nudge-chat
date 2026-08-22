@@ -36,6 +36,7 @@ export const RESEND_WEBHOOK_PATH = "/webhook/resend";
 
 export const INBOX_REPLY_CONFIRMATION = "SEND_CUSTOMER_REPLY";
 export const INBOX_REPLY_CANCEL_CONFIRMATION = "CANCEL_CUSTOMER_REPLY";
+export const INBOX_REPLY_CHECK_CONFIRMATION = "CHECK_CUSTOMER_REPLY";
 export const INBOX_REPLY_RESOLVE_SENT = "CONFIRM_CUSTOMER_REPLY_WAS_SENT";
 export const INBOX_REPLY_RESOLVE_NOT_SENT = "CONFIRM_CUSTOMER_REPLY_WAS_NOT_SENT";
 export const HUMAN_CONFIRMATION_HEADER = "x-bht-human-confirmation";
@@ -81,6 +82,20 @@ export const InboxReplyRequest = z.discriminatedUnion("operation", [
       ...ReplyBase,
       operation: z.literal("cancel"),
       confirmation: z.literal(INBOX_REPLY_CANCEL_CONFIRMATION),
+    })
+    .strict(),
+  /**
+   * Sprawdzenie wyniku bez wysyłki.
+   *
+   * ŚCIŚLE odczytowe: nie wykonuje żadnego żądania do dostawcy i nie zmienia
+   * statusu próby. Istnieje po to, żeby po restarcie albo przeładowaniu strony
+   * dało się poznać stan blokującej próby, nie ryzykując drugiej wysyłki.
+   */
+  z
+    .object({
+      ...ReplyBase,
+      operation: z.literal("check"),
+      confirmation: z.literal(INBOX_REPLY_CHECK_CONFIRMATION),
     })
     .strict(),
   z
@@ -223,6 +238,39 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
   const record = runtime.store.getCase(request.caseId);
   if (!record) return failure(404, "case_not_found");
 
+  if (request.operation === "check") {
+    const attempt = runtime.store.getAttempt(request.requestId);
+    if (!attempt) {
+      // Brak ledgera znaczy, że POST nigdy się nie zaczął. To jest informacja,
+      // nie błąd: pozwala odblokować sprawę bez zgadywania.
+      return envelope(
+        { status: "not_found", requestId: request.requestId, message: "Nie ma śladu tej próby" },
+        now,
+      );
+    }
+    if (attempt.caseId !== request.caseId) return failure(409, "request_belongs_to_other_case");
+    return envelope(
+      {
+        status: attempt.status,
+        requestId: attempt.requestId,
+        externalMessageId: attempt.externalMessageId,
+        deliveryState: attempt.deliveryState,
+        postStartedAt: attempt.postStartedAt,
+        completedAt: attempt.completedAt,
+        code: attempt.failureCode,
+        contentSha256: attempt.contentSha256,
+        contentLength: attempt.contentLength,
+        // Wiadomość w wątku bywa zapisana osobno od ledgera; ta flaga mówi,
+        // czy historia jest kompletna, czy wymaga naprawy.
+        historyComplete:
+          attempt.status !== "sent" ||
+          runtime.store.messagesForCase(attempt.caseId).some((message) => message.direction === "outgoing"),
+        message: describeAttempt(attempt.status),
+      },
+      now,
+    );
+  }
+
   if (request.operation === "cancel") {
     const result = cancelPrepared(runtime.store, request.requestId, now);
     return result.ok
@@ -263,6 +311,25 @@ export async function handleInboxReply(context: ReplyRequestContext): Promise<Ht
   });
 
   return envelope(toReplyDto(outcome), now);
+}
+
+function describeAttempt(status: string): string {
+  switch (status) {
+    case "prepared":
+      return "Odpowiedź czeka na potwierdzenie";
+    case "sending":
+      return "Wysyłka w toku — nie ponawiaj bez sprawdzenia";
+    case "sent":
+      return "Wiadomość została wysłana";
+    case "failed":
+      return "Wiadomość nie została wysłana";
+    case "uncertain":
+      return "Wynik wysyłki jest nieznany — sprawdź u dostawcy przed kolejną próbą";
+    case "cancelled":
+      return "Próba została anulowana";
+    default:
+      return "Nieznany stan próby";
+  }
 }
 
 function toReplyDto(outcome: SendOutcome): Record<string, unknown> {

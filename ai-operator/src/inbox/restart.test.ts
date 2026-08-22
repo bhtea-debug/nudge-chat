@@ -199,7 +199,7 @@ describe("restart w polowie operacji", () => {
 
   it("stan przezywa kompakcje dziennika", () => {
     const dir = newDir();
-    const store = new InboxStore({ dir, compactAbove: 10 });
+    const store = new InboxStore({ dir, compactAbove: 10, allowCompaction: true });
     seedCase(store);
     for (let index = 0; index < 40; index += 1) {
       store.claimMessage(
@@ -235,5 +235,42 @@ describe("restart w polowie operacji", () => {
     expect(after.getCase("ic_sprawa")).not.toBeNull();
     expect(after.getAttempt("req-000000000000ledger")?.deliveryState).toBe("delivered");
     expect(after.getCursor({ provider: "email", accountKey: "sklep" })).toBe("7:41");
+  });
+
+  it("store BEZ prawa do kompakcji nie przepisuje pliku pod nogami drugiego pisarza", () => {
+    const dir = newDir();
+    // Domyslnie kompakcja jest WYLACZONA: to bezpieczna wartosc dla procesu,
+    // ktory tylko dopisuje. Przepisanie pliku nie jest atomowe wobec appendu,
+    // wiec pisarz bez wyznaczenia odlinkowalby i-wezel drugiemu.
+    const store = new InboxStore({ dir, compactAbove: 5 });
+    for (let index = 0; index < 30; index += 1) {
+      store.claimMessage(
+        message({ externalMessageId: `mid:nowriter-${index}`, contentFingerprint: `fp-${index}` }),
+      );
+    }
+    store.close();
+
+    const lines = readFileSync(join(dir, "inbox.jsonl"), "utf8").trim().split("\n");
+    // Plik NIE zostal skompaktowany: wszystkie zdarzenia sa nadal osobno.
+    expect(lines.length).toBeGreaterThan(20);
+    expect(lines.some((line) => line.includes('"t":"snapshot"'))).toBe(false);
+
+    const reopened = new InboxStore({ dir });
+    expect(reopened.allMessages()).toHaveLength(30);
+  });
+
+  it("wyznaczony pisarz kompaktuje i nic nie ginie", () => {
+    const dir = newDir();
+    const store = new InboxStore({ dir, compactAbove: 5, allowCompaction: true });
+    for (let index = 0; index < 30; index += 1) {
+      store.claimMessage(
+        message({ externalMessageId: `mid:writer-${index}`, contentFingerprint: `fp-${index}` }),
+      );
+    }
+    store.close();
+
+    const lines = readFileSync(join(dir, "inbox.jsonl"), "utf8").trim().split("\n");
+    expect(lines.length).toBeLessThan(10);
+    expect(new InboxStore({ dir }).allMessages()).toHaveLength(30);
   });
 });

@@ -103,6 +103,19 @@ interface Snapshot {
 export interface InboxStoreOptions {
   readonly dir?: string;
   /**
+   * Czy TEN store wolno kompaktować.
+   *
+   * Kompakcja przepisuje plik i podmienia go przez `rename`. To NIE jest
+   * atomowe wobec dopisywania: proces trzymający stary deskryptor w trybie
+   * append pisze po kompakcji do odlinkowanego i-węzła i jego zdarzenia
+   * znikają bez śladu.
+   *
+   * Dopisują dwa procesy — tick synchronizacji i obsługa webhooka — więc
+   * kompaktować wolno WYŁĄCZNIE jednemu, wyznaczonemu pisarzowi. Bratni
+   * `state/store.ts` ma tę samą barierę z tego samego powodu.
+   */
+  readonly allowCompaction?: boolean;
+  /**
    * Próg kompakcji. Istnieje, żeby kompakcja była testowalna: bez tego
    * jedyny sposób jej sprawdzenia to wygenerowanie dwudziestu tysięcy zdarzeń,
    * czyli ścieżka, której nikt nie uruchomi.
@@ -131,9 +144,13 @@ export class InboxStore {
   private eventCount = 0;
   private damage: JournalDamage | null = null;
   private readonly compactAbove: number;
+  private readonly allowCompaction: boolean;
 
   constructor(opts: InboxStoreOptions = {}) {
     this.compactAbove = opts.compactAbove ?? COMPACT_ABOVE;
+    // Domyślnie NIE kompaktujemy: bezpieczna wartość dla procesu, który
+    // tylko dopisuje. Wyznaczony pisarz włącza to jawnie.
+    this.allowCompaction = opts.allowCompaction ?? false;
     this.logPath = join(fromPackageRoot(opts.dir ?? DEFAULT_DIR), LOG);
     this.journal = new Journal(this.logPath);
     this.replay();
@@ -255,7 +272,7 @@ export class InboxStore {
     this.journal.append(JSON.stringify(event), DURABLE_EVENTS.has(event.t));
     this.apply(event);
     this.eventCount += 1;
-    if (this.eventCount > this.compactAbove) this.compact();
+    if (this.allowCompaction && this.eventCount > this.compactAbove) this.compact();
   }
 
   private compact(): void {

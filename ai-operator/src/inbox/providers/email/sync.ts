@@ -104,6 +104,14 @@ export interface EmailSyncResult {
   readonly previewCount: number | null;
   readonly previewOnly: boolean;
   readonly batches: number;
+  /**
+   * Największa liczba rekordów trzymana w pamięci naraz.
+   *
+   * Wystawiona, żeby dało się TESTEM dowieść ograniczenia pamięci, a nie
+   * tylko policzyć wywołania `fetchRange` — liczba wywołań nie mówi nic
+   * o tym, czy wyniki nie lądują w jednej wielkiej tablicy.
+   */
+  readonly peakBatchRecords: number;
 }
 
 export async function syncEmailAccount(options: EmailSyncOptions): Promise<EmailSyncResult> {
@@ -162,6 +170,7 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
         previewCount,
         previewOnly: true,
         batches: 0,
+        peakBatchRecords: 0,
       };
     }
     ranges = chunkUids(uids, batchSize);
@@ -173,71 +182,86 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
     ];
   }
 
-  const records: ParsedRecord[] = [];
   const problems: string[] = [];
-  for (const range of ranges) {
-    const batch = await reader.fetchRange(range, account.folder, options.signal);
-    records.push(...batch.records);
-    problems.push(...batch.problems);
-  }
-
   const { threadIndex, subjectIndex } = buildIndexes(store, key);
 
   let stored = 0;
   let duplicates = 0;
   let collisions = 0;
+  let fetched = 0;
   let highestStoredUid = effectiveCursor?.lastUid ?? 0;
+  /** Największa liczba rekordów trzymana naraz. Dowód ograniczenia pamięci. */
+  let peakBatchRecords = 0;
   const touched = new Set<string>();
 
-  for (const record of records) {
+  /*
+   * Przetwarzanie STRUMIENIOWE, partia po partii.
+   *
+   * Wcześniej pętla zbierała wszystkie partie do jednej tablicy i dopiero
+   * potem je przetwarzała — więc dzielenie na partie ograniczało wielkość
+   * jednego zapytania do serwera, ale nie ograniczało niczego w pamięci
+   * procesu. Przy imporcie kilku tysięcy wiadomości z treścią to jest
+   * różnica między stałym zużyciem a liniowym.
+   */
+  for (const range of ranges) {
     options.signal?.throwIfAborted();
-    const uid = uidOf(record);
-    if (uid === null) {
-      // Bez UID nie ma czym przesunąć kursora ani czym zrobić fingerprintu.
-      problems.push(`rekord bez UID w "${account.folder}"`);
-      continue;
-    }
+    const batch = await reader.fetchRange(range, account.folder, options.signal);
+    problems.push(...batch.problems);
+    fetched += batch.records.length;
+    if (batch.records.length > peakBatchRecords) peakBatchRecords = batch.records.length;
 
-    const normalized = normalizeEmail({
-      record,
-      account,
-      uid,
-      uidValidity: state.uidValidity,
-      now,
-      threadIndex,
-      subjectIndex,
-    });
+    for (const record of batch.records) {
+      options.signal?.throwIfAborted();
+      const uid = uidOf(record);
+      if (uid === null) {
+        // Bez UID nie ma czym przesunąć kursora ani czym zrobić fingerprintu.
+        problems.push(`rekord bez UID w "${account.folder}"`);
+        continue;
+      }
 
-    const resolved = resolveCollision(store, key, normalized.message);
-    if (resolved === "duplicate") {
-      duplicates += 1;
-      // Duplikat to DOWÓD, że ta wiadomość jest już trwała, więc kursor może
-      // ją minąć. Bez tego overlap scan zamrażałby kursor w miejscu.
+      const normalized = normalizeEmail({
+        record,
+        account,
+        uid,
+        uidValidity: state.uidValidity,
+        now,
+        threadIndex,
+        subjectIndex,
+      });
+
+      const resolved = resolveCollision(store, key, normalized.message);
+      if (resolved === "duplicate") {
+        duplicates += 1;
+        // Duplikat to DOWÓD, że ta wiadomość jest już trwała, więc kursor może
+        // ją minąć. Bez tego overlap scan zamrażałby kursor w miejscu.
+        if (uid > highestStoredUid) highestStoredUid = uid;
+        continue;
+      }
+      if (resolved.collision) collisions += 1;
+
+      const claimed = store.claimMessage(resolved.message);
+      if (!claimed) {
+        duplicates += 1;
+        if (uid > highestStoredUid) highestStoredUid = uid;
+        continue;
+      }
+
+      stored += 1;
+      touched.add(resolved.message.caseId);
       if (uid > highestStoredUid) highestStoredUid = uid;
-      continue;
-    }
-    if (resolved.collision) collisions += 1;
 
-    const claimed = store.claimMessage(resolved.message);
-    if (!claimed) {
-      duplicates += 1;
-      if (uid > highestStoredUid) highestStoredUid = uid;
-      continue;
+      // Indeksy rosną w trakcie partii: druga wiadomość z tego samego wątku ma
+      // trafić do tej samej sprawy już w tym przebiegu, a nie dopiero w następnym.
+      if (resolved.message.rfcMessageId) {
+        threadIndex.set(resolved.message.rfcMessageId, resolved.message.externalConversationId);
+      }
+      subjectIndex.set(
+        subjectFallbackKey(resolved.message.subject, [resolved.message.authorLabel]),
+        resolved.message.externalConversationId,
+      );
     }
-
-    stored += 1;
-    touched.add(resolved.message.caseId);
-    if (uid > highestStoredUid) highestStoredUid = uid;
-
-    // Indeksy rosną w trakcie partii: druga wiadomość z tego samego wątku ma
-    // trafić do tej samej sprawy już w tym przebiegu, a nie dopiero w następnym.
-    if (resolved.message.rfcMessageId) {
-      threadIndex.set(resolved.message.rfcMessageId, resolved.message.externalConversationId);
-    }
-    subjectIndex.set(
-      subjectFallbackKey(resolved.message.subject, [resolved.message.authorLabel]),
-      resolved.message.externalConversationId,
-    );
+    // Partia zwolniona: `batch.records` wychodzi z zasięgu przed pobraniem
+    // następnej. To jest cała różnica względem poprzedniej wersji.
   }
 
   // Klasyfikacja PO trwałym zapisie całej partii. Odwrotna kolejność znaczyłaby,
@@ -272,7 +296,7 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
 
   return {
     accountKey: account.accountKey,
-    fetched: records.length,
+    fetched,
     stored,
     duplicates,
     collisions,
@@ -285,6 +309,7 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
     previewCount,
     previewOnly,
     batches: ranges.length,
+    peakBatchRecords,
   };
 }
 
@@ -297,8 +322,18 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
  * odpowiedź dostał wczoraj.
  *
  * Kursor jest osobny od skrzynki odbiorczej: to inny folder i inna przestrzeń
- * UID. Wiadomości wysłane przez kanał są tu wchłaniane przez dedup — o ile
- * mają ten sam `Message-ID`, a jeśli nie, rozpozna je odcisk treści.
+ * UID.
+ *
+ * UCZCIWIE o deduplikacji: idzie WYŁĄCZNIE po `externalMessageId`, czyli po
+ * `Message-ID` (a przy pustym nagłówku po fingerprincie UID-owym). Łapie to
+ * powtórny odczyt tej samej koperty przy skanie z zakładką i nic więcej.
+ *
+ * W szczególności NIE łączy kopii z folderu wysłanych z rekordem zapisanym
+ * przy wysyłce kanałem: Resend nadaje własny identyfikator, a odciski treści
+ * po obu stronach są liczone z innych składników i są nieporównywalne.
+ * Prawdziwy dedup po treści wymagałby kanonicznego odcisku i indeksu, a przy
+ * tym groziłby NAD-deduplikacją — czyli cichą utratą dwóch różnych odpowiedzi
+ * o tej samej treści. Świadomie tego nie robimy.
  */
 export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSyncResult | null> {
   const { account, store, reader, now } = options;
@@ -324,7 +359,7 @@ export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSy
 
   // Pierwszy odczyt folderu wysłanych bierze tylko okno historii: nie ma
   // powodu wciągać własnej korespondencji sprzed lat.
-  let range: string;
+  let ranges: string[];
   if (effectiveCursor === null && reader.uidsSince) {
     const days = Math.max(1, options.backfillDays ?? DEFAULT_BACKFILL_DAYS);
     const uids = await reader.uidsSince(
@@ -333,41 +368,55 @@ export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSy
       options.signal,
     );
     if (uids.length === 0) return null;
-    range = uids.join(",");
+    // Partie także tutaj: jeden zakres ze wszystkimi UID-ami wracał jedną
+    // odpowiedzią i przeczył całemu sensowi dzielenia na partie.
+    ranges = chunkUids(uids, Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE));
   } else {
-    range = incrementalRange(effectiveCursor, options.overlap ?? DEFAULT_OVERLAP);
+    ranges = [incrementalRange(effectiveCursor, options.overlap ?? DEFAULT_OVERLAP)];
   }
 
-  const { records, problems } = await reader.fetchRange(range, account.sentFolder, options.signal);
+  const problems: string[] = [];
   const { threadIndex, subjectIndex } = buildIndexes(store, { provider: "email", accountKey: account.accountKey });
 
   let stored = 0;
   let duplicates = 0;
+  let fetched = 0;
+  let peakBatchRecords = 0;
   let highestUid = effectiveCursor?.lastUid ?? 0;
   const touched = new Set<string>();
 
-  for (const record of records) {
-    const uid = uidOf(record);
-    if (uid === null) continue;
-    const normalized = normalizeEmail({
-      record,
-      account,
-      uid,
-      uidValidity: state.uidValidity,
-      now,
-      threadIndex,
-      subjectIndex,
-    });
-    // Wszystko w tym folderze jest nasze, niezależnie od tego, co mówi From.
-    const outgoing: InboxMessage = { ...normalized.message, direction: "outgoing" };
+  // Strumieniowo, tak samo jak skrzynka odbiorcza: partia jest przetwarzana
+  // i zwalniana przed pobraniem następnej.
+  for (const range of ranges) {
+    options.signal?.throwIfAborted();
+    const batch = await reader.fetchRange(range, account.sentFolder, options.signal);
+    problems.push(...batch.problems);
+    fetched += batch.records.length;
+    if (batch.records.length > peakBatchRecords) peakBatchRecords = batch.records.length;
 
-    if (store.hasMessage({ provider: "email", accountKey: account.accountKey }, outgoing.externalMessageId)) {
-      duplicates += 1;
-    } else if (store.claimMessage(outgoing)) {
-      stored += 1;
-      touched.add(outgoing.caseId);
+    for (const record of batch.records) {
+      const uid = uidOf(record);
+      if (uid === null) continue;
+      const normalized = normalizeEmail({
+        record,
+        account,
+        uid,
+        uidValidity: state.uidValidity,
+        now,
+        threadIndex,
+        subjectIndex,
+      });
+      // Wszystko w tym folderze jest nasze, niezależnie od tego, co mówi From.
+      const outgoing: InboxMessage = { ...normalized.message, direction: "outgoing" };
+
+      if (store.hasMessage({ provider: "email", accountKey: account.accountKey }, outgoing.externalMessageId)) {
+        duplicates += 1;
+      } else if (store.claimMessage(outgoing)) {
+        stored += 1;
+        touched.add(outgoing.caseId);
+      }
+      if (uid > highestUid) highestUid = uid;
     }
-    if (uid > highestUid) highestUid = uid;
   }
 
   for (const caseId of touched) {
@@ -384,7 +433,7 @@ export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSy
 
   return {
     accountKey: key.accountKey,
-    fetched: records.length,
+    fetched,
     stored,
     duplicates,
     collisions: 0,
@@ -396,7 +445,8 @@ export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSy
     backfill: cursorBefore === null,
     previewCount: null,
     previewOnly: false,
-    batches: 1,
+    batches: ranges.length,
+    peakBatchRecords,
   };
 }
 

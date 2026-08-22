@@ -101,7 +101,13 @@ export function createRuntime(
   store?: InboxStore,
   readerFactory?: (source: InboxEmailSource) => ImapReader,
 ): InboxRuntime {
-  const state = store ?? new InboxStore({ dir: config.stateDir });
+  /*
+   * Runtime jest WYZNACZONYM pisarzem: to jego tick kompaktuje dziennik.
+   * Obsługa webhooka używa tego samego obiektu w tym samym procesie, więc
+   * jeden pisarz wystarcza — ale gdyby kiedyś powstał drugi proces, bariera
+   * w store'ze nie pozwoli mu przepisać pliku pod nogami pierwszego.
+   */
+  const state = store ?? new InboxStore({ dir: config.stateDir, allowCompaction: true });
   const readers = new Map<string, ImapReader>();
   let ticks = 0;
 
@@ -223,14 +229,41 @@ export function createRuntime(
               companyDomains: config.companyDomains,
               signal,
             });
-            if (sent) email.push(sent);
+            if (sent) {
+              email.push(sent);
+              recordSuccess(
+                state,
+                {
+                  key: { provider: "email", accountKey: `${source.accountKey}#sent` },
+                  label: `${source.label} — wysłane`,
+                  active: true,
+                },
+                now,
+              );
+            }
           } catch (error) {
-            // Folder wysłanych jest sygnałem uzupełniającym: jego awaria nie
-            // ma prawa zepsuć odczytu skrzynki odbiorczej.
+            /*
+             * Folder wysłanych jest sygnałem uzupełniającym: jego awaria nie
+             * ma prawa zepsuć odczytu skrzynki odbiorczej. Ale MUSI być
+             * widoczna — wcześniej trafiała wyłącznie do raportu w pamięci,
+             * więc po zakończeniu ticku znikała i interfejs jej nie pokazywał.
+             */
+            const message = sanitizeMessage(error instanceof Error ? error.message : String(error));
+            const sentKey: SourceKey = {
+              provider: "email",
+              accountKey: `${source.accountKey}#sent`,
+            };
+            recordFailure(
+              state,
+              { key: sentKey, label: `${source.label} — wysłane`, active: true },
+              classifyFailure(message),
+              message,
+              now,
+            );
             failures.push({
               source: `email:${source.accountKey}#sent`,
               kind: "error",
-              message: sanitizeMessage(error instanceof Error ? error.message : String(error)),
+              message,
             });
           }
         }

@@ -212,6 +212,22 @@ export const FRESHNESS_POLICY = {
 export type OverallFreshnessState = "green" | "yellow" | "red";
 
 /**
+ * Stany, przy których kanał NIE może być zielony.
+ *
+ * Lista jest pozytywna („co jest zdrowe") odwrócona świadomie: nowy stan
+ * dodany do `HealthState` domyślnie liczy się jako zdegradowany, a nie jako
+ * zdrowy. Zapomniany wpis daje wtedy fałszywy alarm, a nie fałszywy spokój.
+ */
+const DEGRADED_STATES: ReadonlySet<HealthState> = new Set([
+  "backoff",
+  "reconnect_required",
+  "missing_scope",
+  "rate_limited",
+  "error",
+  "never_synced",
+]);
+
+/**
  * Ogólna świeżość liczona z NAJSTARSZEGO sukcesu wśród aktywnych źródeł.
  * Wersja z najnowszym sukcesem pokazuje zielono, gdy jedna skrzynka żyje,
  * a trzy pozostałe leżą — czyli dokładnie wtedy, kiedy nie wolno.
@@ -229,8 +245,16 @@ export function overallFreshness(
   if (active.length === 0) {
     return { state: "red", oldestSuccessAt: null, ageMs: null, degradedSources: [] };
   }
+  /*
+   * Każdy stan poza `ok` jest zdegradowany.
+   *
+   * Wcześniej `backoff` i `rate_limited` przechodziły jako zdrowe, więc
+   * źródło, które właśnie nie odpowiedziało i czeka na ponowienie, świeciło
+   * na zielono. Kropka mówiła „mamy wszystko" w chwili, gdy wprost wiemy,
+   * że czegoś nie mamy.
+   */
   const degraded = active
-    .filter((s) => s.state === "reconnect_required" || s.state === "missing_scope" || s.state === "error")
+    .filter((s) => DEGRADED_STATES.has(s.state))
     .map((s) => sourceKeyString(s));
   const neverSynced = active.filter((s) => s.lastSuccessfulSyncAt === null);
   if (neverSynced.length > 0) {

@@ -206,4 +206,54 @@ describe("pierwszy import", () => {
     expect(next.fetchedRanges[0]).toMatch(/^\d+:\*$/);
     expect(next.searchedSince).toBeNull();
   });
+
+  it("pamiec jest OGRANICZONA: partia jest zwalniana przed pobraniem nastepnej", async () => {
+    const store = freshStore();
+    const reader = new ArchiveReader();
+
+    const result = await syncEmailAccount({
+      account,
+      store,
+      reader,
+      now: NOW,
+      backfillDays: 30,
+      backfillMode: "import",
+      batchSize: 2,
+    });
+
+    // Sedno: nie liczba wywolan fetchRange (ta byla poprawna juz wczesniej),
+    // tylko MAKSIMUM rekordow trzymanych naraz. Poprzednia wersja zbierala
+    // wszystko do jednej tablicy, wiec ta liczba rownalaby sie 5.
+    expect(result.peakBatchRecords).toBe(2);
+    expect(result.fetched).toBe(5);
+    expect(result.stored).toBe(5);
+  });
+
+  it("wieksza skrzynka nie zwieksza szczytowego zuzycia pamieci", async () => {
+    const store = freshStore();
+    // Czytnik z 200 wiadomosciami w oknie.
+    const many = new (class extends ArchiveReader {
+      override async uidsSince(): Promise<number[]> {
+        return Array.from({ length: 200 }, (_, index) => index + 1);
+      }
+      override async fetchRange(range: string) {
+        const uids = range.split(",").map(Number);
+        return { records: uids.map((uid) => record(uid, 1)), problems: [] };
+      }
+    })();
+
+    const result = await syncEmailAccount({
+      account,
+      store,
+      reader: many,
+      now: NOW,
+      backfillDays: 30,
+      backfillMode: "import",
+      batchSize: 10,
+    });
+
+    expect(result.fetched).toBe(200);
+    // Szczyt zostaje na rozmiarze partii niezaleznie od wielkosci skrzynki.
+    expect(result.peakBatchRecords).toBe(10);
+  });
 });

@@ -130,7 +130,12 @@ export function channelFreshness(store: InboxStore, now: number): ChannelFreshne
  */
 export function mayReportEmptyQueue(freshness: ChannelFreshness): boolean {
   if (freshness.degraded) return false;
-  return freshness.sources.every(
-    (source) => !source.active || (source.state === "ok" && source.lastSuccessfulSyncAt !== null),
-  );
+  /*
+   * Konfiguracja BEZ ani jednego aktywnego źródła nie jest „pustą kolejką",
+   * tylko brakiem kanału. Wcześniej `every` na pustej liście zwracało `true`
+   * i taki stan przechodził jako spokojny.
+   */
+  const active = freshness.sources.filter((source) => source.active);
+  if (active.length === 0) return false;
+  return active.every((source) => source.state === "ok" && source.lastSuccessfulSyncAt !== null);
 }
