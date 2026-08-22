@@ -7,6 +7,17 @@ import { newCorrelationId } from "../capability/audit.js";
 import { renderRun, costLine } from "../state/report.js";
 import { appendFileSync, readFileSync } from "node:fs";
 import { fromPackageRoot } from "../paths.js";
+import {
+  INBOX_READ_PREFIX,
+  INBOX_REPLY_PATH,
+  META_WEBHOOK_PATH,
+  RESEND_WEBHOOK_PATH,
+  handleInboxRead,
+  handleInboxReply,
+  handleMetaWebhook,
+  handleResendWebhook,
+} from "../inbox/http.js";
+import { inboxRuntime } from "../inbox/runtime.js";
 import { eventTypeOf, ingestChatMessage, messageFromWebhook, verifySignature } from "../connecteam/ingest.js";
 import {
   authorizationServerMetadata,
@@ -605,6 +616,20 @@ const server = createServer((req, res) => {
       return;
     }
 
+    // ── kanał „Obsługa klienta" ───────────────────────────────────────────
+    // Świadomie POZA /mcp: rejestr narzędzi jest tym, co widzi model, a wysyłka
+    // do klienta nie ma prawa się tam znaleźć nawet omyłkowo.
+    if (
+      url.pathname === INBOX_REPLY_PATH ||
+      url.pathname.startsWith(`${INBOX_READ_PREFIX}/`) ||
+      url.pathname === META_WEBHOOK_PATH ||
+      url.pathname === RESEND_WEBHOOK_PATH
+    ) {
+      const status = await handleInboxRoute(req, res, url);
+      logAccess(status, "inbox", url.pathname.replace(INBOX_READ_PREFIX, "") || "/", Date.now() - started);
+      return;
+    }
+
     if (url.pathname !== "/mcp") {
       json(res, 404, { error: "nieznana ścieżka; MCP jest pod /mcp" });
       logAccess(404, req.method ?? "?", null, Date.now() - started);
@@ -706,6 +731,121 @@ const server = createServer((req, res) => {
  * ponawia wywołania. Po timeout/5xx odpowiedź mówi wprost, że wynik jest
  * niejednoznaczny i operator ma najpierw odświeżyć wątek.
  */
+/**
+ * Trasy kanału „Obsługa klienta".
+ *
+ * Trzy rozłączne granice uprawnień w jednym miejscu, żeby dało się je
+ * przeczytać naraz:
+ *  - odczyt kolejki: token zaufanego firmowego czatu (widok `display`),
+ *  - wysyłka: OSOBNY token bramy odpowiedzi plus nagłówek potwierdzenia człowieka,
+ *  - webhooki: własny podpis dostawcy, bez żadnego z naszych tokenów.
+ *
+ * Token odczytu nigdy nie daje prawa wysyłki i odwrotnie.
+ */
+async function handleInboxRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): Promise<number> {
+  const runtime = inboxRuntime();
+  if (!runtime) {
+    json(res, 503, { ok: false, error: "inbox_not_configured" });
+    return 503;
+  }
+  const now = Date.now();
+
+  if (url.pathname === META_WEBHOOK_PATH) {
+    const rawBody = req.method === "POST" ? await readBody(req, MAX_INBOX_WEBHOOK_BODY) : "";
+    const result = handleMetaWebhook({
+      runtime,
+      method: req.method ?? "GET",
+      params: url.searchParams,
+      rawBody,
+      signatureHeader: singleHeader(req.headers["x-hub-signature-256"]),
+      now,
+    });
+    if (result.text !== undefined) {
+      res.writeHead(result.status, { ...CORS, "content-type": "text/plain; charset=utf-8" });
+      res.end(result.text);
+      return result.status;
+    }
+    json(res, result.status, result.body, result.headers ?? {});
+    return result.status;
+  }
+
+  if (url.pathname === RESEND_WEBHOOK_PATH) {
+    if (req.method !== "POST") {
+      json(res, 405, { ok: false, error: "use_post" });
+      return 405;
+    }
+    const rawBody = await readBody(req, MAX_INBOX_WEBHOOK_BODY);
+    const result = handleResendWebhook({
+      runtime,
+      rawBody,
+      svixId: singleHeader(req.headers["svix-id"]),
+      svixTimestamp: singleHeader(req.headers["svix-timestamp"]),
+      svixSignature: singleHeader(req.headers["svix-signature"]),
+      now,
+    });
+    json(res, result.status, result.body, result.headers ?? {});
+    return result.status;
+  }
+
+  const provided = bearerOf(req);
+
+  if (url.pathname === INBOX_REPLY_PATH) {
+    // Wysyłka wymaga tokenu bramy odpowiedzi. Token odczytu tu nie wchodzi.
+    if (provided === null || !customerCaseReplyBridgeTokenMatches(provided)) {
+      json(res, 401, { ok: false, error: "unauthorized" });
+      return 401;
+    }
+    if (req.method !== "POST") {
+      json(res, 405, { ok: false, error: "use_post" });
+      return 405;
+    }
+    if (!allowCustomerCaseReply()) {
+      json(res, 429, { ok: false, error: "reply_rate_limited" }, { "retry-after": "6" });
+      return 429;
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(await readBody(req, MAX_CUSTOMER_CASE_REPLY_BODY));
+    } catch {
+      json(res, 400, { ok: false, error: "invalid_json" });
+      return 400;
+    }
+    const result = await handleInboxReply({
+      runtime,
+      body,
+      humanConfirmation: singleHeader(req.headers["x-bht-human-confirmation"]),
+      now,
+    });
+    json(res, result.status, result.body, result.headers ?? {});
+    return result.status;
+  }
+
+  if (provided === null || !trustedFirmowyChatTokenMatches(provided)) {
+    json(res, 401, { ok: false, error: "unauthorized" });
+    return 401;
+  }
+  if (req.method !== "GET") {
+    json(res, 405, { ok: false, error: "use_get" });
+    return 405;
+  }
+  const result = handleInboxRead({
+    runtime,
+    path: url.pathname,
+    params: url.searchParams,
+    now,
+    trustedChat: true,
+  });
+  json(res, result.status, result.body, result.headers ?? {});
+  return result.status;
+}
+
+/** Ciało webhooka bywa większe od odpowiedzi, ale nie jest workiem bez dna. */
+const MAX_INBOX_WEBHOOK_BODY = 256 * 1024;
+
 async function handleCustomerCaseReplyBridge(
   req: IncomingMessage,
   res: ServerResponse,

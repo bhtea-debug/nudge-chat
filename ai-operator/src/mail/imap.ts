@@ -244,6 +244,87 @@ export class ImapMailProvider implements MailProvider {
     }));
   }
 
+  /**
+   * Stan folderu potrzebny trwałej synchronizacji: wersja przestrzeni UID
+   * i pierwszy nieużyty UID.
+   *
+   * `uidValidity` jest tu najważniejsze. Serwer może odtworzyć folder z kopii
+   * i wtedy te same numery UID opisują INNE wiadomości. Kursor zapamiętany bez
+   * tej wartości po takiej odbudowie przeskakuje całą skrzynkę i nikt tego nie
+   * zauważa — dlatego kursor jest parą, nie liczbą.
+   */
+  async mailboxState(folder?: string, signal?: AbortSignal): Promise<{
+    readonly path: string;
+    readonly uidValidity: number;
+    readonly uidNext: number;
+    readonly messages: number;
+  }> {
+    const client = await this.connect();
+    const path = folder ?? this.folder;
+    signal?.throwIfAborted();
+    const lock = await client.getMailboxLock(path, {
+      readOnly: true,
+      acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS,
+    });
+    try {
+      const box = client.mailbox;
+      if (!box || typeof box === "boolean") {
+        throw new Error(`nie udało się otworzyć folderu "${path}"`);
+      }
+      return {
+        path,
+        // imapflow zwraca uidValidity jako BigInt; do kursora chcemy liczby.
+        uidValidity: Number(box.uidValidity ?? 0),
+        uidNext: Number(box.uidNext ?? 0),
+        messages: Number(box.exists ?? 0),
+      };
+    } finally {
+      lock.release();
+    }
+  }
+
+  /**
+   * Odczyt zakresu UID. Jedyna droga trwałej synchronizacji do wiadomości.
+   *
+   * Zwraca też `problems`: wiadomość, której nie dało się sparsować, jest
+   * ZGŁOSZONA, a nie pominięta w ciszy. Cicho przycięta partia wygląda jak
+   * partia pełna i przesuwa kursor za dowodem, którego nie mamy.
+   */
+  async fetchRange(
+    range: string,
+    folder?: string,
+    signal?: AbortSignal,
+  ): Promise<{ readonly records: ParsedRecord[]; readonly problems: string[] }> {
+    const client = await this.connect();
+    const path = folder ?? this.folder;
+    const problems: string[] = [];
+    const records: ParsedRecord[] = [];
+    signal?.throwIfAborted();
+    const lock = await client.getMailboxLock(path, {
+      readOnly: true,
+      acquireTimeout: LOCK_ACQUIRE_TIMEOUT_MS,
+    });
+    try {
+      for await (const msg of client.fetch(
+        range,
+        { uid: true, envelope: true, source: true, internalDate: true, flags: true },
+        { uid: true },
+      )) {
+        signal?.throwIfAborted();
+        try {
+          records.push(await this.toRecord(msg, path));
+        } catch (err) {
+          problems.push(
+            `uid ${msg.uid} w "${path}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    } finally {
+      lock.release();
+    }
+    return { records, problems };
+  }
+
   private async threadFolderList(): Promise<readonly string[]> {
     return (await this.resolveFolders()).threadFolders;
   }
@@ -714,7 +795,7 @@ export class ImapMailProvider implements MailProvider {
   }
 }
 
-interface ParsedRecord {
+export interface ParsedRecord {
   readonly message: MailMessage;
   readonly body: string;
 }
