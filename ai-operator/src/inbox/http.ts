@@ -548,6 +548,15 @@ function toReplyDto(outcome: SendOutcome): Record<string, unknown> {
      * rozroznienie, a granica HTTP je zjadala.
      */
     historyComplete: "historyComplete" in outcome ? outcome.historyComplete : null,
+    /*
+     * Jedyny dopuszczalny dowod „nie wyslano".
+     *
+     * Odbiorca nie ma prawa wnioskowac tego z kodu HTTP: brama albo proxy
+     * potrafi zwrocic 4xx po tym, jak zadanie juz poszlo dalej. Bez tego pola
+     * czat zamienial 408, 425 i 429 w terminalne `failed` i odblokowywal
+     * formularz po faktycznie wykonanym POST-cie.
+     */
+    settledNotSent: "settledNotSent" in outcome ? outcome.settledNotSent : false,
   };
 }
 

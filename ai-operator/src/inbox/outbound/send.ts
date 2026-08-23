@@ -39,9 +39,32 @@ export type SendOutcome =
        */
       readonly historyComplete?: boolean;
     }
-  | { readonly status: "failed"; readonly requestId: string; readonly code: string; readonly message: string }
+  | {
+      readonly status: "failed";
+      readonly requestId: string;
+      readonly code: string;
+      readonly message: string;
+      /**
+       * Czy da się DOWIEŚĆ, że wiadomość nie dotarła do klienta.
+       *
+       * Odbiorca nie ma prawa wnioskować tego z kodu HTTP: bramka albo proxy
+       * potrafi zwrócić 4xx po tym, jak żądanie już poszło dalej. Terminalne
+       * „nie wysłano" wolno przyjąć WYŁĄCZNIE wtedy, gdy mówi to ten kontrakt.
+       *
+       * `true` znaczy: albo nic nie opuściło tego procesu (odmowa przed
+       * POST-em), albo dostawca odpowiedział jednoznaczną odmową.
+       */
+      readonly settledNotSent: boolean;
+    }
   | { readonly status: "uncertain"; readonly requestId: string; readonly code: string; readonly message: string }
-  | { readonly status: "rejected"; readonly requestId: string; readonly code: string; readonly message: string };
+  | {
+      readonly status: "rejected";
+      readonly requestId: string;
+      readonly code: string;
+      readonly message: string;
+      /** Odmowa PRZED POST-em: do dostawcy nie poszło nic. Zawsze `true`. */
+      readonly settledNotSent: true;
+    };
 
 export interface SendTransport {
   /** Wysyła i zwraca wynik. Nie wolno mu ponawiać samodzielnie. */
@@ -72,6 +95,7 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
   if (!prepared.ok) {
     return {
       status: "rejected",
+      settledNotSent: true,
       requestId,
       code: prepared.code,
       message: rejectionMessage(prepared.code),
@@ -113,6 +137,12 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
       requestId,
       code: existing.failureCode ?? "failed",
       message: "Wiadomosc nie zostala wyslana",
+      /*
+       * Powtorka nad proba juz zamknieta jako `failed`. Ledger zapisal ten
+       * wynik dopiero po ustaleniu, ze wiadomosc nie poszla, wiec jest to
+       * rozstrzygniete.
+       */
+      settledNotSent: true,
     };
   }
   if (existing.status === "uncertain") {
@@ -124,12 +154,24 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
     };
   }
   if (existing.status === "cancelled") {
-    return { status: "rejected", requestId, code: "cancelled", message: "Proba zostala anulowana" };
+    return {
+      status: "rejected",
+      requestId,
+      code: "cancelled",
+      message: "Proba zostala anulowana",
+      settledNotSent: true,
+    };
   }
 
   const started = beginSending(store, requestId, request.now());
   if (!started.ok) {
-    return { status: "rejected", requestId, code: started.code, message: "Wysylka jest juz w toku" };
+    return {
+      status: "rejected",
+      requestId,
+      code: started.code,
+      message: "Wysylka jest juz w toku",
+      settledNotSent: true,
+    };
   }
 
   // Ostatnia bramka przed POST-em: klient mógł napisać między potwierdzeniem
@@ -141,6 +183,8 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
       requestId,
       code: "stale_marker",
       message: "Klient napisal ponownie, potwierdz odpowiedz jeszcze raz",
+      // Bramka markera stoi PRZED POST-em: do dostawcy nie poszlo nic.
+      settledNotSent: true,
     };
   }
 
@@ -214,7 +258,18 @@ export async function sendReply(request: SendRequest): Promise<SendOutcome> {
   }
   if (result.status === "failed") {
     finishFailed(store, requestId, result.code, request.now());
-    return { status: "failed", requestId, code: result.code, message: result.message };
+    /*
+     * Dostawca odpowiedzial JEDNOZNACZNA odmowa (np. zamkniete okno
+     * odpowiedzi). Transport zwraca `failed` wylacznie w takim przypadku;
+     * wszystko, czego nie potrafi rozstrzygnac, oddaje jako `uncertain`.
+     */
+    return {
+      status: "failed",
+      requestId,
+      code: result.code,
+      message: result.message,
+      settledNotSent: true,
+    };
   }
   markUncertain(store, requestId, result.code);
   return { status: "uncertain", requestId, code: result.code, message: result.message };
