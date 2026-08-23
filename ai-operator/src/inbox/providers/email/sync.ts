@@ -94,6 +94,8 @@ export interface EmailSyncResult {
   readonly stored: number;
   readonly duplicates: number;
   readonly collisions: number;
+  /** Koperty starsze niż okno kanału, celowo pominięte (podłoga czasowa). */
+  readonly skippedOutOfWindow: number;
   readonly problems: string[];
   readonly cursorBefore: string | null;
   readonly cursorAfter: string | null;
@@ -161,6 +163,7 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
         stored: 0,
         duplicates: 0,
         collisions: 0,
+        skippedOutOfWindow: 0,
         problems: [],
         cursorBefore: rawCursor,
         cursorAfter: rawCursor,
@@ -188,7 +191,18 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
   let stored = 0;
   let duplicates = 0;
   let collisions = 0;
+  let skippedOutOfWindow = 0;
   let fetched = 0;
+  /*
+   * PODŁOGA CZASOWA okna kanału. Zakres uzgodnienia jest liczony w UID-ach
+   * (ostatnie N kopert), więc na skrzynce z wieloletnią historią sięga
+   * miesiące wstecz — pierwsze pełne uzgodnienie po imporcie 7-dniowym
+   * wciągnęło przez to 732 wiadomości sprzed okna (zmierzone na produkcji
+   * 23.08). Kanał obsługuje wyłącznie okno od startu importu; starsze
+   * koperty są pomijane W OBU trybach, a kursor może je minąć.
+   */
+  const oknoOdDni = Math.max(1, options.backfillDays ?? DEFAULT_BACKFILL_DAYS);
+  const podlogaCzasowa = now - oknoOdDni * 24 * 60 * 60_000;
   let highestStoredUid = effectiveCursor?.lastUid ?? 0;
   /** Największa liczba rekordów trzymana naraz. Dowód ograniczenia pamięci. */
   let peakBatchRecords = 0;
@@ -238,6 +252,13 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
         continue;
       }
       if (resolved.collision) collisions += 1;
+
+      const znacznikCzasu = resolved.message.sourceCreatedAt ?? resolved.message.receivedAt;
+      if (znacznikCzasu < podlogaCzasowa) {
+        skippedOutOfWindow += 1;
+        if (uid > highestStoredUid) highestStoredUid = uid;
+        continue;
+      }
 
       const claimed = store.claimMessage(resolved.message);
       if (!claimed) {
@@ -300,6 +321,7 @@ export async function syncEmailAccount(options: EmailSyncOptions): Promise<Email
     stored,
     duplicates,
     collisions,
+    skippedOutOfWindow,
     problems,
     cursorBefore: rawCursor,
     cursorAfter,
@@ -437,6 +459,7 @@ export async function syncSentFolder(options: EmailSyncOptions): Promise<EmailSy
     stored,
     duplicates,
     collisions: 0,
+    skippedOutOfWindow: 0,
     problems,
     cursorBefore: rawCursor,
     cursorAfter: store.getCursor(key),

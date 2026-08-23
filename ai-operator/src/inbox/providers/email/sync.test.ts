@@ -294,6 +294,53 @@ describe("synchronizacja IMAP", () => {
     expect(reconcile.fetchCalls[0]).toBe("1:*");
   });
 
+  it("uzgodnienie NIE wciaga kopert starszych niz okno kanalu", async () => {
+    /*
+     * Zakres uzgodnienia liczy sie w UID-ach (ostatnie N kopert), wiec na
+     * skrzynce z wieloletnia historia siega miesiace wstecz. Pierwsze pelne
+     * uzgodnienie po imporcie 7-dniowym wciagnelo przez to na produkcji
+     * 732 wiadomosci sprzed okna. Podloga czasowa musi je pominac.
+     */
+    const store = freshStore();
+    const teraz = Date.parse("2026-08-23T12:00:00.000Z");
+    const reader = new FakeReader({ uidValidity: 2, uidNext: 100, messages: 2 }, [
+      {
+        records: [
+          record({
+            uid: 10,
+            messageId: "stara@k",
+            from: "dawny@example.com",
+            body: "Wiadomosc sprzed miesiaca",
+            date: "2026-07-20T10:00:00.000Z",
+          }),
+          record({
+            uid: 90,
+            messageId: "swieza@k",
+            from: "klient@example.com",
+            body: "Wiadomosc sprzed trzech dni",
+            date: "2026-08-20T10:00:00.000Z",
+          }),
+        ],
+        problems: [],
+      },
+    ]);
+
+    const result = await syncEmailAccount({
+      account: account("sklep"),
+      store,
+      reader,
+      now: teraz,
+      mode: "reconcile",
+      backfillDays: 7,
+    });
+
+    expect(result.stored).toBe(1);
+    expect(result.skippedOutOfWindow).toBe(1);
+    const wiadomosci = store.allMessages();
+    expect(wiadomosci).toHaveLength(1);
+    expect(wiadomosci[0]!.rfcMessageId).toBe("swieza@k");
+  });
+
   it("wlasna odpowiedz nie jest klasyfikowana jako wiadomosc przychodzaca", async () => {
     const store = freshStore();
     const reader = new FakeReader({ uidValidity: 2, uidNext: 10, messages: 2 }, [
