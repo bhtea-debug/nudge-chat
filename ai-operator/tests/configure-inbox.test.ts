@@ -59,14 +59,37 @@ function run(mode: string, fake: FakeRailway): { code: number; out: string } {
   const dir = mkdtempSync(join(tmpdir(), "railway-guard-"));
   dirs.push(dir);
 
+  /*
+   * Kształt odpowiedzi CLI odwzorowany ze ZMIERZONEGO `railway status --json`
+   * (2026-08-23): projekt z nazwą, środowiska w edges, usługi i wolumeny
+   * w serviceInstances/volumeInstances danego środowiska. Stary kształt
+   * (`environment.id` na szczycie) w dzisiejszym CLI nie istnieje — bramka
+   * pisana pod niego poległa pierwszego dnia na produkcji.
+   */
+  const maWolumen = (fake.volumes ?? "/data") === "/data";
   const status = JSON.stringify({
     id: fake.projectId ?? PROJECT,
-    environment: { id: fake.environmentId ?? ENVIRONMENT },
+    name: "heartfelt-spontaneity",
+    environments: {
+      edges: [
+        {
+          node: {
+            id: fake.environmentId ?? ENVIRONMENT,
+            name: "production",
+            serviceInstances: {
+              edges: [{ node: { serviceId: fake.serviceId ?? SERVICE, serviceName: "bht-copilot" } }],
+            },
+            volumeInstances: {
+              edges: maWolumen
+                ? [{ node: { serviceId: fake.serviceId ?? SERVICE, mountPath: "/data", state: "READY", sizeMB: 10000 } }]
+                : [],
+            },
+          },
+        },
+      ],
+    },
   });
-  const service = JSON.stringify({ id: fake.serviceId ?? SERVICE });
-  const variables = Object.entries(fake.vars ?? {})
-    .map(([key, value]) => `${key}=${value}`)
-    .join("\n");
+  const variables = JSON.stringify(fake.vars ?? {});
 
   writeFileSync(
     join(dir, "railway"),
@@ -75,11 +98,7 @@ function run(mode: string, fake: FakeRailway): { code: number; out: string } {
       'case "$1" in',
       `  status) cat <<'JSON'\n${status}\nJSON`,
       "  ;;",
-      `  service) cat <<'JSON'\n${service}\nJSON`,
-      "  ;;",
-      `  volume) printf '%s\\n' ${JSON.stringify(fake.volumes ?? "/data")}`,
-      "  ;;",
-      `  variables) cat <<'KV'\n${variables}\nKV`,
+      `  variable) cat <<'JSON'\n${variables}\nJSON`,
       "  ;;",
       "esac",
       "exit 0",
@@ -312,7 +331,14 @@ describe("start procesu MCP", () => {
 describe("most odpowiedzi w trybie przychodzacym", () => {
   const PREVIEW = { ...FULL_INBOUND, INBOX_BACKFILL_MODE: "preview" };
 
-  it("inbound-preview odrzuca ustawiony CUSTOMER_CASE_REPLY_BRIDGE_TOKEN", () => {
+  /*
+   * Stan zastany produkcji: most odpowiedzi bywa WŁĄCZONY przez wcześniejszy
+   * pilot Allegro (doręczenia przez TeaBrew, poza tym kanałem). Właściwa
+   * granica bezpieczeństwa w trybach przychodzących: kanał generyczny nie może
+   * mieć DOSTAWCY doręczeń (Resend / Graph API). Sam most = ostrzeżenie;
+   * most + dostawca = twarda odmowa.
+   */
+  it("inbound-preview PRZEPUSZCZA sam most (pilot Allegro) z jawnym ostrzeżeniem", () => {
     const result = run("inbound-preview", {
       vars: {
         ...PREVIEW,
@@ -321,16 +347,43 @@ describe("most odpowiedzi w trybie przychodzacym", () => {
         TEABREW_BASE_URL: "https://teabrew.example.pl",
       },
     });
-    expect(result.code).not.toBe(0);
-    expect(result.out).toContain("CUSTOMER_CASE_REPLY_BRIDGE_TOKEN");
+    expect(result.out).toContain("pilot odpowiedzi Allegro");
+    expect(result.out).toContain("pisać nie może");
+    expect(result.code).toBe(0);
   });
 
-  it("inbound-live odrzuca ustawiony TEABREW_AI_OPERATOR_REPLY_TOKEN", () => {
-    const result = run("inbound-live", {
-      vars: { ...FULL_INBOUND, TEABREW_AI_OPERATOR_REPLY_TOKEN: REPLY_TOKEN },
+  it("inbound-preview odrzuca most RAZEM z kluczem Resend", () => {
+    const result = run("inbound-preview", {
+      vars: {
+        ...PREVIEW,
+        CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: BRIDGE_TOKEN,
+        TEABREW_AI_OPERATOR_REPLY_TOKEN: REPLY_TOKEN,
+        TEABREW_BASE_URL: "https://teabrew.example.pl",
+        INBOX_RESEND_API_KEY: "re_klucz_testowy",
+      },
     });
     expect(result.code).not.toBe(0);
-    expect(result.out).toContain("TEABREW_AI_OPERATOR_REPLY_TOKEN");
+    expect(result.out).toContain("INBOX_RESEND_API_KEY");
+  });
+
+  it("inbound-live odrzuca most RAZEM z tokenem Graph API konta Meta", () => {
+    const result = run("inbound-live", {
+      vars: {
+        ...FULL_INBOUND,
+        CUSTOMER_CASE_REPLY_BRIDGE_TOKEN: BRIDGE_TOKEN,
+        TEABREW_AI_OPERATOR_REPLY_TOKEN: REPLY_TOKEN,
+        TEABREW_BASE_URL: "https://teabrew.example.pl",
+        INBOX_META_ACCOUNTS: "ig",
+        INBOX_META_IG_PROVIDER: "instagram",
+        INBOX_META_IG_ID: "17840000000000000",
+        INBOX_META_IG_PAGE_ID: "10150000000000000",
+        INBOX_META_IG_TOKEN: "EAAGraphApiTokenTestowy1234567890",
+        INBOX_META_APP_SECRET: "sekret-aplikacji-meta-testowy-123",
+        INBOX_META_VERIFY_TOKEN: "verify-token-testowy-1234567890ab",
+      },
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain("Graph API");
   });
 });
 

@@ -65,71 +65,74 @@ printf '\033[1mTryb: %s\033[0m\n\n' "$MODE"
 command -v railway >/dev/null 2>&1 || fail "Brak Railway CLI. Zainstaluj je i zaloguj się przed konfiguracją."
 command -v node >/dev/null 2>&1 || fail "Brak node — skrypt używa go do odczytu JSON."
 
-STATUS_JSON="$(railway status --json 2>/dev/null)" || fail "Railway CLI nie odpowiada. Zaloguj się: railway login"
+# Cel podajemy JAWNIE po identyfikatorach, nie przez `railway link`: link
+# pamięta ostatni wybór z zupełnie innej pracy, a bramka kontrolna nie ma
+# prawa zależeć od tego, co kto ostatnio klikał. Ten sam kształt wywołań,
+# co w produkcyjnym deploy-railway.sh (sprawdzony na żywym CLI 2026-08-23;
+# poprzedni kształt, `environment.id` w statusie bez argumentów, w dzisiejszym
+# CLI nie istnieje i bramka pierwszego dnia na produkcji poległa właśnie o to).
+STATUS_JSON="$(railway status --project "$EXPECTED_PROJECT_ID" --environment "$EXPECTED_ENVIRONMENT_ID" --json 2>/dev/null)" \
+  || fail "Railway CLI nie odpowiada albo nie ma dostępu do projektu. Zaloguj się: railway login"
 
-read_json() {
-  printf '%s' "$STATUS_JSON" | node -e '
-    let raw = "";
-    process.stdin.on("data", (chunk) => (raw += chunk));
-    process.stdin.on("end", () => {
-      try {
-        const data = JSON.parse(raw);
-        const path = process.argv[1].split(".");
-        let value = data;
-        for (const key of path) value = value?.[key];
-        process.stdout.write(String(value ?? ""));
-      } catch {
-        process.stdout.write("");
-      }
-    });
-  ' "$1"
-}
-
-[ "$(read_json id)" = "$EXPECTED_PROJECT_ID" ] \
-  || fail "Podłączony projekt to nie BHT Copilot. Uruchom: railway link --project $EXPECTED_PROJECT_ID"
-ok "projekt zgodny"
-
-[ "$(read_json environment.id)" = "$EXPECTED_ENVIRONMENT_ID" ] \
-  || fail "Złe środowisko. Oczekiwane: production ($EXPECTED_ENVIRONMENT_ID)"
-ok "środowisko: production"
-
-# Service ID sprawdzamy NAPRAWDĘ. Wcześniej stała była zadeklarowana i nieużyta,
-# czyli bramka wyglądała na mocniejszą, niż była.
-SERVICE_JSON="$(railway service --json 2>/dev/null || true)"
-SERVICE_ID="$(printf '%s' "$SERVICE_JSON" | node -e '
+# Projekt, środowisko production, usługa i trwały wolumen: wszystko z JEDNEGO
+# odczytu statusu, w całości po identyfikatorach i nazwach naraz.
+printf '%s' "$STATUS_JSON" | EXPECTED_PROJECT_ID="$EXPECTED_PROJECT_ID" EXPECTED_ENVIRONMENT_ID="$EXPECTED_ENVIRONMENT_ID" EXPECTED_SERVICE_ID="$EXPECTED_SERVICE_ID" REQUIRED_MOUNT="$REQUIRED_MOUNT" node -e '
   let raw = "";
-  process.stdin.on("data", (chunk) => (raw += chunk));
-  process.stdin.on("end", () => {
+  process.stdin.on("data", (c) => (raw += c)).on("end", () => {
     try {
-      const data = JSON.parse(raw);
-      process.stdout.write(String(data?.id ?? data?.serviceId ?? ""));
+      const value = JSON.parse(raw);
+      if (value.id !== process.env.EXPECTED_PROJECT_ID) process.exit(2);
+      const environment = value.environments?.edges?.find(
+        (edge) => edge.node?.id === process.env.EXPECTED_ENVIRONMENT_ID && edge.node?.name === "production",
+      )?.node;
+      if (!environment) process.exit(3);
+      const service = environment.serviceInstances?.edges?.find(
+        (edge) => edge.node?.serviceId === process.env.EXPECTED_SERVICE_ID && edge.node?.serviceName === "bht-copilot",
+      )?.node;
+      if (!service) process.exit(4);
+      const volume = environment.volumeInstances?.edges?.find(
+        (edge) => edge.node?.serviceId === process.env.EXPECTED_SERVICE_ID && edge.node?.mountPath === process.env.REQUIRED_MOUNT && edge.node?.state === "READY",
+      )?.node;
+      if (!volume) process.exit(5);
     } catch {
-      process.stdout.write("");
+      process.exit(1);
     }
   });
-')"
-
-if [ -z "$SERVICE_ID" ]; then
-  fail "Nie udało się odczytać identyfikatora usługi. Wybierz ją: railway service $SERVICE"
+'
+# Kod wyjścia ŁAPIEMY do zmiennej: po `if ! potok` w bashu $? niesie już
+# wynik negacji, a nie potoku, i każda diagnoza spadałaby do gałęzi ogólnej.
+WYNIK_STATUSU=$?
+if [ "$WYNIK_STATUSU" -ne 0 ]; then
+  case "$WYNIK_STATUSU" in
+    2) fail "Podłączony projekt to nie BHT Copilot ($EXPECTED_PROJECT_ID)." ;;
+    3) fail "Złe środowisko. Oczekiwane: production ($EXPECTED_ENVIRONMENT_ID)" ;;
+    4) fail "Usługa $SERVICE ($EXPECTED_SERVICE_ID) nie istnieje w środowisku production." ;;
+    5) fail "BRAK gotowego wolumenu pod $REQUIRED_MOUNT. Bez niego kursory startują od zera po każdym wdrożeniu.
+Dodaj: railway volume add --service $SERVICE --mount-path $REQUIRED_MOUNT" ;;
+    *) fail "Nie udało się zinterpretować statusu Railway." ;;
+  esac
 fi
-[ "$SERVICE_ID" = "$EXPECTED_SERVICE_ID" ] \
-  || fail "Podłączona usługa to NIE $SERVICE. Oczekiwane: $EXPECTED_SERVICE_ID, jest: $SERVICE_ID"
+ok "projekt zgodny"
+ok "środowisko: production"
 ok "usługa: $SERVICE"
-
-# ── 2. Trwały wolumen ────────────────────────────────────────────────────────
-# Stan kanału na dysku efemerycznym oznacza kursory od zera po KAŻDYM deployu,
-# czyli ponowny import całej skrzynki.
-
-VOLUMES="$(railway volume list --service "$SERVICE" 2>/dev/null || true)"
-printf '%s' "$VOLUMES" | grep -q "$REQUIRED_MOUNT" \
-  || fail "BRAK wolumenu pod $REQUIRED_MOUNT. Bez niego kursory startują od zera po każdym wdrożeniu.
-Dodaj: railway volume add --service $SERVICE --mount-path $REQUIRED_MOUNT"
 ok "wolumen trwały pod $REQUIRED_MOUNT"
 
 # ── 3. Zmienne ───────────────────────────────────────────────────────────────
+# `variable list --json` zwraca obiekt NAZWA→wartość; spłaszczamy do KV,
+# na którym działa reszta bramki. Wartości wieloliniowe nie występują
+# w tej konfiguracji (tokeny, hasła, adresy, listy po przecinku).
 
-VARS="$(railway variables --service "$SERVICE" --kv 2>/dev/null)" \
-  || fail "Nie udało się odczytać zmiennych usługi $SERVICE."
+VARS="$(railway variable list --project "$EXPECTED_PROJECT_ID" --environment "$EXPECTED_ENVIRONMENT_ID" --service "$EXPECTED_SERVICE_ID" --json 2>/dev/null | node -e '
+  let raw = "";
+  process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+    try {
+      const data = JSON.parse(raw);
+      process.stdout.write(Object.entries(data).map(([k, v]) => `${k}=${String(v ?? "")}`).join("\n"));
+    } catch {
+      process.exit(1);
+    }
+  });
+')" || fail "Nie udało się odczytać zmiennych usługi $SERVICE."
 
 has_var() { printf '%s' "$VARS" | grep -q "^$1="; }
 value_of() { printf '%s' "$VARS" | sed -n "s/^$1=//p" | head -1; }
@@ -362,16 +365,38 @@ HTTP jest dopuszczony wyłącznie na pętli zwrotnej i tylko poza MODE=live."
   require_distinct TEABREW_AI_OPERATOR_REPLY_TOKEN TEABREW_AI_OPERATOR_TOKEN
   ok "tokeny mostu, MCP i odczytu TeaBrew są rozdzielne"
 else
+  # Most odpowiedzi bywa już WŁĄCZONY z powodu wcześniejszego pilota Allegro
+  # (odpowiedzi idą przez TeaBrew i nie są częścią tego kanału). W trybach
+  # przychodzących pilnujemy tego, co naprawdę chroni klientów KANAŁU:
+  # generyczna wysyłka nie może mieć czym doręczać. Dostawców doręczeń jest
+  # dwóch: Resend (e-mail) i Graph API (Meta). Most + którykolwiek z nich
+  # w trybie przychodzącym to twarda odmowa; sam most bez dostawców zostaje
+  # jawnym ostrzeżeniem o pilocie Allegro.
+  MOST_OBECNY=0
   for bridge_var in CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN; do
-    has_value "$bridge_var" && fail "Tryb $MODE ma most odpowiedzi WYŁĄCZONY, a $bridge_var jest ustawione.
-Sama obecność tej zmiennej włącza pisanie do klientów — kod nie ma osobnego przełącznika.
-Usuń ją: railway variables --service $SERVICE --unset $bridge_var"
+    has_value "$bridge_var" && MOST_OBECNY=1
   done
-  ok "most odpowiedzi wyłączony"
+  if [ "$MOST_OBECNY" = "1" ]; then
+    has_value INBOX_RESEND_API_KEY && fail "Tryb $MODE: most odpowiedzi jest ustawiony RAZEM z INBOX_RESEND_API_KEY.
+To daje kanałowi generycznemu realną drogę wysyłki e-mail do klientów poza trybem outbound-live.
+Usuń klucz: railway variables --service $SERVICE --unset INBOX_RESEND_API_KEY"
+    META_Z_TOKENEM=""
+    for meta_alias in $(printf '%s' "$(value_of INBOX_META_ACCOUNTS)" | tr ',' ' '); do
+      alias_upper="$(printf '%s' "$meta_alias" | tr '[:lower:]' '[:upper:]' | tr -d ' ')"
+      [ -n "$alias_upper" ] && has_value "INBOX_META_${alias_upper}_TOKEN" && META_Z_TOKENEM="$meta_alias"
+    done
+    [ -n "$META_Z_TOKENEM" ] && fail "Tryb $MODE: most odpowiedzi jest ustawiony RAZEM z tokenem Graph API konta $META_Z_TOKENEM.
+To daje kanałowi generycznemu realną drogę wysyłki DM do klientów poza trybem outbound-live."
+    warn "most odpowiedzi jest WŁĄCZONY (pilot odpowiedzi Allegro przez TeaBrew) — kanał generyczny nie ma dostawców doręczeń, więc pisać nie może."
+  else
+    ok "most odpowiedzi wyłączony"
+  fi
 
-  has_value INBOX_RESEND_API_KEY \
-    && warn "INBOX_RESEND_API_KEY ustawione, ale tryb to $MODE — wysyłka pozostanie wyłączona po stronie kodu." \
-    || true
+  if [ "$MOST_OBECNY" = "0" ]; then
+    has_value INBOX_RESEND_API_KEY \
+      && warn "INBOX_RESEND_API_KEY ustawione, ale tryb to $MODE — wysyłka pozostanie wyłączona po stronie kodu." \
+      || true
+  fi
 fi
 
 # ── 7. Wynik ────────────────────────────────────────────────────────────────
