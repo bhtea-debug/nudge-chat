@@ -35,6 +35,9 @@ MOUNT="/data"
 SERVICE="bht-copilot"
 PRODUCTION_MODE="${BHT_COPILOT_PRODUCTION:-0}"
 CONFIGURE_REPLY_ONLY="${BHT_COPILOT_CONFIGURE_REPLY_ONLY:-0}"
+# Wyłącznik awaryjny mostu odpowiedzi: czyści OBA tokeny i restartuje BIEŻĄCE
+# wdrożenie. Nie buduje i nie wysyła żadnego kodu, nie czyta pliku sekretów.
+DISABLE_REPLY_ONLY="${BHT_COPILOT_DISABLE_REPLY_ONLY:-0}"
 EXPECTED_PROJECT_ID="bd311917-f3d7-419f-aeba-79bf5b4dafe4"
 EXPECTED_ENVIRONMENT_ID="e8e60c09-4de2-4fb3-a11d-6e9048371e54"
 EXPECTED_SERVICE_ID="c4a9c0ad-7c0e-4494-a16e-321e0e382b6c"
@@ -43,6 +46,14 @@ PRODUCTION_TARGET_ARGS=(--project "$EXPECTED_PROJECT_ID" --environment "$EXPECTE
 
 if [ "$CONFIGURE_REPLY_ONLY" = "1" ] && [ "$PRODUCTION_MODE" != "1" ]; then
   printf 'Tryb BHT_COPILOT_CONFIGURE_REPLY_ONLY wymaga BHT_COPILOT_PRODUCTION=1.\n' >&2
+  exit 1
+fi
+if [ "$DISABLE_REPLY_ONLY" = "1" ] && [ "$PRODUCTION_MODE" != "1" ]; then
+  printf 'Tryb BHT_COPILOT_DISABLE_REPLY_ONLY wymaga BHT_COPILOT_PRODUCTION=1.\n' >&2
+  exit 1
+fi
+if [ "$DISABLE_REPLY_ONLY" = "1" ] && [ "$CONFIGURE_REPLY_ONLY" = "1" ]; then
+  printf 'Tryby CONFIGURE_REPLY_ONLY i DISABLE_REPLY_ONLY wykluczaja sie.\n' >&2
   exit 1
 fi
 
@@ -140,27 +151,40 @@ else
 fi
 ok "railway: $($RAILWAY --version 2>/dev/null | tail -1 || echo '?')"
 
-if [ -n "${BHT_COPILOT_ENV_FILE:-}" ] && [[ "$ENV_FILE" != /* ]]; then
-  stop "BHT_COPILOT_ENV_FILE musi być ścieżką bezwzględną."
+if [ "$DISABLE_REPLY_ONLY" = "1" ]; then
+  # Wyłącznik nie czyta ŻADNYCH sekretów, więc nie wymaga pliku .env: w chwili
+  # incydentu plik może nie istnieć na tej maszynie i nie moze to blokowac
+  # odciecia wysylki.
+  ok "tryb awaryjny: plik sekretów nie jest potrzebny i nie jest czytany"
+else
+  if [ -n "${BHT_COPILOT_ENV_FILE:-}" ] && [[ "$ENV_FILE" != /* ]]; then
+    stop "BHT_COPILOT_ENV_FILE musi być ścieżką bezwzględną."
+  fi
+  [ -L "$ENV_FILE" ] && stop "Plik $ENV_FILE nie może być dowiązaniem symbolicznym."
+  [ -f "$ENV_FILE" ] || stop "Nie ma pliku $ENV_FILE. Bez niego nie wiem, jak łączyć się z pocztą i TeaBrew."
+  ENV_MODE="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo '?')"
+  [ "$ENV_MODE" = "600" ] || stop "Plik $ENV_FILE musi mieć prawa 600; wykryto $ENV_MODE."
+  ENV_UID="$(stat -f '%u' "$ENV_FILE" 2>/dev/null || stat -c '%u' "$ENV_FILE" 2>/dev/null || echo '?')"
+  [ "$ENV_UID" = "$(id -u)" ] || stop "Plik $ENV_FILE musi należeć do bieżącego użytkownika."
+  ok "$ENV_FILE"
 fi
-[ -L "$ENV_FILE" ] && stop "Plik $ENV_FILE nie może być dowiązaniem symbolicznym."
-[ -f "$ENV_FILE" ] || stop "Nie ma pliku $ENV_FILE. Bez niego nie wiem, jak łączyć się z pocztą i TeaBrew."
-ENV_MODE="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo '?')"
-[ "$ENV_MODE" = "600" ] || stop "Plik $ENV_FILE musi mieć prawa 600; wykryto $ENV_MODE."
-ENV_UID="$(stat -f '%u' "$ENV_FILE" 2>/dev/null || stat -c '%u' "$ENV_FILE" 2>/dev/null || echo '?')"
-[ "$ENV_UID" = "$(id -u)" ] || stop "Plik $ENV_FILE musi należeć do bieżącego użytkownika."
-ok "$ENV_FILE"
 
 # Na produkcji odmawiamy przy najmniejszej niejednoznaczności repo/celu.
 if [ "$PRODUCTION_MODE" = "1" ]; then
-  git rev-parse --git-dir >/dev/null 2>&1 || stop "Tryb produkcyjny wymaga repozytorium git."
-  git fetch --quiet origin main || stop "Nie udało się pobrać aktualnego origin/main; produkcyjny deploy jest zablokowany."
-  REMOTE="$(git remote get-url origin 2>/dev/null | sed -E 's#^git@github.com:#https://github.com/#; s#\.git$##; s#/$##')"
-  [ "$REMOTE" = "$EXPECTED_REMOTE" ] || stop "origin to $REMOTE, oczekiwano $EXPECTED_REMOTE."
-  [ -z "$(git status --porcelain)" ] || stop "Worktree produkcyjny musi być całkowicie czysty."
-  HEAD_COMMIT="$(git rev-parse HEAD)"
-  MAIN_COMMIT="$(git rev-parse origin/main)"
-  [ "$HEAD_COMMIT" = "$MAIN_COMMIT" ] || stop "HEAD nie jest dokładnym aktualnym origin/main."
+  # Wyłącznik awaryjny nie wdraża kodu, więc nie przechodzi kontroli gita
+  # (czystość, HEAD==origin/main, fetch z sieci): w chwili incydentu drzewo
+  # może być w dowolnym stanie, a brak sieci do GitHuba nie może blokować
+  # odcięcia wysyłki. Kontrola CELU Railway niżej pozostaje w mocy.
+  if [ "$DISABLE_REPLY_ONLY" != "1" ]; then
+    git rev-parse --git-dir >/dev/null 2>&1 || stop "Tryb produkcyjny wymaga repozytorium git."
+    git fetch --quiet origin main || stop "Nie udało się pobrać aktualnego origin/main; produkcyjny deploy jest zablokowany."
+    REMOTE="$(git remote get-url origin 2>/dev/null | sed -E 's#^git@github.com:#https://github.com/#; s#\.git$##; s#/$##')"
+    [ "$REMOTE" = "$EXPECTED_REMOTE" ] || stop "origin to $REMOTE, oczekiwano $EXPECTED_REMOTE."
+    [ -z "$(git status --porcelain)" ] || stop "Worktree produkcyjny musi być całkowicie czysty."
+    HEAD_COMMIT="$(git rev-parse HEAD)"
+    MAIN_COMMIT="$(git rev-parse origin/main)"
+    [ "$HEAD_COMMIT" = "$MAIN_COMMIT" ] || stop "HEAD nie jest dokładnym aktualnym origin/main."
+  fi
 
   STATUS_JSON="$($RAILWAY status "${PRODUCTION_TARGET_ARGS[@]}" --json 2>/dev/null)" || stop "Nie można odczytać dokładnego projektu Railway production."
   if ! printf '%s' "$STATUS_JSON" | EXPECTED_PROJECT_ID="$EXPECTED_PROJECT_ID" EXPECTED_ENVIRONMENT_ID="$EXPECTED_ENVIRONMENT_ID" EXPECTED_SERVICE_ID="$EXPECTED_SERVICE_ID" node -e '
@@ -187,7 +211,9 @@ if [ "$PRODUCTION_MODE" = "1" ]; then
   fi
   unset STATUS_JSON
   ok "produkcyjny target jednoznaczny: heartfelt-spontaneity / production / bht-copilot"
-  ok "wdrażam $(git rev-parse --short HEAD): $(git log -1 --format=%s 2>/dev/null | cut -c1-58)"
+  if [ "$DISABLE_REPLY_ONLY" != "1" ]; then
+    ok "wdrażam $(git rev-parse --short HEAD): $(git log -1 --format=%s 2>/dev/null | cut -c1-58)"
+  fi
 elif git rev-parse --git-dir >/dev/null 2>&1; then
   # Zachowujemy historyczny tryb pomocniczy poza produkcją.
   GALAZ="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
@@ -214,6 +240,100 @@ else
   printf '  Otworzę przeglądarkę — zatwierdź logowanie i wróć tutaj.\n'
   $RAILWAY login || stop "Logowanie nie przeszło." $RAILWAY login
   ok "zalogowany"
+fi
+
+# ── tryb awaryjny: wyłączenie mostu odpowiedzi ────────────────────────────────
+#
+# Czyści OBA tokeny mostu (połowiczna konfiguracja to odmowa startu procesu,
+# więc czyszczenie jednego byłoby gorsze niż żadnego), weryfikuje wyczyszczenie
+# odczytem stanu Railway, restartuje BIEŻĄCE wdrożenie bez budowania kodu
+# i potwierdza wynik w /health. Idempotentny: puste tokeny to sukces.
+if [ "$DISABLE_REPLY_ONLY" = "1" ]; then
+  kropka "Wyłączenie mostu odpowiedzi (tryb awaryjny)"
+
+  REMOTE_JSON="$(railway_variable_list_json 2>/dev/null)" || stop "Nie można odczytać stanu zmiennych Railway."
+  STAN="$(printf '%s' "$REMOTE_JSON" | node -e '
+    let raw = "";
+    process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+      try {
+        const remote = JSON.parse(raw);
+        const names = ["CUSTOMER_CASE_REPLY_BRIDGE_TOKEN", "TEABREW_AI_OPERATOR_REPLY_TOKEN"];
+        const values = names.map((name) => String(remote[name] ?? "").trim());
+        process.stdout.write(values.every((value) => value === "") ? "puste" : "obecne");
+      } catch {
+        process.exit(1);
+      }
+    });
+  ' 2>/dev/null)" || { unset REMOTE_JSON; stop "Nie można zinterpretować stanu zmiennych Railway."; }
+  unset REMOTE_JSON
+
+  if [ "$STAN" = "obecne" ]; then
+    for KLUCZ in CUSTOMER_CASE_REPLY_BRIDGE_TOKEN TEABREW_AI_OPERATOR_REPLY_TOKEN; do
+      if ! printf '' | railway_variable_set_stdin "$KLUCZ" >/tmp/bht-out 2>&1; then
+        zle "KRYTYCZNE: nie udało się wyczyścić $KLUCZ — most może pozostać AKTYWNY."
+        printf '\n  Co powiedziało CLI:\n\n'
+        sed 's/^/    /' /tmp/bht-out
+        exit 1
+      fi
+    done
+    # Wyłącznik bez dowodu nie jest wyłącznikiem: czytamy stan ponownie.
+    VERIFY_JSON="$(railway_variable_list_json 2>/dev/null)" || stop "Nie można potwierdzić wyczyszczenia tokenów."
+    if ! printf '%s' "$VERIFY_JSON" | node -e '
+      let raw = "";
+      process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+        try {
+          const remote = JSON.parse(raw);
+          const names = ["CUSTOMER_CASE_REPLY_BRIDGE_TOKEN", "TEABREW_AI_OPERATOR_REPLY_TOKEN"];
+          if (!names.every((name) => String(remote[name] ?? "").trim() === "")) process.exit(1);
+        } catch {
+          process.exit(1);
+        }
+      });
+    ' 2>/dev/null; then
+      unset VERIFY_JSON
+      zle "KRYTYCZNE: tokeny mostu nadal obecne po czyszczeniu; wysyłka pozostaje AKTYWNA."
+      exit 1
+    fi
+    unset VERIFY_JSON
+    ok "oba tokeny mostu wyczyszczone i potwierdzone odczytem stanu"
+  else
+    ok "oba tokeny mostu już są puste (idempotentnie: nic do czyszczenia)"
+  fi
+
+  # Restart BIEŻĄCEGO wdrożenia. Celowo NIE `railway up`: up budowałby i wysyłał
+  # kod z lokalnego HEAD, a wyłącznik ma zdjąć tokeny z tego, co JUŻ działa.
+  if ! zservice redeploy --yes; then
+    zle "Tokeny wyczyszczone, ale restart usługi się nie powiódł."
+    zle "Most pozostaje AKTYWNY do restartu — zrestartuj usługę w panelu Railway."
+    printf '\n  Co powiedziało CLI:\n\n'
+    sed 's/^/    /' /tmp/bht-out
+    printf '\n  Pomoc komendy:\n\n'
+    $RAILWAY redeploy --help 2>&1 | sed 's/^/    /'
+    exit 1
+  fi
+  ok "restart bieżącego wdrożenia zlecony (bez budowania nowego obrazu)"
+
+  zservice domain >/dev/null 2>&1 || true
+  ADRES="$(grep -oE '[a-z0-9.-]+\.up\.railway\.app' /tmp/bht-out 2>/dev/null | head -1 || true)"
+  if [ -z "$ADRES" ]; then
+    zle "Nie udało się ustalić adresu /health — potwierdź RĘCZNIE, że customerCaseReplyBridge=false."
+    exit 1
+  fi
+  PROBY="${BHT_COPILOT_HEALTH_PROBY:-24}"
+  N=0
+  while [ "$N" -lt "$PROBY" ]; do
+    N=$((N + 1))
+    if curl -fsS --max-time 8 "https://$ADRES/health" 2>/dev/null | grep -q '"customerCaseReplyBridge":false'; then
+      ok "/health potwierdza: customerCaseReplyBridge=false"
+      printf '\n  Most odpowiedzi jest WYŁĄCZONY.\n'
+      exit 0
+    fi
+    # Przerwa wylacznie MIEDZY probami; po ostatniej nie ma na co czekac.
+    if [ "$N" -lt "$PROBY" ]; then sleep 5; fi
+  done
+  zle "/health po restarcie nadal NIE melduje customerCaseReplyBridge=false."
+  zle "Most może pozostawać AKTYWNY — sprawdź usługę w panelu Railway."
+  exit 1
 fi
 
 # ── 2. token dla Claude ───────────────────────────────────────────────────────
