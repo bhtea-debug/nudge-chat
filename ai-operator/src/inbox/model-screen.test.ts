@@ -215,10 +215,9 @@ describe("sito modelowe", () => {
     expect(store.getCase("przypadek_reprojekcja")!.requiresResponse).toBe(false);
   });
 
-  it("nie dotyka spraw, które reguły już rozstrzygnęły, ani spraw do przeglądu", async () => {
+  it("nie dotyka spraw rozstrzygniętych przez reguły ani spoza e-maila", async () => {
     const { store, dir } = freshStore();
     seedCase(store, "juz_odlozona", { requiresResponse: false, classificationReason: "bulk_or_marketing" });
-    seedCase(store, "do_przegladu", { needsReview: true, classificationReason: "needs_review" });
     seedCase(store, "nie_email", { provider: "instagram" });
     const { model, calls } = modelStub(NIE_KLIENT);
 
@@ -226,8 +225,36 @@ describe("sito modelowe", () => {
 
     expect(calls).toHaveLength(0);
     expect(report.candidates).toBe(0);
-    expect(store.getCase("do_przegladu")!.needsReview).toBe(true);
     expect(store.getCase("nie_email")!.requiresResponse).toBe(true);
+  });
+
+  it("sprawy do przeglądu SĄ kandydatami: model je czyta i rozstrzyga", async () => {
+    const { store, dir } = freshStore();
+    seedCase(store, "przeglad_1", { needsReview: true, classificationReason: "needs_review" });
+    seedCase(store, "przeglad_2", { needsReview: true, classificationReason: "needs_review" });
+    const { model, calls } = modelStub(NIE_KLIENT);
+
+    const raport = await screenCases({ store, model, stateDir: dir, maxPerTick: 10, now: Date.now() });
+
+    expect(raport.candidates).toBe(2);
+    expect(calls).toHaveLength(2);
+    expect(store.getCase("przeglad_1")!.requiresResponse).toBe(false);
+    expect(store.getCase("przeglad_2")!.requiresResponse).toBe(false);
+    // Odłożone, ale NIE usunięte.
+    expect(store.listCases()).toHaveLength(2);
+  });
+
+  it("werdykt klient dla sprawy do przeglądu zdejmuje znacznik przeglądu", async () => {
+    const { store, dir } = freshStore();
+    seedCase(store, "przeglad_potwierdzony", { needsReview: true, classificationReason: "needs_review" });
+    const { model } = modelStub(KLIENT);
+
+    await screenCases({ store, model, stateDir: dir, maxPerTick: 10, now: Date.now() });
+
+    const po = store.getCase("przeglad_potwierdzony")!;
+    expect(po.requiresResponse).toBe(true);
+    expect(po.needsReview).toBe(false);
+    expect(po.classificationReason).toBe("customer_message");
   });
 
   it("treść wiadomości trafia do modelu przycięta, z nadawcą i tematem", async () => {

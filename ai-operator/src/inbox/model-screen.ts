@@ -95,13 +95,25 @@ function zapiszWerdykty(stateDir: string, verdicts: Map<string, Verdict>): void 
   renameSync(tmp, path);
 }
 
+/**
+ * Powody fail-open: wszystkie kubełki, w których reguły PRZYZNAJĄ, że nie
+ * wiedzą. Model jest właśnie od nich — pierwsza wersja sita pomijała
+ * `needs_review` i w kolejce zostało 47 spraw, które reguły same oznaczyły
+ * jako niejednoznaczne.
+ */
+const POWODY_FAIL_OPEN = new Set([
+  "customer_message",
+  "needs_review",
+  "low_confidence_fail_open",
+  "classifier_error_fail_open",
+]);
+
 /** Sprawa, której reguły nie rozstrzygnęły i która wisi w kolejce. */
 function kandydat(record: StoredCase): boolean {
   return (
     record.provider === "email" &&
     record.requiresResponse === true &&
-    record.classificationReason === "customer_message" &&
-    record.needsReview === false
+    POWODY_FAIL_OPEN.has(record.classificationReason)
   );
 }
 
@@ -236,6 +248,15 @@ export async function screenCases(options: {
     if (wynik.verdict === "nie_klient") {
       odlozSprawe(store, record);
       report.filtered += 1;
+    } else if (record.needsReview || record.classificationReason !== "customer_message") {
+      // Model potwierdził klienta: sprawa zostaje w kolejce jako zwyczajna
+      // wiadomość klienta, bez znacznika „do przeglądu" — znacznik mówił
+      // „nikt tego nie ocenił", a właśnie ktoś ocenił.
+      store.upsertCase({
+        ...record,
+        classificationReason: "customer_message",
+        needsReview: false,
+      });
     }
   }
 
