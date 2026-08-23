@@ -254,7 +254,15 @@ export function handleInboxRead(request: ReadRequest): HttpResult {
       if (!caseId) return failure(400, "missing_id");
       if (mode === "none") return failure(400, "content_mode_required");
       if (!runtime.store.getCase(caseId)) return failure(404, "case_not_found");
-      return envelope(queryMessages(runtime.store, caseId, mode), now);
+      return envelope(
+        queryMessages(
+          runtime.store,
+          caseId,
+          mode,
+          new Map(runtime.config.email.map((entry) => [entry.accountKey, entry.address])),
+        ),
+        now,
+      );
     }
 
     default:

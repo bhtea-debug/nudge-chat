@@ -594,11 +594,31 @@ export interface MessageDto {
   readonly attachments: Array<{ id: string; fileName: string | null; mimeType: string | null }>;
 }
 
+/**
+ * Wątek jako JEDEN spójny snapshot.
+ *
+ * Wiadomości, marker ostatniej wiadomości klienta i odbiorca odpowiedzi
+ * pochodzą z jednego odczytu magazynu i wyjeżdżają w jednej odpowiedzi.
+ * Wcześniej marker i odbiorca szły z ODRĘBNEGO wpisu listy, o innej świeżości:
+ * lista i workflow potrafiły mieć już nowy marker, a panel wątku pokazywał
+ * starszą historię. Operator zatwierdzał wtedy odpowiedź nie widząc
+ * najnowszego pytania, a bramka markera przepuszczała wysyłkę, bo marker był
+ * poprawny — tylko rozmowa na ekranie nie.
+ */
 export function queryMessages(
   store: InboxStore,
   caseId: string,
   mode: Exclude<ContentMode, "none">,
-): { readonly caseId: string; readonly messages: MessageDto[]; readonly attachmentsExcluded: true } {
+  mailboxes?: ReadonlyMap<string, string>,
+): {
+  readonly caseId: string;
+  readonly messages: MessageDto[];
+  readonly attachmentsExcluded: true;
+  readonly lastIncomingMessageId: string | null;
+  readonly replyTo: string | null;
+  readonly replyFrom: string | null;
+  readonly snapshotAt: number;
+} {
   const messages = store.messagesForCase(caseId).map((message): MessageDto => ({
     externalMessageId: message.externalMessageId,
     direction: message.direction,
@@ -614,5 +634,16 @@ export function queryMessages(
       mimeType: attachment.mimeType,
     })),
   }));
-  return { caseId, messages, attachmentsExcluded: true };
+  const record = store.getCase(caseId);
+  const recipient = record ? resolveRecipient(store, record) : null;
+  return {
+    caseId,
+    messages,
+    attachmentsExcluded: true,
+    lastIncomingMessageId: record?.lastIncomingMessageId ?? null,
+    replyTo: recipient?.ok ? recipient.recipient : null,
+    // Konto nadawcze pochodzi z konfiguracji adaptera, tak samo jak na liscie.
+    replyFrom: record ? mailboxes?.get(record.accountKey) ?? null : null,
+    snapshotAt: Date.now(),
+  };
 }
