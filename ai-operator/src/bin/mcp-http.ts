@@ -1414,7 +1414,8 @@ function startInboxScheduler(): void {
         process.stdout.write(
           `[inbox] sito modelu: kandydatów ${report.screen.candidates}, ocenionych ${report.screen.screened}, ` +
             `odłożonych ${report.screen.filtered}, błędów ${report.screen.errors}` +
-            `${report.screen.skippedBudget > 0 ? `, poza budżetem ${report.screen.skippedBudget}` : ""}\n`,
+            `${report.screen.skippedBudget > 0 ? `, poza budżetem ${report.screen.skippedBudget}` : ""}` +
+            `${report.screen.lastError ? ` | ostatni błąd: ${report.screen.lastError}` : ""}\n`,
         );
       }
     },

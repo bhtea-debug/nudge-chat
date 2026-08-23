@@ -46,6 +46,8 @@ export interface ScreenReport {
   filtered: number;
   errors: number;
   skippedBudget: number;
+  /** Komunikat OSTATNIEGO błędu modelu — bez niego licznik był niediagnozowalny. */
+  lastError: string | null;
 }
 
 const PLIK_WERDYKTOW = "model-werdykty.json";
@@ -165,6 +167,7 @@ export async function screenCases(options: {
     filtered: 0,
     errors: 0,
     skippedBudget: 0,
+    lastError: null,
   };
   const verdicts = wczytajWerdykty(stateDir);
   let budget = Math.max(0, options.maxPerTick);
@@ -208,8 +211,9 @@ export async function screenCases(options: {
         system: SYSTEM_PROMPT,
         prompt: prompt(record, store.messagesForCase(record.caseId)),
       });
-    } catch {
+    } catch (error) {
       report.errors += 1;
+      report.lastError = (error instanceof Error ? error.message : String(error)).slice(0, 200);
       continue;
     }
 
@@ -217,6 +221,7 @@ export async function screenCases(options: {
     if (!wynik) {
       // Nieparsowalna odpowiedź to awaria oceny, nie decyzja.
       report.errors += 1;
+      report.lastError = "nieparsowalna odpowiedź modelu";
       continue;
     }
 
