@@ -331,6 +331,7 @@ describe("kadencja uzgodnien Meta w petli ticku", () => {
       backfillDays: 30,
       tickFirstDelayMs: 100,
       tickIntervalMs: 5 * 60_000,
+    modelScreenMaxPerTick: 0,
       backfillMode: "import",
       companyDomains: ["brownhouseandtea.pl"],
     };

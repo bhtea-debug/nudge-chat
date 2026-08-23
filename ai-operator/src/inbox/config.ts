@@ -72,6 +72,8 @@ export interface InboxConfig {
    */
   readonly tickFirstDelayMs: number;
   readonly tickIntervalMs: number;
+  /** Budżet sita modelowego na jeden tick (model-screen.ts); 0 wyłącza sito. */
+  readonly modelScreenMaxPerTick: number;
   /**
    * Pierwszy import jest OSOBNĄ, jawną decyzją.
    *
@@ -164,6 +166,7 @@ export function loadInboxConfig(): InboxConfig {
   const tickFirstDelay = Number(value("INBOX_TICK_FIRST_DELAY_MS") ?? "25000");
   const tickInterval = Number(value("INBOX_TICK_INTERVAL_MS") ?? "300000");
   const backfillMode = value("INBOX_BACKFILL_MODE") === "import" ? "import" : "preview";
+  const modelScreenMax = Number(value("INBOX_MODEL_SCREEN_MAX_PER_TICK") ?? "25");
   const extraDomains = (value("INBOX_COMPANY_DOMAINS") ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase().replace(/^@/, ""))
@@ -185,6 +188,9 @@ export function loadInboxConfig(): InboxConfig {
       metaVerifyToken: value("INBOX_META_VERIFY_TOKEN"),
     },
     backfillDays: Number.isFinite(backfillDays) && backfillDays > 0 ? Math.floor(backfillDays) : 30,
+    // Budzet sita modelowego na jeden tick; 0 wylacza sito.
+    modelScreenMaxPerTick:
+      Number.isFinite(modelScreenMax) && modelScreenMax >= 0 ? Math.floor(modelScreenMax) : 25,
     // Dolne ograniczenia są celowe: tick co sekundę zajechałby serwer poczty,
     // a zerowe opóźnienie startu blokowałoby health tuż po deployu.
     tickFirstDelayMs:

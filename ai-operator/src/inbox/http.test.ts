@@ -49,6 +49,7 @@ function config(overrides: Partial<InboxConfig> = {}): InboxConfig {
     backfillDays: 30,
     tickFirstDelayMs: 100,
     tickIntervalMs: 1_000,
+    modelScreenMaxPerTick: 0,
     backfillMode: "preview",
     companyDomains: ["brownhouseandtea.pl"],
     ...overrides,

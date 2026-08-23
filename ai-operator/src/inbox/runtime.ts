@@ -10,6 +10,9 @@ import {
 } from "./providers/email/sync.js";
 import { InboxStore } from "./store.js";
 import { WebhookDedup } from "./outbound/webhooks.js";
+import { screenCases, type ScreenModel, type ScreenReport } from "./model-screen.js";
+import { ModelLayer } from "../model/roles.js";
+import { loadConfig as loadAppConfig } from "../config.js";
 import { fetchConversations, GraphError } from "./providers/meta/graph.js";
 import { ingestMetaEvents } from "./providers/meta/ingest.js";
 
@@ -69,6 +72,8 @@ export interface TickReport {
   readonly email: EmailSyncResult[];
   readonly meta: MetaTickResult[];
   readonly failures: Array<{ readonly source: string; readonly kind: FailureKind; readonly message: string }>;
+  /** Wynik sita modelowego; null, gdy sito nie działało (brak klucza/budżet 0). */
+  readonly screen?: ScreenReport | null;
   readonly reconcile: boolean;
 }
 
@@ -86,7 +91,12 @@ export function inboxRuntime(): InboxRuntime | null {
     return null;
   }
   if (!config.enabled) return null;
-  runtime = createRuntime(config);
+  /*
+   * Fabryka modelu dla sita: budowana leniwie w ticku. Brak ANTHROPIC_API_KEY
+   * rzuca dopiero przy pierwszym uzyciu i wylacza SITO (z jedna linia w logu),
+   * nie kanal.
+   */
+  runtime = createRuntime(config, undefined, undefined, () => new ModelLayer(loadAppConfig()));
   return runtime;
 }
 
@@ -101,6 +111,12 @@ export function createRuntime(
   config: InboxConfig,
   store?: InboxStore,
   readerFactory?: (source: InboxEmailSource) => ImapReader,
+  /**
+   * Fabryka modelu dla sita drugiego stopnia. Fabryka, nie instancja: budowa
+   * ModelLayer bez ANTHROPIC_API_KEY rzuca, a brak klucza ma wyłączać sito,
+   * nie kanał. Wołana przy każdym ticku, wynik trzymany po pierwszym sukcesie.
+   */
+  modelFactory?: () => ScreenModel,
 ): InboxRuntime {
   /*
    * Runtime jest WYZNACZONYM pisarzem: to jego tick kompaktuje dziennik.
@@ -111,6 +127,8 @@ export function createRuntime(
   const state = store ?? new InboxStore({ dir: config.stateDir, allowCompaction: true });
   const readers = new Map<string, ImapReader>();
   let ticks = 0;
+  let screenModel: ScreenModel | null = null;
+  let screenDisabledLogged = false;
   /**
    * Jak świeże musi być udane uzgodnienie Meta, żeby wolno je było pominąć.
    *
@@ -388,7 +406,37 @@ export function createRuntime(
       }
     }
 
-    return { at: now, email, meta, failures, reconcile };
+    /*
+     * Sito modelowe biegnie PO źródłach: reguły zawężają, model wybiera.
+     * Obejmuje też sprawy zaimportowane wcześniej (przechodzi po całym
+     * magazynie, nie po świeżej partii), więc jednorazowy zalew z backfillu
+     * czyści się kolejnymi tickami w ramach budżetu.
+     */
+    let screen: ScreenReport | null = null;
+    if (modelFactory && config.modelScreenMaxPerTick > 0 && !signal?.aborted) {
+      try {
+        screenModel ??= modelFactory();
+        screen = await screenCases({
+          store: state,
+          model: screenModel,
+          stateDir: config.stateDir,
+          maxPerTick: config.modelScreenMaxPerTick,
+          now,
+        });
+      } catch (error) {
+        // Najpewniej brak ANTHROPIC_API_KEY: sito stoi, kanał działa dalej.
+        if (!screenDisabledLogged) {
+          screenDisabledLogged = true;
+          process.stdout.write(
+            `[inbox] sito modelowe wyłączone: ${sanitizeMessage(
+              error instanceof Error ? error.message : String(error),
+            ).slice(0, 160)}\n`,
+          );
+        }
+      }
+    }
+
+    return { at: now, email, meta, failures, reconcile, screen };
   }
 
   return { config, store: state, webhookDedup: new WebhookDedup(), tick };

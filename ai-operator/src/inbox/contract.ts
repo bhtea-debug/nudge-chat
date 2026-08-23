@@ -129,6 +129,9 @@ export const ClassificationReason = z.enum([
   "bounce",
   "auto_reply",
   "needs_review",
+  // Nadawany przez sito modelowe (model-screen.ts), nie przez reguly:
+  // wiadomosc od firmy/automatu, ktorej reguly nie umialy rozstrzygnac.
+  "model_screen_not_customer",
 ]);
 export type ClassificationReason = z.infer<typeof ClassificationReason>;
 

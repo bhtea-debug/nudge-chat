@@ -1410,6 +1410,13 @@ function startInboxScheduler(): void {
           `[inbox] awaria ${failure.source} (${failure.kind}): ${failure.message.slice(0, 200)}\n`,
         );
       }
+      if (report.screen) {
+        process.stdout.write(
+          `[inbox] sito modelu: kandydatów ${report.screen.candidates}, ocenionych ${report.screen.screened}, ` +
+            `odłożonych ${report.screen.filtered}, błędów ${report.screen.errors}` +
+            `${report.screen.skippedBudget > 0 ? `, poza budżetem ${report.screen.skippedBudget}` : ""}\n`,
+        );
+      }
     },
   });
   inboxScheduler.start();
