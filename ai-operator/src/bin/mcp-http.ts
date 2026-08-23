@@ -1402,6 +1402,14 @@ function startInboxScheduler(): void {
         `[inbox] przebieg zakończony: źródeł ${report.email.length}, nowych ${stored}, ` +
           `awarii ${report.failures.length}${report.reconcile ? ", uzgodnienie" : ""}\n`,
       );
+      // Powod KAZDEJ awarii do logu: bez tego jedyna diagnoza siedziala
+      // w pamieci procesu i operator widzial tylko licznik. Komunikat bledu
+      // zrodla nie zawiera tresci klientow — to wyjatki IMAP/HTTP.
+      for (const failure of report.failures) {
+        process.stdout.write(
+          `[inbox] awaria ${failure.source} (${failure.kind}): ${failure.message.slice(0, 200)}\n`,
+        );
+      }
     },
   });
   inboxScheduler.start();
