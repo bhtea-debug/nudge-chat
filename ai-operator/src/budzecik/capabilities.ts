@@ -1,7 +1,13 @@
 import { z } from "zod";
 import type { AnyCapability, Capability } from "../capability/types.js";
 import type { BudzecikReader } from "./client.js";
-import { BudzecikData, BudzecikRecordResource, IsoDay, IsoMonth } from "./contract.js";
+import {
+  BudzecikData,
+  BudzecikRecordResource,
+  BudzecikSalesProgress,
+  IsoDay,
+  IsoMonth,
+} from "./contract.js";
 
 const OverviewInput = z.object({
   from: IsoDay.optional().describe("Opcjonalny początek okresu YYYY-MM-DD"),
@@ -12,6 +18,10 @@ const BudgetsInput = z.object({
   month: IsoMonth.optional().describe("Miesiąc YYYY-MM; domyślnie bieżący"),
   budgetId: z.string().max(80).optional().describe("Opcjonalny identyfikator budżetu"),
   limit: z.number().int().min(1).max(50).default(30),
+});
+
+const SalesProgressInput = z.object({
+  month: IsoMonth.optional().describe("Miesiąc YYYY-MM; domyślnie bieżący"),
 });
 
 const RecordsInput = z.object({
@@ -77,6 +87,31 @@ export function createBudzecikCapabilities(getReader: () => Promise<BudzecikRead
     }),
   };
 
+  const salesProgress: Capability<
+    z.infer<typeof SalesProgressInput>,
+    z.infer<typeof BudzecikSalesProgress>
+  > = {
+    name: "budzecik_get_sales_progress",
+    version: "1.0.0",
+    description:
+      "Czyta wyłącznie procent realizacji łącznego miesięcznego planu sprzedaży firmy ze wszystkich pięciu kanałów. " +
+      "Nie zwraca żadnych kwot, zamówień, klientów ani udziałów poszczególnych kanałów. Narzędzie jest read-only.",
+    scope: "budget:read",
+    effectClass: "read",
+    input: SalesProgressInput,
+    output: BudzecikSalesProgress,
+    auditRefs: (input, output) => ({
+      month: input.month ?? "current",
+      found: output?.found ?? false,
+      completePlan: output?.completePlan ?? false,
+    }),
+    handler: async (input, ctx) => (await getReader()).read({
+      resource: "sales_progress",
+      month: input.month,
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+    }) as Promise<z.infer<typeof BudzecikSalesProgress>>,
+  };
+
   const records: Capability<z.infer<typeof RecordsInput>, z.infer<typeof BudzecikData>> = {
     name: "budzecik_search_records",
     version: "1.0.0",
@@ -99,5 +134,5 @@ export function createBudzecikCapabilities(getReader: () => Promise<BudzecikRead
     }),
   };
 
-  return [overview, budgets, records];
+  return [overview, salesProgress, budgets, records];
 }

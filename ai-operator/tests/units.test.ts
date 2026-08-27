@@ -245,6 +245,7 @@ describe("projekcje — jedna definicja, wiele klientów", () => {
     expect(caps.map((c) => c.name)).toEqual([
       "budzecik_get_budgets",
       "budzecik_get_overview",
+      "budzecik_get_sales_progress",
       "budzecik_search_records",
       // Pamięć Copilota — sprawy. Zakres issues:read, wyłącznie odczyt.
       "copilot_get_changes_since",

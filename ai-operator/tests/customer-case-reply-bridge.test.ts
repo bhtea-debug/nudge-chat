@@ -359,7 +359,7 @@ async function postBridge(body: unknown, token: string | null = BRIDGE_TOKEN) {
 describe("dedykowany endpoint HTTP odpowiedzi Allegro", () => {
   it("health pokazuje bridge, a MCP nadal publikuje tylko 4 odczyty Allegro", async () => {
     const health = await (await fetch(`${BASE}/health`)).json();
-    expect(health).toMatchObject({ customerCaseReplyBridge: true, tools: 22 });
+    expect(health).toMatchObject({ customerCaseReplyBridge: true, tools: 23 });
 
     const response = await fetch(`${BASE}/mcp`, {
       method: "POST",

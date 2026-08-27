@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpBudzecikReader } from "../src/budzecik/client.js";
+import { createBudzecikCapabilities } from "../src/budzecik/capabilities.js";
+import { CapabilityRegistry } from "../src/capability/registry.js";
 
 const TOKEN = "b".repeat(48);
 
@@ -30,6 +32,36 @@ describe("Budżecik — klient tylko do odczytu", () => {
     const result = await reader.read({ resource: "entries", query: "Meta", limit: 20 });
     expect(result).toMatchObject({ found: true, resource: "entries", totalMatched: 1 });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("wystawia firmowemu czatowi tylko procent i odrzuca każdą kwotę", async () => {
+    const safeProgress = {
+      found: true,
+      resource: "sales_progress" as const,
+      month: "2026-08",
+      progressPercent: 62,
+      completePlan: true,
+      plannedChannels: 5,
+      totalChannels: 5 as const,
+      definition: "Potwierdzona sprzedaż względem planu",
+    };
+    const reader = { read: vi.fn(async () => safeProgress) };
+    const registry = new CapabilityRegistry().registerAll(
+      createBudzecikCapabilities(async () => reader),
+    );
+    const context = {
+      agent: "test",
+      correlationId: "sales-progress-test",
+      scopes: ["budget:read"] as const,
+      audit: { write: vi.fn(), records: () => [] },
+    };
+
+    await expect(registry.invoke("budzecik_get_sales_progress", {}, context))
+      .resolves.toEqual(safeProgress);
+
+    reader.read.mockResolvedValueOnce({ ...safeProgress, planNetCents: 1_000_000 } as never);
+    await expect(registry.invoke("budzecik_get_sales_progress", {}, context))
+      .rejects.toMatchObject({ code: "invalid_output" });
   });
 
   it("odrzuca adres bez HTTPS i zbyt krótki token", () => {

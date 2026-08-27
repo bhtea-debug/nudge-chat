@@ -5,6 +5,7 @@ export const IsoMonth = z.string().regex(/^\d{4}-\d{2}$/);
 
 export const BudzecikResource = z.enum([
   "overview",
+  "sales_progress",
   "budgets",
   "entries",
   "bank",
@@ -31,6 +32,22 @@ export const BudzecikData = z.object({
   reason: z.string().optional(),
 }).catchall(z.unknown());
 export type BudzecikData = z.infer<typeof BudzecikData>;
+
+/**
+ * Publiczny wynik dla firmowego czatu. Schemat jest celowo ścisły: nawet gdyby
+ * upstream omyłkowo dodał kwoty, rejestr capability odrzuci całą odpowiedź.
+ */
+export const BudzecikSalesProgress = z.object({
+  found: z.boolean(),
+  resource: z.literal("sales_progress"),
+  month: IsoMonth,
+  progressPercent: z.number().int().nonnegative().nullable(),
+  completePlan: z.boolean(),
+  plannedChannels: z.number().int().min(0).max(5),
+  totalChannels: z.literal(5),
+  definition: z.string().max(240),
+}).strict();
+export type BudzecikSalesProgress = z.infer<typeof BudzecikSalesProgress>;
 
 export const BudzecikResponse = z.object({
   ok: z.literal(true),
